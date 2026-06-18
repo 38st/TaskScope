@@ -7,6 +7,8 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
     var helperProcessNames: [String]
     var protectedProcessNames: [String]
     var appPath: String
+    var notificationsEnabled: Bool = true
+    var priority: Int = 0
 
     var allProcessNames: [String] {
         [mainProcessName] + helperProcessNames + protectedProcessNames

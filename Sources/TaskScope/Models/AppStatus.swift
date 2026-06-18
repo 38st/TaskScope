@@ -59,9 +59,15 @@ enum ProcessSortKey: String, CaseIterable, Identifiable {
 
 struct AppProcess: Identifiable, Equatable {
     var pid: Int32
+    var parentPID: Int32
     var cpu: Double
     var memoryMB: Double
     var command: String
+    var elapsedTime: String
+    var netInKB: Double
+    var netOutKB: Double
+    var diskReadKB: Double
+    var diskWriteKB: Double
 
     var id: Int32 {
         pid

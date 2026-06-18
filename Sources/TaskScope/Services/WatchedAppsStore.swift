@@ -24,6 +24,10 @@ final class WatchedAppsStore: ObservableObject {
         presets.removeAll { $0.id == preset.id }
     }
 
+    func move(from source: IndexSet, to destination: Int) {
+        presets.move(fromOffsets: source, toOffset: destination)
+    }
+
     func update(_ preset: WatchedAppPreset) {
         if let index = presets.firstIndex(where: { $0.id == preset.id }) {
             presets[index] = preset

@@ -274,6 +274,12 @@ final class ProcessManager: ObservableObject {
         process.pid == currentPID
     }
 
+    var ppidMap: [Int32: Int32] {
+        var map: [Int32: Int32] = [:]
+        for p in processes { map[p.pid] = p.parentPID }
+        return map
+    }
+
     private func refreshAfterMutation() async {
         if hasLoadedProcessList {
             async let snapshotsTask = currentSnapshots()
@@ -345,43 +351,87 @@ final class ProcessManager: ObservableObject {
     }
 
     private func currentProcessList() async -> [AppProcess] {
-        let command = "/bin/ps -arcwwwxo pid=,pcpu=,rss=,comm= | /usr/bin/head -n \(processListLimitProvider?() ?? 80)"
+        let limit = processListLimitProvider?() ?? 80
+        let command = "/bin/ps -arcwwwxo pid=,ppid=,pcpu=,rss=,etime=,comm= | /usr/bin/head -n \(limit)"
         let result = await ShellCommandRunner.run(command)
 
         guard result.succeeded else {
             return []
         }
 
-        return result.stdout
+        var parsed = result.stdout
             .split(separator: "\n")
             .compactMap(parseProcessLine)
-            .sorted { lhs, rhs in
-                if lhs.cpu == rhs.cpu {
-                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-                }
-                return lhs.cpu > rhs.cpu
-            }
+
+        let netStats = await currentNetworkStats()
+        let diskStats = await currentDiskStats()
+        for index in parsed.indices {
+            parsed[index].netInKB = netStats[parsed[index].pid]?.0 ?? 0
+            parsed[index].netOutKB = netStats[parsed[index].pid]?.1 ?? 0
+            parsed[index].diskReadKB = diskStats[parsed[index].pid]?.0 ?? 0
+            parsed[index].diskWriteKB = diskStats[parsed[index].pid]?.1 ?? 0
+        }
+        return parsed
+    }
+
+    private func currentNetworkStats() async -> [Int32: (Double, Double)] {
+        let result = await ShellCommandRunner.run(
+            "/usr/bin/nettop -P -L 1 -n -x -J bytes_in,bytes_out -k time,interface,state,rx_dups,rx_ooo,re-tx,rtt_avg,rcvsize,tx_ooo,re-tx,rtt_var -c 0 2>/dev/null || true"
+        )
+        guard result.succeeded else { return [:] }
+        var stats: [Int32: (Double, Double)] = [:]
+        for line in result.stdout.split(separator: "\n") {
+            let parts = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 3, let pid = Int32(parts[0]),
+                  let inBytes = Double(parts[1]),
+                  let outBytes = Double(parts[2]) else { continue }
+            stats[pid] = (inBytes / 1024.0, outBytes / 1024.0)
+        }
+        return stats
+    }
+
+    private func currentDiskStats() async -> [Int32: (Double, Double)] {
+        let result = await ShellCommandRunner.run(
+            "/bin/ps -axo pid=,rbytes=,wbytes= 2>/dev/null || true"
+        )
+        guard result.succeeded else { return [:] }
+        var stats: [Int32: (Double, Double)] = [:]
+        for line in result.stdout.split(separator: "\n") {
+            let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+            guard parts.count >= 3, let pid = Int32(parts[0]),
+                  let r = Double(parts[1]),
+                  let w = Double(parts[2]) else { continue }
+            stats[pid] = (r / 1024.0, w / 1024.0)
+        }
+        return stats
     }
 
     private func parseProcessLine(_ line: Substring) -> AppProcess? {
         let parts = line.split(
             separator: " ",
-            maxSplits: 3,
+            maxSplits: 4,
             omittingEmptySubsequences: true
         )
 
-        guard parts.count == 4,
+        guard parts.count == 5,
               let pid = Int32(parts[0]),
-              let cpu = Double(parts[1]),
-              let rssKB = Double(parts[2]) else {
+              let ppid = Int32(parts[1]),
+              let cpu = Double(parts[2]),
+              let rssKB = Double(parts[3]) else {
             return nil
         }
 
         return AppProcess(
             pid: pid,
+            parentPID: ppid,
             cpu: cpu,
             memoryMB: rssKB / 1024.0,
-            command: String(parts[3])
+            command: String(parts[4]),
+            elapsedTime: "",
+            netInKB: 0,
+            netOutKB: 0,
+            diskReadKB: 0,
+            diskWriteKB: 0
         )
     }
 
@@ -411,7 +461,7 @@ final class ProcessManager: ObservableObject {
         status = watched.aggregateStatus
 
         if enableNotifications {
-            let running = Set(watched.flatMap { $0.runningNames })
+            let running = Set(watched.filter { $0.preset.notificationsEnabled }.flatMap { $0.runningNames })
             NotificationService.shared.diffAndNotify(currentRunningNames: running)
         }
     }

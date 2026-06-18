@@ -1,0 +1,107 @@
+import SwiftUI
+
+struct ProcessTreeRow: View {
+    var node: ProcessTreeNode
+    var depth: Int
+    var settings: SettingsStore
+    @ObservedObject var processManager: ProcessManager
+    @Binding var keyboardSelectedPid: Int32?
+    @Binding var pendingTermination: AppProcess?
+    @Binding var detailProcess: AppProcess?
+    @Binding var detailData: ProcessDetail?
+    @Binding var detailFailed: Bool
+    var openInActivityMonitor: (Int32) -> Void
+
+    @State private var expanded: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                if !node.children.isEmpty {
+                    Button {
+                        expanded.toggle()
+                    } label: {
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                } else {
+                    Image(systemName: "chevron.right")
+                        .font(.caption)
+                        .foregroundStyle(.clear)
+                }
+
+                ProcessRow(
+                    process: node.process,
+                    isCurrentProcess: processManager.isCurrentProcess(node.process),
+                    isSelected: processManager.selectedPids.contains(node.process.pid),
+                    isKeyboardSelected: keyboardSelectedPid == node.process.pid,
+                    isHighlightedCPU: node.process.cpu >= settings.cpuHighlightThreshold,
+                    isHighlightedMEM: node.process.memoryMB >= settings.memHighlightThresholdMB,
+                    stopAction: { pendingTermination = node.process },
+                    toggleSelection: { processManager.toggleSelection(node.process.pid) },
+                    detailAction: {
+                        detailData = nil
+                        detailFailed = false
+                        detailProcess = node.process
+                    },
+                    forceStopAction: {
+                        Task { await processManager.terminate(node.process, forceKill: true) }
+                    },
+                    copyCommandAction: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(node.process.command, forType: .string)
+                    }
+                )
+            }
+            .padding(.leading, CGFloat(depth) * 16)
+            .background(
+                keyboardSelectedPid == node.process.pid
+                    ? Color.accentColor.opacity(0.12)
+                    : Color.clear
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                keyboardSelectedPid = node.process.pid
+            }
+            .contextMenu {
+                Button("Stop") { pendingTermination = node.process }
+                Button("Force Stop") {
+                    Task { await processManager.terminate(node.process, forceKill: true) }
+                }
+                Divider()
+                Button("Show Detail") {
+                    detailData = nil
+                    detailFailed = false
+                    detailProcess = node.process
+                }
+                Button("Copy Command") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(node.process.command, forType: .string)
+                }
+                Divider()
+                Button("Open in Activity Monitor") {
+                    openInActivityMonitor(node.process.pid)
+                }
+            }
+
+            if expanded {
+                ForEach(node.children) { child in
+                    ProcessTreeRow(
+                        node: child,
+                        depth: depth + 1,
+                        settings: settings,
+                        processManager: processManager,
+                        keyboardSelectedPid: $keyboardSelectedPid,
+                        pendingTermination: $pendingTermination,
+                        detailProcess: $detailProcess,
+                        detailData: $detailData,
+                        detailFailed: $detailFailed,
+                        openInActivityMonitor: openInActivityMonitor
+                    )
+                }
+            }
+        }
+    }
+}

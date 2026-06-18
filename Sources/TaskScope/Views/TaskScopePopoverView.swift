@@ -31,6 +31,9 @@ struct TaskScopePopoverView: View {
     @ObservedObject var loginItemManager: LoginItemManager
     @ObservedObject var settings: SettingsStore
     @ObservedObject var watchedApps: WatchedAppsStore
+    @ObservedObject var savedSelections: SavedSelectionsStore
+    @ObservedObject var autoStopRules: AutoStopRulesStore
+    @StateObject private var history = ProcessHistory()
 
     @State private var pendingTermination: AppProcess?
     @State private var pendingBatch: Bool = false
@@ -39,6 +42,11 @@ struct TaskScopePopoverView: View {
     @State private var detailFailed: Bool = false
     @State private var keyboardSelectedPid: Int32?
     @State private var filterMode: ProcessFilterMode = .all
+    @State private var treeMode: Bool = false
+    @State private var saveSelectionName: String = ""
+    @State private var showSaveSelectionSheet: Bool = false
+    @State private var autoStopTarget: AutoStopRule?
+    @State private var autoStopProcess: AppProcess?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,6 +86,8 @@ struct TaskScopePopoverView: View {
                 let running = Set(processManager.snapshots.flatMap { $0.runningNames })
                 NotificationService.shared.prime(initialRunningNames: running)
             }
+
+            HotkeyManager.shared.onToggle = { togglePopover() }
         }
         .onChange(of: settings.refreshIntervalSeconds) { _, _ in
             processManager.setPolling(
@@ -108,6 +118,11 @@ struct TaskScopePopoverView: View {
             if let pid = keyboardSelectedPid, !newProcesses.contains(where: { $0.pid == pid }) {
                 keyboardSelectedPid = nil
             }
+            history.record(processes: newProcesses)
+            evaluateAutoStopRules(newProcesses)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .taskScopeRefreshRequested)) { _ in
+            Task { await processManager.refreshWatchedStatus(showMessage: true) }
         }
         .confirmationDialog(
             "Stop Process?",
@@ -176,6 +191,39 @@ struct TaskScopePopoverView: View {
                 }
             }
         }
+        .sheet(isPresented: $showSaveSelectionSheet) {
+            SaveSelectionSheet(
+                name: $saveSelectionName,
+                count: processManager.selectedPids.count,
+                onSave: {
+                    savedSelections.save(name: saveSelectionName, pids: Array(processManager.selectedPids))
+                    showSaveSelectionSheet = false
+                },
+                onCancel: {
+                    showSaveSelectionSheet = false
+                }
+            )
+        }
+        .alert(
+            "Auto-Stop: \(autoStopProcess?.name ?? "")",
+            isPresented: Binding(
+                get: { autoStopTarget != nil },
+                set: { if !$0 { autoStopTarget = nil; autoStopProcess = nil } }
+            ),
+            presenting: autoStopProcess
+        ) { process in
+            Button("Stop Now", role: .destructive) {
+                Task { await processManager.terminate(process) }
+                autoStopTarget = nil
+                autoStopProcess = nil
+            }
+            Button("Dismiss", role: .cancel) {
+                autoStopTarget = nil
+                autoStopProcess = nil
+            }
+        } message: { process in
+            Text("\(process.name) has been running longer than the auto-stop rule (\(autoStopTarget?.runtimeMinutes ?? 0) min). Stop it now?")
+        }
     }
 
     private var header: some View {
@@ -198,6 +246,13 @@ struct TaskScopePopoverView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+
+            HStack(spacing: 12) {
+                SparklineView(samples: history.samples, keyPath: \.systemCPU, color: .orange, label: "CPU")
+                    .frame(width: 70)
+                SparklineView(samples: history.samples, keyPath: \.systemMemoryMB, color: .blue, label: "MEM")
+                    .frame(width: 70)
             }
 
             Spacer()
@@ -270,7 +325,7 @@ struct TaskScopePopoverView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 110)
+                .frame(width: 90)
 
                 Picker("Filter", selection: $filterMode) {
                     ForEach(ProcessFilterMode.allCases) { mode in
@@ -279,13 +334,46 @@ struct TaskScopePopoverView: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 160)
+                .frame(width: 140)
+
+                Toggle(isOn: $treeMode) {
+                    Label("Tree", systemImage: "list.bullet.indent")
+                        .labelStyle(.iconOnly)
+                }
+                .toggleStyle(.button)
+                .help("Tree View")
+
+                Menu {
+                    if savedSelections.selections.isEmpty {
+                        Text("No saved selections")
+                    } else {
+                        ForEach(savedSelections.selections) { sel in
+                            Button(sel.name) {
+                                processManager.clearSelection()
+                                for pid in sel.pids where processManager.processes.contains(where: { $0.pid == pid }) {
+                                    processManager.toggleSelection(pid)
+                                }
+                            }
+                        }
+                        Divider()
+                    }
+                    if !processManager.selectedPids.isEmpty {
+                        Button("Save Current Selection…") {
+                            saveSelectionName = ""
+                            showSaveSelectionSheet = true
+                        }
+                    }
+                } label: {
+                    Label("Saved", systemImage: "bookmark")
+                        .labelStyle(.iconOnly)
+                }
+                .help("Saved Selections")
 
                 if !processManager.selectedPids.isEmpty {
                     Button {
                         pendingBatch = true
                     } label: {
-                        Label("Stop Selected (\(processManager.selectedPids.count))", systemImage: "stop.fill")
+                        Label("\(processManager.selectedPids.count)", systemImage: "stop.fill")
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
@@ -322,52 +410,32 @@ struct TaskScopePopoverView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(filteredProcesses) { process in
-                                ProcessRow(
-                                    process: process,
-                                    isCurrentProcess: processManager.isCurrentProcess(process),
-                                    isSelected: processManager.selectedPids.contains(process.pid),
-                                    isKeyboardSelected: keyboardSelectedPid == process.pid,
-                                    isHighlightedCPU: process.cpu >= settings.cpuHighlightThreshold,
-                                    isHighlightedMEM: process.memoryMB >= settings.memHighlightThresholdMB,
-                                    stopAction: { pendingTermination = process },
-                                    toggleSelection: { processManager.toggleSelection(process.pid) },
-                                    detailAction: {
-                                        detailData = nil
-                                        detailProcess = process
-                                    },
-                                    forceStopAction: {
-                                        Task { await processManager.terminate(process, forceKill: true) }
-                                    },
-                                    copyCommandAction: {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(process.command, forType: .string)
-                                    }
-                                )
-                                .id(process.pid)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    keyboardSelectedPid = process.pid
+                            if treeMode {
+                                ForEach(treeRoots, id: \.id) { node in
+                                    ProcessTreeRow(
+                                        node: node,
+                                        depth: 0,
+                                        settings: settings,
+                                        processManager: processManager,
+                                        keyboardSelectedPid: $keyboardSelectedPid,
+                                        pendingTermination: $pendingTermination,
+                                        detailProcess: $detailProcess,
+                                        detailData: $detailData,
+                                        detailFailed: $detailFailed,
+                                        openInActivityMonitor: { openInActivityMonitor(pid: $0) }
+                                    )
                                 }
-                                .contextMenu {
-                                    Button("Stop") { pendingTermination = process }
-                                    Button("Force Stop") {
-                                        Task { await processManager.terminate(process, forceKill: true) }
-                                    }
-                                    Divider()
-                                    Button("Show Detail") {
-                                        detailData = nil
-                                        detailFailed = false
-                                        detailProcess = process
-                                    }
-                                    Button("Copy Command") {
-                                        NSPasteboard.general.clearContents()
-                                        NSPasteboard.general.setString(process.command, forType: .string)
-                                    }
-                                    Divider()
-                                    Button("Open in Activity Monitor") {
-                                        openInActivityMonitor(pid: process.pid)
-                                    }
+                            } else {
+                                ForEach(filteredProcesses) { process in
+                                    processRowView(for: process)
+                                        .id(process.pid)
+                                        .contentShape(Rectangle())
+                                        .onTapGesture {
+                                            keyboardSelectedPid = process.pid
+                                        }
+                                        .contextMenu {
+                                            processContextMenu(for: process)
+                                        }
                                 }
                             }
                         }
@@ -593,6 +661,57 @@ struct TaskScopePopoverView: View {
         return String(format: "Σ %.1f%% CPU · %.0f MB MEM", totalCPU, totalMem)
     }
 
+    private var treeRoots: [ProcessTreeNode] {
+        ProcessTreeBuilder.build(from: filteredProcesses, ppidMap: processManager.ppidMap)
+    }
+
+    @ViewBuilder
+    private func processRowView(for process: AppProcess) -> some View {
+        ProcessRow(
+            process: process,
+            isCurrentProcess: processManager.isCurrentProcess(process),
+            isSelected: processManager.selectedPids.contains(process.pid),
+            isKeyboardSelected: keyboardSelectedPid == process.pid,
+            isHighlightedCPU: process.cpu >= settings.cpuHighlightThreshold,
+            isHighlightedMEM: process.memoryMB >= settings.memHighlightThresholdMB,
+            stopAction: { pendingTermination = process },
+            toggleSelection: { processManager.toggleSelection(process.pid) },
+            detailAction: {
+                detailData = nil
+                detailProcess = process
+            },
+            forceStopAction: {
+                Task { await processManager.terminate(process, forceKill: true) }
+            },
+            copyCommandAction: {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(process.command, forType: .string)
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func processContextMenu(for process: AppProcess) -> some View {
+        Button("Stop") { pendingTermination = process }
+        Button("Force Stop") {
+            Task { await processManager.terminate(process, forceKill: true) }
+        }
+        Divider()
+        Button("Show Detail") {
+            detailData = nil
+            detailFailed = false
+            detailProcess = process
+        }
+        Button("Copy Command") {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(process.command, forType: .string)
+        }
+        Divider()
+        Button("Open in Activity Monitor") {
+            openInActivityMonitor(pid: process.pid)
+        }
+    }
+
     private func moveKeyboard(by delta: Int, in processes: [AppProcess], proxy: ScrollViewProxy) {
         guard !processes.isEmpty else { return }
         let current = keyboardSelectedPid
@@ -601,6 +720,28 @@ struct TaskScopePopoverView: View {
         let target = processes[index]
         keyboardSelectedPid = target.pid
         proxy.scrollTo(target.pid, anchor: .center)
+    }
+
+    private func togglePopover() {
+        if NSApp.isActive {
+            NSApp.hide(nil)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func evaluateAutoStopRules(_ processes: [AppProcess]) {
+        autoStopRules.evaluate(runningProcesses: processes) { rule, process in
+            switch rule.action {
+            case .prompt:
+                autoStopTarget = rule
+                autoStopProcess = process
+            case .kill:
+                Task { await processManager.terminate(process) }
+            case .silent:
+                break
+            }
+        }
     }
 }
 
@@ -641,7 +782,7 @@ private struct LightweightEmptyState: View {
     }
 }
 
-private struct ProcessRow: View {
+struct ProcessRow: View {
     var process: AppProcess
     var isCurrentProcess: Bool
     var isSelected: Bool
