@@ -84,7 +84,7 @@ struct FullProcessWindowView: View {
                     Text("CPU %").frame(width: 80, alignment: .trailing)
                     Text("MEM MB").frame(width: 90, alignment: .trailing)
                     Text("Net KB/s").frame(width: 110, alignment: .trailing)
-                    Text("Disk KB/s").frame(width: 110, alignment: .trailing)
+                    Text("Disk Blocks").frame(width: 110, alignment: .trailing)
                     Text("").frame(width: 40)
                 }
                 .font(.caption)
@@ -100,7 +100,7 @@ struct FullProcessWindowView: View {
                         Text(String(format: "%.1f", process.cpu)).frame(width: 80, alignment: .trailing)
                         Text(String(format: "%.0f", process.memoryMB)).frame(width: 90, alignment: .trailing)
                         Text(String(format: "%.1f / %.1f", process.netInKB, process.netOutKB)).frame(width: 110, alignment: .trailing)
-                        Text(String(format: "%.1f / %.1f", process.diskReadKB, process.diskWriteKB)).frame(width: 110, alignment: .trailing)
+                        Text(String(format: "%.0f / %.0f", process.diskReadBlocks, process.diskWriteBlocks)).frame(width: 110, alignment: .trailing)
                         Button(role: .destructive) {
                             pendingTermination = process
                         } label: {

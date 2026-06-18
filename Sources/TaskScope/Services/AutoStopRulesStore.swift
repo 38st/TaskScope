@@ -50,6 +50,8 @@ final class AutoStopRulesStore: ObservableObject {
 
     func evaluate(runningProcesses: [AppProcess], onAction: @escaping (AutoStopRule, AppProcess) -> Void) {
         let now = Date()
+        let runningNames = Set(runningProcesses.map { $0.name })
+
         for process in runningProcesses {
             guard let rule = rules.first(where: { $0.processName.caseInsensitiveCompare(process.name) == .orderedSame }) else {
                 tracked.removeValue(forKey: process.name)
@@ -64,6 +66,11 @@ final class AutoStopRulesStore: ObservableObject {
                 onAction(rule, process)
                 tracked.removeValue(forKey: process.name)
             }
+        }
+
+        let stale = tracked.keys.filter { !runningNames.contains($0) }
+        for name in stale {
+            tracked.removeValue(forKey: name)
         }
     }
 

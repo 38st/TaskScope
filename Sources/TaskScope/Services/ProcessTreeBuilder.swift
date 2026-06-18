@@ -14,17 +14,27 @@ final class ProcessTreeBuilder {
             nodesById[process.pid] = ProcessTreeNode(process: process, children: [])
         }
 
-        var roots: [ProcessTreeNode] = []
+        var childPidsByParent: [Int32: [Int32]] = [:]
+        var rootPids: [Int32] = []
         for process in processes {
-            guard var node = nodesById[process.pid] else { continue }
             let parent = ppidMap[process.pid]
-            if let parentPid = parent, parentPid != 0, var parentNode = nodesById[parentPid] {
-                parentNode.children.append(node)
-                nodesById[parentPid] = parentNode
+            if let parentPid = parent, parentPid != 0, nodesById[parentPid] != nil {
+                childPidsByParent[parentPid, default: []].append(process.pid)
             } else {
-                roots.append(node)
+                rootPids.append(process.pid)
             }
         }
-        return roots
+
+        func buildNode(_ pid: Int32) -> ProcessTreeNode {
+            guard var node = nodesById[pid] else {
+                return ProcessTreeNode(process: processes.first(where: { $0.pid == pid })!, children: [])
+            }
+            if let childPids = childPidsByParent[pid] {
+                node.children = childPids.map { buildNode($0) }
+            }
+            return node
+        }
+
+        return rootPids.map { buildNode($0) }
     }
 }

@@ -95,10 +95,10 @@ final class HotkeyManager: ObservableObject {
     var displayString: String {
         var result = ""
         let mods = modifiers
-        if mods & UInt32(cmdKey) != 0 { result += "⌘" }
-        if mods & UInt32(shiftKey) != 0 { result += "⇧" }
-        if mods & UInt32(optionKey) != 0 { result += "⌥" }
         if mods & UInt32(controlKey) != 0 { result += "⌃" }
+        if mods & UInt32(optionKey) != 0 { result += "⌥" }
+        if mods & UInt32(shiftKey) != 0 { result += "⇧" }
+        if mods & UInt32(cmdKey) != 0 { result += "⌘" }
         result += keyName(for: keyCode)
         return result
     }

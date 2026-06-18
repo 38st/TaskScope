@@ -66,8 +66,8 @@ struct AppProcess: Identifiable, Equatable {
     var elapsedTime: String
     var netInKB: Double
     var netOutKB: Double
-    var diskReadKB: Double
-    var diskWriteKB: Double
+    var diskReadBlocks: Double
+    var diskWriteBlocks: Double
 
     var id: Int32 {
         pid

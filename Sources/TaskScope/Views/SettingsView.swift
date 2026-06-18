@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Carbon.HIToolbox
 
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
@@ -213,23 +214,7 @@ struct SettingsView: View {
     }
 
     private var hotkeyTab: some View {
-        let hotkey = HotkeyManager.shared
-        return Form {
-            Section("Global Hotkey") {
-                Toggle("Enable global toggle hotkey", isOn: Binding(
-                    get: { hotkey.hotkeyEnabled },
-                    set: { newValue in
-                        hotkey.hotkeyEnabled = newValue
-                    }
-                ))
-                LabeledContent("Current Hotkey", value: hotkey.displayString)
-                Text("Default: ⌘⇧T toggles the TaskScope popover.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
+        HotkeySettingsView()
     }
 
     private func parseList(_ value: String) -> [String] {
@@ -274,6 +259,110 @@ private struct TextFieldRow: View {
             Text(label).frame(width: 180, alignment: .leading)
             TextField(label, text: $text)
                 .textFieldStyle(.roundedBorder)
+        }
+    }
+}
+
+private struct HotkeySettingsView: View {
+    @ObservedObject private var hotkey = HotkeyManager.shared
+    @State private var recording = false
+
+    var body: some View {
+        Form {
+            Section("Global Hotkey") {
+                Toggle("Enable global toggle hotkey", isOn: $hotkey.hotkeyEnabled)
+
+                HStack {
+                    Text("Current Hotkey")
+                    Spacer()
+                    Text(hotkey.displayString)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
+                }
+
+                Button(recording ? "Press a key combination…" : "Record New Hotkey") {
+                    recording = true
+                }
+                .disabled(!hotkey.hotkeyEnabled)
+                .buttonStyle(.bordered)
+
+                if recording {
+                    Text("Press the key combination you want to use. Esc to cancel.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Text("Default: ⌘⇧T toggles the TaskScope popover.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .background {
+            RecordingListenerView(
+                isRecording: $recording,
+                onRecord: { keyCode, modifiers in
+                    hotkey.keyCode = keyCode
+                    hotkey.modifiers = modifiers
+                    recording = false
+                },
+                onCancel: {
+                    recording = false
+                }
+            )
+        }
+    }
+}
+
+private struct RecordingListenerView: NSViewRepresentable {
+    @Binding var isRecording: Bool
+    let onRecord: (UInt32, UInt32) -> Void
+    let onCancel: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        if isRecording {
+            context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                if event.keyCode == 53 {
+                    onCancel()
+                    return nil
+                }
+                let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                var carbonMods: UInt32 = 0
+                if mods.contains(.command) { carbonMods |= UInt32(cmdKey) }
+                if mods.contains(.shift) { carbonMods |= UInt32(shiftKey) }
+                if mods.contains(.option) { carbonMods |= UInt32(optionKey) }
+                if mods.contains(.control) { carbonMods |= UInt32(controlKey) }
+                if carbonMods == 0 { return event }
+                onRecord(UInt32(event.keyCode), carbonMods)
+                return nil
+            }
+            context.coordinator.monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { _ in
+            }
+        } else {
+            if let monitor = context.coordinator.monitor {
+                NSEvent.removeMonitor(monitor)
+                context.coordinator.monitor = nil
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    final class Coordinator {
+        var monitor: Any?
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        if let monitor = coordinator.monitor {
+            NSEvent.removeMonitor(monitor)
+            coordinator.monitor = nil
         }
     }
 }

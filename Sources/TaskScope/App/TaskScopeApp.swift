@@ -6,6 +6,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         HotkeyManager.shared.register()
         URLSchemeHandler.shared.register()
+
+        if !UserDefaults.standard.bool(forKey: "TaskScope.onboarded.v1") {
+            DispatchQueue.main.async {
+                if let window = NSApplication.shared.windows.first(where: { $0.title == "Onboarding" }) {
+                    window.makeKeyAndOrderFront(nil)
+                }
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
     }
 }
 
