@@ -1,0 +1,192 @@
+import AppKit
+import Foundation
+
+let outputPath = CommandLine.arguments.dropFirst().first ?? "AppIcon.icns"
+let outputURL = URL(fileURLWithPath: outputPath)
+let fileManager = FileManager.default
+let iconsetURL = outputURL
+    .deletingLastPathComponent()
+    .appendingPathComponent("AppIcon.iconset", isDirectory: true)
+
+try? fileManager.removeItem(at: iconsetURL)
+try fileManager.createDirectory(
+    at: iconsetURL,
+    withIntermediateDirectories: true
+)
+
+let specs: [(points: Int, scale: Int)] = [
+    (16, 1), (16, 2),
+    (32, 1), (32, 2),
+    (128, 1), (128, 2),
+    (256, 1), (256, 2),
+    (512, 1), (512, 2)
+]
+
+for spec in specs {
+    let pixels = spec.points * spec.scale
+    let image = renderIcon(size: pixels)
+    let suffix = spec.scale == 1 ? "" : "@2x"
+    let filename = "icon_\(spec.points)x\(spec.points)\(suffix).png"
+    try writePNG(image: image, to: iconsetURL.appendingPathComponent(filename))
+}
+
+let process = Process()
+process.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
+process.arguments = ["-c", "icns", iconsetURL.path, "-o", outputURL.path]
+try process.run()
+process.waitUntilExit()
+
+if process.terminationStatus != 0 {
+    throw NSError(
+        domain: "TaskScopeIcon",
+        code: Int(process.terminationStatus),
+        userInfo: [NSLocalizedDescriptionKey: "iconutil failed"]
+    )
+}
+
+try? fileManager.removeItem(at: iconsetURL)
+
+func renderIcon(size: Int) -> NSImage {
+    let dimension = CGFloat(size)
+    let image = NSImage(size: NSSize(width: dimension, height: dimension))
+
+    image.lockFocus()
+    defer {
+        image.unlockFocus()
+    }
+
+    guard let context = NSGraphicsContext.current?.cgContext else {
+        return image
+    }
+
+    context.setShouldAntialias(true)
+    context.setAllowsAntialiasing(true)
+
+    let bounds = CGRect(x: 0, y: 0, width: dimension, height: dimension)
+    let cornerRadius = dimension * 0.22
+    let backgroundPath = NSBezierPath(
+        roundedRect: bounds.insetBy(dx: dimension * 0.05, dy: dimension * 0.05),
+        xRadius: cornerRadius,
+        yRadius: cornerRadius
+    )
+
+    let gradient = NSGradient(colors: [
+        NSColor(red: 0.05, green: 0.08, blue: 0.10, alpha: 1),
+        NSColor(red: 0.12, green: 0.22, blue: 0.25, alpha: 1),
+        NSColor(red: 0.16, green: 0.36, blue: 0.40, alpha: 1)
+    ])
+    gradient?.draw(in: backgroundPath, angle: -45)
+
+    NSColor.white.withAlphaComponent(0.15).setStroke()
+    backgroundPath.lineWidth = max(1, dimension * 0.012)
+    backgroundPath.stroke()
+
+    drawActivityLines(in: bounds, size: dimension)
+    drawWaveform(in: bounds, size: dimension)
+    drawPowerAccent(in: bounds, size: dimension)
+
+    return image
+}
+
+func drawActivityLines(in bounds: CGRect, size: CGFloat) {
+    let left = bounds.minX + size * 0.24
+    let right = bounds.maxX - size * 0.25
+    let rows = [0.62, 0.50, 0.38].map { bounds.minY + size * CGFloat($0) }
+    let lineWidth = max(2, size * 0.026)
+
+    for (index, y) in rows.enumerated() {
+        let path = NSBezierPath()
+        path.move(to: CGPoint(x: left, y: y))
+        path.line(to: CGPoint(x: right - CGFloat(index) * size * 0.08, y: y))
+        path.lineCapStyle = .round
+        path.lineWidth = lineWidth
+        NSColor.white.withAlphaComponent(index == 1 ? 0.70 : 0.42).setStroke()
+        path.stroke()
+    }
+}
+
+func drawWaveform(in bounds: CGRect, size: CGFloat) {
+    let path = NSBezierPath()
+    let points = [
+        CGPoint(x: 0.22, y: 0.73),
+        CGPoint(x: 0.34, y: 0.73),
+        CGPoint(x: 0.39, y: 0.64),
+        CGPoint(x: 0.46, y: 0.83),
+        CGPoint(x: 0.53, y: 0.58),
+        CGPoint(x: 0.61, y: 0.73),
+        CGPoint(x: 0.78, y: 0.73)
+    ].map { point in
+        CGPoint(
+            x: bounds.minX + size * point.x,
+            y: bounds.minY + size * point.y
+        )
+    }
+
+    guard let first = points.first else {
+        return
+    }
+
+    path.move(to: first)
+    for point in points.dropFirst() {
+        path.line(to: point)
+    }
+
+    path.lineCapStyle = .round
+    path.lineJoinStyle = .round
+    path.lineWidth = max(3, size * 0.045)
+    NSColor(red: 0.63, green: 0.96, blue: 0.94, alpha: 1).setStroke()
+    path.stroke()
+}
+
+func drawPowerAccent(in bounds: CGRect, size: CGFloat) {
+    let center = CGPoint(
+        x: bounds.maxX - size * 0.28,
+        y: bounds.minY + size * 0.28
+    )
+    let radius = size * 0.13
+    let accentRect = CGRect(
+        x: center.x - radius,
+        y: center.y - radius,
+        width: radius * 2,
+        height: radius * 2
+    )
+
+    NSColor(red: 0.96, green: 0.30, blue: 0.22, alpha: 1).setFill()
+    NSBezierPath(ovalIn: accentRect).fill()
+
+    NSColor.white.setStroke()
+
+    let ring = NSBezierPath()
+    ring.appendArc(
+        withCenter: center,
+        radius: radius * 0.48,
+        startAngle: 132,
+        endAngle: 408,
+        clockwise: false
+    )
+    ring.lineWidth = max(1.5, size * 0.018)
+    ring.lineCapStyle = .round
+    ring.stroke()
+
+    let stem = NSBezierPath()
+    stem.move(to: CGPoint(x: center.x, y: center.y + radius * 0.12))
+    stem.line(to: CGPoint(x: center.x, y: center.y + radius * 0.62))
+    stem.lineWidth = max(1.5, size * 0.018)
+    stem.lineCapStyle = .round
+    stem.stroke()
+}
+
+func writePNG(image: NSImage, to url: URL) throws {
+    guard let tiffData = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiffData),
+          let pngData = bitmap.representation(using: .png, properties: [:])
+    else {
+        throw NSError(
+            domain: "TaskScopeIcon",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Could not encode PNG"]
+        )
+    }
+
+    try pngData.write(to: url)
+}
