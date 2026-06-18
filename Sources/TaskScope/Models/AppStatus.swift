@@ -39,60 +39,28 @@ enum ProcessStatus: Equatable {
     }
 }
 
-struct WatchedProcessSnapshot: Equatable {
-    var globalProtect: Bool
-    var panGPA: Bool
-    var panGPS: Bool
+enum ProcessSortKey: String, CaseIterable, Identifiable {
+    case cpu
+    case memory
+    case name
+    case pid
 
-    static let none = WatchedProcessSnapshot(
-        globalProtect: false,
-        panGPA: false,
-        panGPS: false
-    )
+    var id: String { rawValue }
 
-    var hasHelpers: Bool {
-        panGPA || panGPS
-    }
-
-    var hasAny: Bool {
-        globalProtect || hasHelpers
-    }
-
-    var status: ProcessStatus {
-        if globalProtect {
-            return .watchedRunning
+    var label: String {
+        switch self {
+        case .cpu: "CPU"
+        case .memory: "MEM"
+        case .name: "Name"
+        case .pid: "PID"
         }
-
-        if hasHelpers {
-            return .helpersOnly
-        }
-
-        return .idle
-    }
-
-    var detail: String {
-        var names: [String] = []
-
-        if globalProtect {
-            names.append("GlobalProtect")
-        }
-
-        if panGPA {
-            names.append("PanGPA")
-        }
-
-        if panGPS {
-            names.append("PanGPS")
-        }
-
-        return names.isEmpty ? "No watched processes" : names.joined(separator: ", ")
     }
 }
 
 struct AppProcess: Identifiable, Equatable {
     var pid: Int32
     var cpu: Double
-    var memory: Double
+    var memoryMB: Double
     var command: String
 
     var id: Int32 {
@@ -105,13 +73,17 @@ struct AppProcess: Identifiable, Equatable {
         return lastPathComponent.isEmpty ? trimmedCommand : lastPathComponent
     }
 
-    var isWatched: Bool {
-        ["GlobalProtect", "PanGPA", "PanGPS"].contains(name)
-    }
-
     var displayCommand: String {
         command.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
+}
+
+struct ProcessDetail: Equatable {
+    var pid: Int32
+    var parentPID: Int32
+    var user: String
+    var startTime: String
+    var command: String
 }
 
 struct ShellCommandResult: Equatable {

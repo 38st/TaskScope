@@ -24,11 +24,18 @@ final class LoginItemManager: ObservableObject {
                 try SMAppService.mainApp.unregister()
             }
 
-            refresh()
-            message = isEnabled ? "Launch at Login on." : "Launch at Login off."
+            message = enabled ? "Launch at Login on." : "Launch at Login off."
+            refreshAfterDelay()
         } catch {
             refresh()
             message = "Could not update login item."
+        }
+    }
+
+    private func refreshAfterDelay() {
+        Task {
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            refresh()
         }
     }
 }

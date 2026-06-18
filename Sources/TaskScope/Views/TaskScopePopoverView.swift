@@ -10,13 +10,35 @@ enum TaskScopeSection: String, CaseIterable, Identifiable {
     }
 }
 
+enum ProcessFilterMode: String, CaseIterable, Identifiable {
+    case all
+    case watched
+    case highlighted
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .all: "All"
+        case .watched: "Watched"
+        case .highlighted: "Hot"
+        }
+    }
+}
+
 struct TaskScopePopoverView: View {
     @ObservedObject var processManager: ProcessManager
     @ObservedObject var loginItemManager: LoginItemManager
+    @ObservedObject var settings: SettingsStore
+    @ObservedObject var watchedApps: WatchedAppsStore
 
-    @State private var selectedSection: TaskScopeSection = .processes
-    @State private var searchText = ""
     @State private var pendingTermination: AppProcess?
+    @State private var pendingBatch: Bool = false
+    @State private var detailProcess: AppProcess?
+    @State private var detailData: ProcessDetail?
+    @State private var detailFailed: Bool = false
+    @State private var keyboardSelectedPid: Int32?
+    @State private var filterMode: ProcessFilterMode = .all
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,7 +48,7 @@ struct TaskScopePopoverView: View {
             Divider()
 
             Group {
-                switch selectedSection {
+                switch settings.selectedSection {
                 case .processes:
                     processList
                 case .presets:
@@ -41,7 +63,51 @@ struct TaskScopePopoverView: View {
         .background(.regularMaterial)
         .task {
             loginItemManager.refresh()
+            processManager.watchedAppsProvider = { watchedApps.presets }
+            processManager.processListLimitProvider = { settings.processListLimit }
+            processManager.sortKey = settings.sortKey
+            processManager.enableNotifications = settings.enableNotifications
+            processManager.setPolling(
+                interval: settings.refreshIntervalSeconds,
+                includeProcessList: settings.autoRefreshProcessList
+            )
             await processManager.refreshWatchedStatus(showMessage: false)
+
+            if settings.enableNotifications {
+                await NotificationService.shared.requestAuthorization()
+                let running = Set(processManager.snapshots.flatMap { $0.runningNames })
+                NotificationService.shared.prime(initialRunningNames: running)
+            }
+        }
+        .onChange(of: settings.refreshIntervalSeconds) { _, _ in
+            processManager.setPolling(
+                interval: settings.refreshIntervalSeconds,
+                includeProcessList: settings.autoRefreshProcessList
+            )
+        }
+        .onChange(of: settings.autoRefreshProcessList) { _, _ in
+            processManager.setPolling(
+                interval: settings.refreshIntervalSeconds,
+                includeProcessList: settings.autoRefreshProcessList
+            )
+        }
+        .onChange(of: settings.enableNotifications) { _, newValue in
+            processManager.enableNotifications = newValue
+            if newValue {
+                Task {
+                    await NotificationService.shared.requestAuthorization()
+                    let running = Set(processManager.snapshots.flatMap { $0.runningNames })
+                    NotificationService.shared.prime(initialRunningNames: running)
+                }
+            }
+        }
+        .onChange(of: watchedApps.presets) { _, _ in
+            Task { await processManager.refreshWatchedStatusUnchecked(showMessage: false) }
+        }
+        .onChange(of: processManager.processes) { _, newProcesses in
+            if let pid = keyboardSelectedPid, !newProcesses.contains(where: { $0.pid == pid }) {
+                keyboardSelectedPid = nil
+            }
         }
         .confirmationDialog(
             "Stop Process?",
@@ -56,9 +122,12 @@ struct TaskScopePopoverView: View {
             presenting: pendingTermination
         ) { process in
             Button("Stop \(process.name)", role: .destructive) {
-                Task {
-                    await processManager.terminate(process)
-                }
+                Task { await processManager.terminate(process) }
+                pendingTermination = nil
+            }
+
+            Button("Force Stop \(process.name)", role: .destructive) {
+                Task { await processManager.terminate(process, forceKill: true) }
                 pendingTermination = nil
             }
 
@@ -66,7 +135,46 @@ struct TaskScopePopoverView: View {
                 pendingTermination = nil
             }
         } message: { process in
-            Text("Send a normal quit signal to PID \(process.pid).")
+            Text("Send a normal quit signal to PID \(process.pid). Force Stop sends an immediate kill signal if the process does not respond.")
+        }
+        .confirmationDialog(
+            "Stop Selected Processes?",
+            isPresented: $pendingBatch
+        ) {
+            Button("Stop Selected", role: .destructive) {
+                Task { await processManager.batchTerminate() }
+                pendingBatch = false
+            }
+            Button("Force Stop Selected", role: .destructive) {
+                Task { await processManager.batchTerminate(forceKill: true) }
+                pendingBatch = false
+            }
+            Button("Cancel", role: .cancel) {
+                pendingBatch = false
+            }
+        } message: {
+            Text("Stop \(processManager.selectedPids.count) selected processes.")
+        }
+        .sheet(item: $detailProcess) { process in
+            ProcessDetailSheet(
+                process: process,
+                detail: detailData,
+                failed: detailFailed,
+                onClose: {
+                    detailProcess = nil
+                    detailData = nil
+                    detailFailed = false
+                }
+            )
+            .task(id: process.pid) {
+                detailData = nil
+                detailFailed = false
+                if let result = await processManager.detail(for: process) {
+                    detailData = result
+                } else {
+                    detailFailed = true
+                }
+            }
         }
     }
 
@@ -109,7 +217,10 @@ struct TaskScopePopoverView: View {
     }
 
     private var sectionPicker: some View {
-        Picker("Section", selection: $selectedSection) {
+        Picker("Section", selection: Binding(
+            get: { settings.selectedSection },
+            set: { settings.selectedSectionRaw = $0.rawValue }
+        )) {
             ForEach(TaskScopeSection.allCases) { section in
                 Text(section.rawValue).tag(section)
             }
@@ -126,12 +237,12 @@ struct TaskScopePopoverView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
 
-                TextField("Search processes", text: $searchText)
+                TextField("Search processes", text: $settings.searchText)
                     .textFieldStyle(.plain)
 
-                if !searchText.isEmpty {
+                if !settings.searchText.isEmpty {
                     Button {
-                        searchText = ""
+                        settings.searchText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
                     }
@@ -146,13 +257,60 @@ struct TaskScopePopoverView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
+            HStack(spacing: 8) {
+                Picker("Sort", selection: Binding(
+                    get: { settings.sortKey },
+                    set: { newValue in
+                        settings.sortKeyRaw = newValue.rawValue
+                        processManager.sortKey = newValue
+                    }
+                )) {
+                    ForEach(ProcessSortKey.allCases) { key in
+                        Text(key.label).tag(key)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(width: 110)
+
+                Picker("Filter", selection: $filterMode) {
+                    ForEach(ProcessFilterMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width: 160)
+
+                if !processManager.selectedPids.isEmpty {
+                    Button {
+                        pendingBatch = true
+                    } label: {
+                        Label("Stop Selected (\(processManager.selectedPids.count))", systemImage: "stop.fill")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.small)
+
+                    Button {
+                        processManager.clearSelection()
+                    } label: {
+                        Text("Clear")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+
             HStack {
                 Text(processCountTitle)
                 Spacer()
                 Text("CPU")
                     .frame(width: 54, alignment: .trailing)
-                Text("MEM")
-                    .frame(width: 54, alignment: .trailing)
+                Text("MEM MB")
+                    .frame(width: 64, alignment: .trailing)
                 Text("")
                     .frame(width: 28)
             }
@@ -161,17 +319,89 @@ struct TaskScopePopoverView: View {
             .padding(.horizontal, 16)
 
             if processManager.hasLoadedProcessList {
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(filteredProcesses) { process in
-                            ProcessRow(
-                                process: process,
-                                isCurrentProcess: processManager.isCurrentProcess(process),
-                                stopAction: {
-                                    pendingTermination = process
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(filteredProcesses) { process in
+                                ProcessRow(
+                                    process: process,
+                                    isCurrentProcess: processManager.isCurrentProcess(process),
+                                    isSelected: processManager.selectedPids.contains(process.pid),
+                                    isKeyboardSelected: keyboardSelectedPid == process.pid,
+                                    isHighlightedCPU: process.cpu >= settings.cpuHighlightThreshold,
+                                    isHighlightedMEM: process.memoryMB >= settings.memHighlightThresholdMB,
+                                    stopAction: { pendingTermination = process },
+                                    toggleSelection: { processManager.toggleSelection(process.pid) },
+                                    detailAction: {
+                                        detailData = nil
+                                        detailProcess = process
+                                    },
+                                    forceStopAction: {
+                                        Task { await processManager.terminate(process, forceKill: true) }
+                                    },
+                                    copyCommandAction: {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(process.command, forType: .string)
+                                    }
+                                )
+                                .id(process.pid)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    keyboardSelectedPid = process.pid
                                 }
-                            )
+                                .contextMenu {
+                                    Button("Stop") { pendingTermination = process }
+                                    Button("Force Stop") {
+                                        Task { await processManager.terminate(process, forceKill: true) }
+                                    }
+                                    Divider()
+                                    Button("Show Detail") {
+                                        detailData = nil
+                                        detailFailed = false
+                                        detailProcess = process
+                                    }
+                                    Button("Copy Command") {
+                                        NSPasteboard.general.clearContents()
+                                        NSPasteboard.general.setString(process.command, forType: .string)
+                                    }
+                                    Divider()
+                                    Button("Open in Activity Monitor") {
+                                        openInActivityMonitor(pid: process.pid)
+                                    }
+                                }
+                            }
                         }
+                    }
+                    .onKeyPress(.upArrow) {
+                        moveKeyboard(by: -1, in: filteredProcesses, proxy: proxy)
+                        return .handled
+                    }
+                    .onKeyPress(.downArrow) {
+                        moveKeyboard(by: 1, in: filteredProcesses, proxy: proxy)
+                        return .handled
+                    }
+                    .onKeyPress(.return) {
+                        if let pid = keyboardSelectedPid,
+                           let proc = filteredProcesses.first(where: { $0.pid == pid }) {
+                            pendingTermination = proc
+                        }
+                        return .handled
+                    }
+                    .onKeyPress(.escape) {
+                        processManager.clearSelection()
+                        keyboardSelectedPid = nil
+                        return .handled
+                    }
+                    .onKeyPress { keyPress in
+                        if keyPress.key == KeyEquivalent("a") && keyPress.modifiers == .command {
+                            processManager.selectAll()
+                            return .handled
+                        }
+                        if keyPress.key == KeyEquivalent("a") && keyPress.modifiers == [.command, .shift] {
+                            processManager.clearSelection()
+                            return .handled
+                        }
+                        return .ignored
                     }
                 }
             } else {
@@ -187,55 +417,21 @@ struct TaskScopePopoverView: View {
     private var presetsView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                presetHeader
-
-                VStack(spacing: 8) {
-                    PresetActionButton(
-                        title: "Open GlobalProtect",
-                        systemImage: "arrow.up.forward.app",
-                        role: nil,
-                        action: {
-                            Task {
-                                await processManager.openGlobalProtect()
-                            }
-                        }
-                    )
-
-                    PresetActionButton(
-                        title: "Quit App",
-                        systemImage: "power",
-                        role: .destructive,
-                        action: {
-                            Task {
-                                await processManager.quitGlobalProtect()
-                            }
-                        }
-                    )
-
-                    PresetActionButton(
-                        title: "Quit User Helper",
-                        systemImage: "wrench.and.screwdriver",
-                        role: .destructive,
-                        action: {
-                            Task {
-                                await processManager.quitHelpers()
-                            }
-                        }
-                    )
-
-                    PresetActionButton(
-                        title: "Quit App + User Helper",
-                        systemImage: "stop.circle",
-                        role: .destructive,
-                        action: {
-                            Task {
-                                await processManager.quitAllWatched()
-                            }
-                        }
+                ForEach(processManager.snapshots) { snapshot in
+                    PresetCard(
+                        snapshot: snapshot,
+                        onOpen: { Task { await processManager.openApp(snapshot.preset) } },
+                        onQuitApp: { Task { await processManager.quitMainApp(snapshot.preset) } },
+                        onQuitHelpers: { Task { await processManager.quitHelpers(snapshot.preset) } },
+                        onQuitAll: { Task { await processManager.quitAllKillable(snapshot.preset) } }
                     )
                 }
 
-                serviceHealthNotice
+                if processManager.snapshots.isEmpty {
+                    Text("No watched apps configured. Add presets in Settings.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
 
                 Toggle(
                     "Launch at Login",
@@ -252,54 +448,9 @@ struct TaskScopePopoverView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-
             }
             .padding(16)
         }
-    }
-
-    private var presetHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("GlobalProtect", systemImage: "network.badge.shield.half.filled")
-                    .font(.headline)
-
-                Spacer()
-
-                statusPill
-            }
-
-            Text(processManager.watchedProcesses.detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-        }
-        .padding(12)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private var serviceHealthNotice: some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: serviceHealthSymbol)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(serviceHealthColor)
-                .frame(width: 20)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("GlobalProtect Service")
-                    .font(.subheadline)
-                    .fontWeight(.semibold)
-
-                Text(serviceHealthText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(12)
-        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var footer: some View {
@@ -316,6 +467,12 @@ struct TaskScopePopoverView: View {
             }
 
             Spacer()
+
+            if let summary = footerSummary {
+                Text(summary)
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
 
             Button {
                 NSApplication.shared.terminate(nil)
@@ -346,16 +503,30 @@ struct TaskScopePopoverView: View {
     }
 
     private var filteredProcesses: [AppProcess] {
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSearch = settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        guard !trimmedSearch.isEmpty else {
-            return processManager.processes
+        let searched: [AppProcess]
+        if trimmedSearch.isEmpty {
+            searched = processManager.processes
+        } else {
+            searched = processManager.processes.filter { process in
+                process.name.localizedCaseInsensitiveContains(trimmedSearch) ||
+                    process.command.localizedCaseInsensitiveContains(trimmedSearch) ||
+                    String(process.pid).contains(trimmedSearch)
+            }
         }
 
-        return processManager.processes.filter { process in
-            process.name.localizedCaseInsensitiveContains(trimmedSearch) ||
-                process.command.localizedCaseInsensitiveContains(trimmedSearch) ||
-                String(process.pid).contains(trimmedSearch)
+        switch filterMode {
+        case .all:
+            return searched
+        case .watched:
+            let watchedNames = Set(processManager.snapshots.flatMap { $0.preset.allProcessNames })
+            return searched.filter { watchedNames.contains($0.name) }
+        case .highlighted:
+            return searched.filter {
+                $0.cpu >= settings.cpuHighlightThreshold ||
+                $0.memoryMB >= settings.memHighlightThresholdMB
+            }
         }
     }
 
@@ -364,8 +535,8 @@ struct TaskScopePopoverView: View {
             return "Not loaded"
         }
 
-        let hasSearch = !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return hasSearch ? "\(filteredProcesses.count) matches" : "Top \(filteredProcesses.count)"
+        let hasSearch = !settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return hasSearch ? "\(filteredProcesses.count) matches" : "\(filteredProcesses.count) processes"
     }
 
     private var statusColor: Color {
@@ -377,26 +548,6 @@ struct TaskScopePopoverView: View {
         case .watchedRunning:
             .red
         }
-    }
-
-    private var serviceHealthSymbol: String {
-        processManager.watchedProcesses.panGPS ? "checkmark.shield" : "exclamationmark.triangle"
-    }
-
-    private var serviceHealthColor: Color {
-        processManager.watchedProcesses.panGPS ? .green : .orange
-    }
-
-    private var serviceHealthText: String {
-        if processManager.watchedProcesses.panGPS {
-            return "PanGPS is running. TaskScope leaves the privileged service alone."
-        }
-
-        if processManager.watchedProcesses.globalProtect {
-            return "GlobalProtect is open, but PanGPS is not running. Reboot or update GlobalProtect before connecting."
-        }
-
-        return "PanGPS is not running. TaskScope can open or quit the user app, but service repair belongs to GlobalProtect."
     }
 
     private var headerGradient: LinearGradient {
@@ -412,7 +563,7 @@ struct TaskScopePopoverView: View {
 
     private func refreshVisibleSection() {
         Task {
-            switch selectedSection {
+            switch settings.selectedSection {
             case .processes:
                 await processManager.loadProcessList()
             case .presets:
@@ -421,6 +572,36 @@ struct TaskScopePopoverView: View {
         }
     }
 
+    private func openInActivityMonitor(pid: Int32) {
+        let url = URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")
+        let config = NSWorkspace.OpenConfiguration()
+        config.activates = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                let script = "tell application \"Activity Monitor\" to set selected processes to (every process whose unix id is \(pid))"
+                guard let appleScript = NSAppleScript(source: script) else { return }
+                var err: NSDictionary?
+                appleScript.executeAndReturnError(&err)
+            }
+        }
+    }
+
+    private var footerSummary: String? {
+        guard processManager.hasLoadedProcessList, !filteredProcesses.isEmpty else { return nil }
+        let totalCPU = filteredProcesses.reduce(0.0) { $0 + $1.cpu }
+        let totalMem = filteredProcesses.reduce(0.0) { $0 + $1.memoryMB }
+        return String(format: "Σ %.1f%% CPU · %.0f MB MEM", totalCPU, totalMem)
+    }
+
+    private func moveKeyboard(by delta: Int, in processes: [AppProcess], proxy: ScrollViewProxy) {
+        guard !processes.isEmpty else { return }
+        let current = keyboardSelectedPid
+        var index = processes.firstIndex(where: { $0.pid == current }) ?? -1
+        index = max(0, min(processes.count - 1, index + delta))
+        let target = processes[index]
+        keyboardSelectedPid = target.pid
+        proxy.scrollTo(target.pid, anchor: .center)
+    }
 }
 
 private struct LightweightEmptyState: View {
@@ -463,13 +644,21 @@ private struct LightweightEmptyState: View {
 private struct ProcessRow: View {
     var process: AppProcess
     var isCurrentProcess: Bool
+    var isSelected: Bool
+    var isKeyboardSelected: Bool
+    var isHighlightedCPU: Bool
+    var isHighlightedMEM: Bool
     var stopAction: () -> Void
+    var toggleSelection: () -> Void
+    var detailAction: () -> Void
+    var forceStopAction: () -> Void
+    var copyCommandAction: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: process.isWatched ? "scope" : "app.dashed")
-                .foregroundStyle(process.isWatched ? .red : .secondary)
-                .frame(width: 18)
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                .onTapGesture { toggleSelection() }
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -493,12 +682,14 @@ private struct ProcessRow: View {
             Text(process.cpu, format: .number.precision(.fractionLength(1)))
                 .monospacedDigit()
                 .font(.caption)
+                .foregroundStyle(isHighlightedCPU ? .red : .primary)
                 .frame(width: 54, alignment: .trailing)
 
-            Text(process.memory, format: .number.precision(.fractionLength(1)))
+            Text(process.memoryMB, format: .number.precision(.fractionLength(0)))
                 .monospacedDigit()
                 .font(.caption)
-                .frame(width: 54, alignment: .trailing)
+                .foregroundStyle(isHighlightedMEM ? .red : .primary)
+                .frame(width: 64, alignment: .trailing)
 
             Button(role: .destructive) {
                 stopAction()
@@ -513,10 +704,73 @@ private struct ProcessRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 7)
         .background {
-            if process.isWatched {
-                Color.red.opacity(0.07)
+            if isKeyboardSelected {
+                Color.accentColor.opacity(0.12)
+            } else if isHighlightedCPU || isHighlightedMEM {
+                Color.orange.opacity(0.08)
             }
         }
+    }
+}
+
+private struct PresetCard: View {
+    var snapshot: WatchedAppSnapshot
+    var onOpen: () -> Void
+    var onQuitApp: () -> Void
+    var onQuitHelpers: () -> Void
+    var onQuitAll: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(snapshot.preset.displayName, systemImage: "network.badge.shield.half.filled")
+                    .font(.headline)
+
+                Spacer()
+
+                statusBadge
+            }
+
+            Text(snapshot.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            VStack(spacing: 8) {
+                PresetActionButton(title: "Open", systemImage: "arrow.up.forward.app", role: nil, action: onOpen)
+                PresetActionButton(title: "Quit App", systemImage: "power", role: .destructive, action: onQuitApp)
+                PresetActionButton(title: "Quit Helpers", systemImage: "wrench.and.screwdriver", role: .destructive, action: onQuitHelpers)
+                PresetActionButton(title: "Quit All Killable", systemImage: "stop.circle", role: .destructive, action: onQuitAll)
+            }
+        }
+        .padding(12)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var statusBadge: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            Text(label)
+                .font(.caption)
+                .fontWeight(.medium)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary, in: Capsule())
+    }
+
+    private var color: Color {
+        if snapshot.isMainRunning { .red }
+        else if snapshot.hasHelpers { .yellow }
+        else { .green }
+    }
+
+    private var label: String {
+        if snapshot.isMainRunning { "Active" }
+        else if snapshot.hasHelpers { "Helpers" }
+        else { "Quiet" }
     }
 }
 
@@ -534,4 +788,50 @@ private struct PresetActionButton: View {
         .buttonStyle(.bordered)
         .controlSize(.large)
     }
+}
+
+private struct ProcessDetailSheet: View {
+    var process: AppProcess
+    var detail: ProcessDetail?
+    var failed: Bool
+    var onClose: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text("Process Detail")
+                    .font(.headline)
+                Spacer()
+                Button("Close") { onClose() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            if let detail {
+                LabeledContent("Name", value: process.name)
+                LabeledContent("PID", value: "\(detail.pid)")
+                LabeledContent("Parent PID", value: "\(detail.parentPID)")
+                LabeledContent("User", value: detail.user)
+                LabeledContent("Started", value: detail.startTime)
+                LabeledContent("Command", value: detail.command)
+                LabeledContent("CPU %", value: String(format: "%.1f", process.cpu))
+                LabeledContent("Memory (MB)", value: String(format: "%.1f", process.memoryMB))
+            } else if failed {
+                LabeledContent("Name", value: process.name)
+                LabeledContent("PID", value: "\(process.pid)")
+                Text("Process no longer exists or detail could not be loaded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                LabeledContent("Name", value: process.name)
+                LabeledContent("PID", value: "\(process.pid)")
+                ProgressView()
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+}
+
+extension WatchedAppSnapshot: Identifiable {
+    var id: UUID { preset.id }
 }

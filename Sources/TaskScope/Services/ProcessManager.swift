@@ -1,141 +1,273 @@
 import AppKit
 import Darwin
 import Foundation
+import Combine
 
 @MainActor
 final class ProcessManager: ObservableObject {
     @Published private(set) var status: ProcessStatus = .idle
-    @Published private(set) var watchedProcesses: WatchedProcessSnapshot = .none
+    @Published private(set) var snapshots: [WatchedAppSnapshot] = []
     @Published private(set) var processes: [AppProcess] = []
     @Published private(set) var hasLoadedProcessList = false
     @Published private(set) var message: String = "Idle."
     @Published private(set) var isWorking = false
 
-    let processListLimit = 80
+    @Published var sortKey: ProcessSortKey = .cpu {
+        didSet { resortProcesses() }
+    }
 
-    private let watchedProcessPattern = "GlobalProtect|PanGPA|PanGPS"
+    @Published private(set) var selectedPids: Set<Int32> = []
+
+    var enableNotifications: Bool = true
+
+    private var pollingTask: Task<Void, Never>?
+    private var pollInterval: TimeInterval = 10
+    private var pollProcessList = false
+
     private let currentPID = ProcessInfo.processInfo.processIdentifier
 
-    init() {
-        Task {
-            await refreshWatchedStatus(showMessage: false)
+    deinit {
+        pollingTask?.cancel()
+    }
+
+    func setPolling(interval: TimeInterval, includeProcessList: Bool) {
+        pollInterval = max(2, interval)
+        pollProcessList = includeProcessList
+        restartPolling()
+    }
+
+    func restartPolling() {
+        pollingTask?.cancel()
+        pollInterval = max(2, pollInterval)
+        let interval = pollInterval
+        let includeList = pollProcessList
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                if Task.isCancelled { break }
+                guard let self else { break }
+                await self.refreshWatchedStatus(showMessage: false)
+                if includeList, self.hasLoadedProcessList {
+                    await self.loadProcessList(showMessage: false)
+                }
+            }
+        }
+    }
+
+    func stopPolling() {
+        pollingTask?.cancel()
+        pollingTask = nil
+    }
+
+    func toggleSelection(_ pid: Int32) {
+        if selectedPids.contains(pid) {
+            selectedPids.remove(pid)
+        } else {
+            selectedPids.insert(pid)
+        }
+    }
+
+    func clearSelection() {
+        selectedPids.removeAll()
+    }
+
+    func selectAll() {
+        selectedPids = Set(processes.map { $0.pid })
+    }
+
+    func batchTerminate(forceKill: Bool = false) async {
+        let pids = selectedPids
+        guard !pids.isEmpty else {
+            message = "Nothing selected."
+            return
+        }
+        await runAction {
+            let signal: Int32 = forceKill ? SIGKILL : SIGTERM
+            for pid in pids where pid != currentPID {
+                Darwin.kill(pid, signal)
+            }
+            await settleAfterProcessChange()
+
+            if !forceKill {
+                for pid in pids where pid != currentPID && isProcessAlive(pid) {
+                    Darwin.kill(pid, SIGKILL)
+                }
+                await settleAfterProcessChange()
+            }
+
+            let stopped = pids.filter { !isProcessAlive($0) }.count
+            selectedPids.removeAll()
+            message = "Stopped \(stopped) of \(pids.count) selected."
+            await refreshAfterMutation()
         }
     }
 
     func refreshWatchedStatus(showMessage: Bool = true) async {
         await runAction {
-            let watched = await currentWatchedProcesses()
+            let watched = await currentSnapshots()
             apply(watched)
 
             if showMessage {
-                message = watched.detail
+                message = watched.aggregateDetail
             }
+        }
+    }
+
+    func refreshWatchedStatusUnchecked(showMessage: Bool = false) async {
+        let watched = await currentSnapshots()
+        apply(watched)
+        if showMessage {
+            message = watched.aggregateDetail
         }
     }
 
     func loadProcessList(showMessage: Bool = true) async {
         await runAction {
-            async let watchedSnapshot = currentWatchedProcesses()
-            async let runningSnapshot = currentProcessList()
+            async let snapshotsTask = currentSnapshots()
+            async let runningTask = currentProcessList()
 
-            let watched = await watchedSnapshot
-            let running = await runningSnapshot
+            let watched = await snapshotsTask
+            let running = await runningTask
 
             apply(watched)
             processes = running
             hasLoadedProcessList = true
+            resortProcesses()
 
             if showMessage {
-                message = "Loaded top \(running.count) processes."
+                message = "Loaded \(running.count) processes."
             }
         }
     }
 
-    func openGlobalProtect() async {
+    func openApp(_ preset: WatchedAppPreset) async {
         await runAction {
-            let url = URL(fileURLWithPath: "/Applications/GlobalProtect.app")
+            let url = URL(fileURLWithPath: preset.appPath)
             let didOpen = NSWorkspace.shared.open(url)
             await refreshAfterMutation()
-
-            message = didOpen ? "Opening GlobalProtect." : "Could not open GlobalProtect."
+            message = didOpen ? "Opening \(preset.displayName)." : "Could not open \(preset.displayName)."
         }
     }
 
-    func quitGlobalProtect() async {
+    func quitMainApp(_ preset: WatchedAppPreset) async {
         await runAction {
-            let before = await currentWatchedProcesses()
-            _ = await ShellCommandRunner.run("/usr/bin/pkill -x 'GlobalProtect' 2>/dev/null || true")
+            let before = await currentSnapshot(for: preset)
+            _ = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(preset.mainProcessName)) 2>/dev/null || true")
             await settleAfterProcessChange()
             await refreshAfterMutation()
 
-            if !before.globalProtect && !watchedProcesses.globalProtect {
-                message = "No GlobalProtect app found."
-            } else if !watchedProcesses.globalProtect {
-                message = "GlobalProtect quit."
+            if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
+                message = "No \(preset.displayName) app found."
+            } else if !snapshot(for: preset).isMainRunning {
+                message = "\(preset.displayName) quit."
             } else {
-                message = "GlobalProtect may still run."
+                message = "\(preset.displayName) may still run."
             }
         }
     }
 
-    func quitHelpers() async {
+    func quitHelpers(_ preset: WatchedAppPreset) async {
         await runAction {
-            let before = await currentWatchedProcesses()
-            _ = await ShellCommandRunner.run("/usr/bin/pkill -f '[P]anGPA' 2>/dev/null || true")
+            let before = await currentSnapshot(for: preset)
+            for name in preset.helperProcessNames {
+                _ = await ShellCommandRunner.run("/usr/bin/pkill -f \(ShellCommandRunner.shellQuoted("[\(name.prefix(1))]\(name.dropFirst())")) 2>/dev/null || true")
+            }
             await settleAfterProcessChange()
             await refreshAfterMutation()
 
-            if !before.panGPA && !watchedProcesses.panGPA {
-                message = "No user helper found."
-            } else if !watchedProcesses.panGPA {
-                message = "User helper quit."
+            let nowHelpers = snapshot(for: preset).helpersRunning
+            if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
+                message = "No user helpers found."
+            } else if nowHelpers.isEmpty {
+                message = "User helpers quit."
             } else {
-                message = "User helper may still run."
+                message = "User helpers may still run."
             }
         }
     }
 
-    func quitAllWatched() async {
+    func quitAllKillable(_ preset: WatchedAppPreset) async {
         await runAction {
-            let before = await currentWatchedProcesses()
-            _ = await ShellCommandRunner.run("/usr/bin/pkill -x 'GlobalProtect' 2>/dev/null || true")
-            _ = await ShellCommandRunner.run("/usr/bin/pkill -f '[P]anGPA' 2>/dev/null || true")
+            let before = await currentSnapshot(for: preset)
+            for name in preset.killableNames {
+                _ = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(name)) 2>/dev/null || true")
+            }
             await settleAfterProcessChange()
             await refreshAfterMutation()
 
-            if !before.globalProtect && !before.panGPA && !watchedProcesses.globalProtect && !watchedProcesses.panGPA {
+            let nowSnap = snapshot(for: preset)
+            if !before.hasAny && !nowSnap.hasAny {
                 message = "No watched processes found."
-            } else if watchedProcesses.globalProtect {
-                message = "GlobalProtect may still run."
-            } else if watchedProcesses.panGPA {
-                message = "User helper may still run."
+            } else if nowSnap.isMainRunning {
+                message = "\(preset.displayName) may still run."
+            } else if !nowSnap.helpersRunning.isEmpty {
+                message = "User helpers may still run."
             } else {
-                message = "App/user helper quit."
+                message = "\(preset.displayName) and helpers quit."
             }
         }
     }
 
-    func terminate(_ process: AppProcess) async {
+    func terminate(_ process: AppProcess, forceKill: Bool = false) async {
         guard process.pid != currentPID else {
             message = "Use Quit to close TaskScope."
             return
         }
 
         await runAction {
-            let result = Darwin.kill(process.pid, SIGTERM)
+            let signal: Int32 = forceKill ? SIGKILL : SIGTERM
+            let result = Darwin.kill(process.pid, signal)
             await settleAfterProcessChange()
-            await refreshAfterMutation()
 
-            let stillRunning = isProcessAlive(process.pid)
+            if isProcessAlive(process.pid) {
+                if forceKill {
+                    message = "Could not stop \(process.name)."
+                } else {
+                    Darwin.kill(process.pid, SIGKILL)
+                    await settleAfterProcessChange()
 
-            if !stillRunning {
-                message = "\(process.name) stopped."
+                    if isProcessAlive(process.pid) {
+                        message = "Could not stop \(process.name)."
+                    } else {
+                        message = "\(process.name) force stopped."
+                    }
+                }
             } else if result == 0 {
-                message = "\(process.name) may still run."
+                message = "\(process.name) stopped."
             } else {
                 message = "Could not stop \(process.name)."
             }
+
+            await refreshAfterMutation()
         }
+    }
+
+    func detail(for process: AppProcess) async -> ProcessDetail? {
+        let result = await ShellCommandRunner.run(
+            "/bin/ps -o pid=,ppid=,user=,lstart=,comm= -p \(process.pid)"
+        )
+        guard result.succeeded, !result.stdout.isEmpty else { return nil }
+
+        let line = result.stdout.split(separator: "\n").first.map(String.init) ?? ""
+        let tokens = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+
+        guard tokens.count >= 8,
+              let pid = Int32(tokens[0]),
+              let ppid = Int32(tokens[1]) else {
+            return nil
+        }
+
+        let user = tokens[2]
+        let startTime = tokens[3..<8].joined(separator: " ")
+        let command = tokens[8...].joined(separator: " ")
+
+        return ProcessDetail(
+            pid: pid,
+            parentPID: ppid,
+            user: user,
+            startTime: startTime,
+            command: command
+        )
     }
 
     func isCurrentProcess(_ process: AppProcess) -> Bool {
@@ -144,16 +276,17 @@ final class ProcessManager: ObservableObject {
 
     private func refreshAfterMutation() async {
         if hasLoadedProcessList {
-            async let watchedSnapshot = currentWatchedProcesses()
-            async let runningSnapshot = currentProcessList()
+            async let snapshotsTask = currentSnapshots()
+            async let runningTask = currentProcessList()
 
-            let watched = await watchedSnapshot
-            let running = await runningSnapshot
+            let watched = await snapshotsTask
+            let running = await runningTask
 
             apply(watched)
             processes = running
+            resortProcesses()
         } else {
-            let watched = await currentWatchedProcesses()
+            let watched = await currentSnapshots()
             apply(watched)
         }
     }
@@ -168,40 +301,51 @@ final class ProcessManager: ObservableObject {
         return result == 0 || errno == EPERM
     }
 
-    private func currentWatchedProcesses() async -> WatchedProcessSnapshot {
-        let result = await ShellCommandRunner.run("/usr/bin/pgrep -x -l \(ShellCommandRunner.shellQuoted(watchedProcessPattern))")
+    private func snapshot(for preset: WatchedAppPreset) -> WatchedAppSnapshot {
+        snapshots.first(where: { $0.preset.id == preset.id }) ?? WatchedAppSnapshot(preset: preset, runningNames: [])
+    }
 
-        guard result.exitCode == 0 else {
-            return .none
+    private func currentSnapshots() async -> [WatchedAppSnapshot] {
+        let presets = watchedAppsProvider?() ?? []
+        var runningByPreset: [(WatchedAppPreset, Set<String>)] = []
+
+        for preset in presets {
+            var running = Set<String>()
+            for name in preset.allProcessNames {
+                let result = await ShellCommandRunner.run(
+                    "/usr/bin/pgrep -x -l \(ShellCommandRunner.shellQuoted(name))"
+                )
+                guard result.exitCode == 0 else { continue }
+                if result.stdout.split(separator: "\n").contains(where: { line in
+                    line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).count == 2
+                }) {
+                    running.insert(name)
+                }
+            }
+            runningByPreset.append((preset, running))
         }
 
-        let names = Set(
-            result.stdout
-                .split(separator: "\n")
-                .compactMap { line -> String? in
-                    let parts = line.split(
-                        separator: " ",
-                        maxSplits: 1,
-                        omittingEmptySubsequences: true
-                    )
+        return runningByPreset.map { WatchedAppSnapshot(preset: $0.0, runningNames: $0.1) }
+    }
 
-                    guard parts.count == 2 else {
-                        return nil
-                    }
-
-                    return String(parts[1])
-                }
-        )
-
-        return WatchedProcessSnapshot(
-            globalProtect: names.contains("GlobalProtect"),
-            panGPA: names.contains("PanGPA"),
-            panGPS: names.contains("PanGPS")
-        )
+    private func currentSnapshot(for preset: WatchedAppPreset) async -> WatchedAppSnapshot {
+        var running = Set<String>()
+        for name in preset.allProcessNames {
+            let result = await ShellCommandRunner.run(
+                "/usr/bin/pgrep -x -l \(ShellCommandRunner.shellQuoted(name))"
+            )
+            guard result.exitCode == 0 else { continue }
+            if result.stdout.split(separator: "\n").contains(where: { line in
+                line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).count == 2
+            }) {
+                running.insert(name)
+            }
+        }
+        return WatchedAppSnapshot(preset: preset, runningNames: running)
     }
 
     private func currentProcessList() async -> [AppProcess] {
-        let command = "/bin/ps -arcwwwxo pid=,pcpu=,pmem=,comm= | /usr/bin/head -n \(processListLimit)"
+        let command = "/bin/ps -arcwwwxo pid=,pcpu=,rss=,comm= | /usr/bin/head -n \(processListLimitProvider?() ?? 80)"
         let result = await ShellCommandRunner.run(command)
 
         guard result.succeeded else {
@@ -215,7 +359,6 @@ final class ProcessManager: ObservableObject {
                 if lhs.cpu == rhs.cpu {
                     return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
                 }
-
                 return lhs.cpu > rhs.cpu
             }
     }
@@ -230,22 +373,47 @@ final class ProcessManager: ObservableObject {
         guard parts.count == 4,
               let pid = Int32(parts[0]),
               let cpu = Double(parts[1]),
-              let memory = Double(parts[2])
-        else {
+              let rssKB = Double(parts[2]) else {
             return nil
         }
 
         return AppProcess(
             pid: pid,
             cpu: cpu,
-            memory: memory,
+            memoryMB: rssKB / 1024.0,
             command: String(parts[3])
         )
     }
 
-    private func apply(_ snapshot: WatchedProcessSnapshot) {
-        watchedProcesses = snapshot
-        status = snapshot.status
+    private func resortProcesses() {
+        processes.sort { lhs, rhs in
+            switch sortKey {
+            case .cpu:
+                if lhs.cpu == rhs.cpu {
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+                return lhs.cpu > rhs.cpu
+            case .memory:
+                if lhs.memoryMB == rhs.memoryMB {
+                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                }
+                return lhs.memoryMB > rhs.memoryMB
+            case .name:
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            case .pid:
+                return lhs.pid < rhs.pid
+            }
+        }
+    }
+
+    private func apply(_ watched: [WatchedAppSnapshot]) {
+        snapshots = watched
+        status = watched.aggregateStatus
+
+        if enableNotifications {
+            let running = Set(watched.flatMap { $0.runningNames })
+            NotificationService.shared.diffAndNotify(currentRunningNames: running)
+        }
     }
 
     private func runAction(_ operation: () async -> Void) async {
@@ -260,6 +428,9 @@ final class ProcessManager: ObservableObject {
 
         await operation()
     }
+
+    var watchedAppsProvider: (() -> [WatchedAppPreset])?
+    var processListLimitProvider: (() -> Int)?
 }
 
 enum ShellCommandRunner {
@@ -272,7 +443,7 @@ enum ShellCommandRunner {
             let errorCapture = PipeCapture()
 
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-lc", command]
+            process.arguments = ["-c", command]
             process.standardOutput = standardOutput
             process.standardError = standardError
 
