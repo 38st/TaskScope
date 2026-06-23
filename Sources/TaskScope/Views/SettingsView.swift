@@ -12,6 +12,12 @@ struct SettingsView: View {
     @State private var newHelpers = ""
     @State private var newProtected = ""
     @State private var newAppPath = "/Applications/"
+    @State private var newAgentLabels = ""
+    @State private var newAgentPlistPaths = ""
+    @State private var newDaemonLabels = ""
+    @State private var newDaemonPlistPaths = ""
+    @State private var newDaemonProcessNames = ""
+    @State private var newDaemonPorts = ""
     @State private var newRuleName = ""
     @State private var newRuleMinutes = 5
     @State private var newRuleAction: AutoStopRule.Action = .prompt
@@ -141,13 +147,34 @@ struct SettingsView: View {
                 TextFieldRow(label: "Protected (comma-separated)", text: $newProtected)
                 TextFieldRow(label: "App path", text: $newAppPath)
 
+                Divider().padding(.vertical, 4)
+
+                Text("Launch Agents (optional)").font(.subheadline).fontWeight(.medium)
+                TextFieldRow(label: "Agent labels (comma-separated)", text: $newAgentLabels)
+                TextFieldRow(label: "Agent plist paths (comma-separated)", text: $newAgentPlistPaths)
+
+                Divider().padding(.vertical, 4)
+
+                Text("System Launch Daemons (optional)").font(.subheadline).fontWeight(.medium)
+                TextFieldRow(label: "Daemon labels (comma-separated)", text: $newDaemonLabels)
+                TextFieldRow(label: "Daemon plist paths (comma-separated)", text: $newDaemonPlistPaths)
+                TextFieldRow(label: "Daemon process names (comma-separated)", text: $newDaemonProcessNames)
+                TextFieldRow(label: "Daemon service ports (comma-separated)", text: $newDaemonPorts)
+
                 Button("Add Preset") {
                     let preset = WatchedAppPreset(
                         displayName: newDisplayName.isEmpty ? newMainProcess : newDisplayName,
                         mainProcessName: newMainProcess,
                         helperProcessNames: parseList(newHelpers),
                         protectedProcessNames: parseList(newProtected),
-                        appPath: newAppPath
+                        appPath: newAppPath,
+                        userLaunchAgentJobs: parseAgentJobs(labels: newAgentLabels, paths: newAgentPlistPaths),
+                        systemLaunchDaemonJobs: parseDaemonJobs(
+                            labels: newDaemonLabels,
+                            paths: newDaemonPlistPaths,
+                            processNames: newDaemonProcessNames,
+                            ports: newDaemonPorts
+                        )
                     )
                     watchedApps.add(preset)
                     newDisplayName = ""
@@ -155,6 +182,12 @@ struct SettingsView: View {
                     newHelpers = ""
                     newProtected = ""
                     newAppPath = "/Applications/"
+                    newAgentLabels = ""
+                    newAgentPlistPaths = ""
+                    newDaemonLabels = ""
+                    newDaemonPlistPaths = ""
+                    newDaemonProcessNames = ""
+                    newDaemonPorts = ""
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(newMainProcess.isEmpty)
@@ -224,6 +257,29 @@ struct SettingsView: View {
         value.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+    }
+
+    private func parseAgentJobs(labels: String, paths: String) -> [UserLaunchAgentJob] {
+        let labelList = parseList(labels)
+        let pathList = parseList(paths)
+        guard !labelList.isEmpty else { return [] }
+        return zip(labelList, pathList).map { UserLaunchAgentJob(label: $0, plistPath: $1) }
+    }
+
+    private func parseDaemonJobs(labels: String, paths: String, processNames: String, ports: String) -> [SystemLaunchDaemonJob] {
+        let labelList = parseList(labels)
+        let pathList = parseList(paths)
+        let nameList = parseList(processNames)
+        let portList = parseList(ports).compactMap { Int($0) }
+        guard !labelList.isEmpty else { return [] }
+        return zip(labelList, pathList).enumerated().map { index, pair in
+            SystemLaunchDaemonJob(
+                label: pair.0,
+                plistPath: pair.1,
+                processName: index < nameList.count ? nameList[index] : pair.0,
+                servicePort: index < portList.count ? portList[index] : nil
+            )
+        }
     }
 
     private func exportPresets() {

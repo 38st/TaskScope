@@ -54,7 +54,7 @@ swift "$ROOT_DIR/script/render_icon.swift" "$APP_ICON"
 /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundlePackageType string APPL" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string $MIN_SYSTEM_VERSION" "$INFO_PLIST"
-/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Add :LSUIElement bool false" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass string NSApplication" "$INFO_PLIST"
 
 /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$INFO_PLIST"

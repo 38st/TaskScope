@@ -10,6 +10,10 @@ final class ProcessManager: ObservableObject {
     @Published private(set) var processes: [AppProcess] = []
     @Published private(set) var hasLoadedProcessList = false
     @Published private(set) var message: String = "Idle."
+
+    func setMessage(_ text: String) {
+        message = text
+    }
     @Published private(set) var isWorking = false
 
     @Published var sortKey: ProcessSortKey = .cpu {
@@ -477,8 +481,10 @@ final class ProcessManager: ObservableObject {
     }
 
     private func requestAdminBootstrap(for job: SystemLaunchDaemonJob) async -> ShellCommandResult {
+        let quotedLabel = ShellCommandRunner.shellQuoted(job.label)
+        let quotedPlist = ShellCommandRunner.shellQuoted(job.plistPath)
         let rootCommand = """
-        if /bin/launchctl print system/\(job.label) >/dev/null 2>&1; then /bin/launchctl kickstart -k system/\(job.label); else /bin/launchctl bootstrap system \(ShellCommandRunner.shellQuoted(job.plistPath)); fi
+        if /bin/launchctl print system/\(quotedLabel) >/dev/null 2>&1; then /bin/launchctl kickstart -k system/\(quotedLabel); else /bin/launchctl bootstrap system \(quotedPlist); fi
         """
         let appleScript = "do shell script \(ShellCommandRunner.appleScriptString(rootCommand)) with administrator privileges"
         return await ShellCommandRunner.run(
@@ -498,41 +504,47 @@ final class ProcessManager: ObservableObject {
 
     private func currentSnapshots() async -> [WatchedAppSnapshot] {
         let presets = watchedAppsProvider?() ?? []
-        var runningByPreset: [(WatchedAppPreset, Set<String>)] = []
-
-        for preset in presets {
-            var running = Set<String>()
-            for name in preset.allProcessNames {
-                let result = await ShellCommandRunner.run(
-                    "/usr/bin/pgrep -x -l \(ShellCommandRunner.shellQuoted(name))"
-                )
-                guard result.exitCode == 0 else { continue }
-                if result.stdout.split(separator: "\n").contains(where: { line in
-                    line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).count == 2
-                }) {
-                    running.insert(name)
+        let results = await withTaskGroup(of: (WatchedAppPreset, Set<String>).self) { group in
+            for preset in presets {
+                group.addTask { [self] in
+                    let running = await self.checkRunningNames(for: preset)
+                    return (preset, running)
                 }
             }
-            runningByPreset.append((preset, running))
+            var collected: [(WatchedAppPreset, Set<String>)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
         }
-
-        return runningByPreset.map { WatchedAppSnapshot(preset: $0.0, runningNames: $0.1) }
+        return results.map { WatchedAppSnapshot(preset: $0, runningNames: $1) }
     }
 
     private func currentSnapshot(for preset: WatchedAppPreset) async -> WatchedAppSnapshot {
-        var running = Set<String>()
-        for name in preset.allProcessNames {
-            let result = await ShellCommandRunner.run(
-                "/usr/bin/pgrep -x -l \(ShellCommandRunner.shellQuoted(name))"
-            )
-            guard result.exitCode == 0 else { continue }
-            if result.stdout.split(separator: "\n").contains(where: { line in
-                line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).count == 2
-            }) {
-                running.insert(name)
-            }
-        }
+        let running = await checkRunningNames(for: preset)
         return WatchedAppSnapshot(preset: preset, runningNames: running)
+    }
+
+    private func checkRunningNames(for preset: WatchedAppPreset) async -> Set<String> {
+        let nameResults = await withTaskGroup(of: (String, Bool).self) { group in
+            for name in preset.allProcessNames {
+                group.addTask {
+                    let result = await ShellCommandRunner.run(
+                        "/usr/bin/pgrep -x -l \(ShellCommandRunner.shellQuoted(name))"
+                    )
+                    let isRunning = result.exitCode == 0 && result.stdout.split(separator: "\n").contains { line in
+                        line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).count == 2
+                    }
+                    return (name, isRunning)
+                }
+            }
+            var collected: [(String, Bool)] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+        return Set(nameResults.filter { $0.1 }.map { $0.0 })
     }
 
     @Published var fetchExtendedStats: Bool = false

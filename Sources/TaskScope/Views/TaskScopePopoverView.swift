@@ -688,12 +688,24 @@ struct TaskScopePopoverView: View {
         let url = URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, openError in
+            if let openError {
+                DispatchQueue.main.async {
+                    processManager.setMessage("Could not open Activity Monitor: \(openError.localizedDescription)")
+                }
+                return
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
                 let script = "tell application \"Activity Monitor\" to set selected processes to (every process whose unix id is \(pid))"
                 guard let appleScript = NSAppleScript(source: script) else { return }
                 var err: NSDictionary?
                 appleScript.executeAndReturnError(&err)
+                if let err {
+                    let message = err[NSAppleScript.errorMessage] as? String ?? "Unknown AppleScript error"
+                    DispatchQueue.main.async {
+                        processManager.setMessage("Activity Monitor selection failed: \(message)")
+                    }
+                }
             }
         }
     }
