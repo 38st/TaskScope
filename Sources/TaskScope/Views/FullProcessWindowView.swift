@@ -87,8 +87,8 @@ struct FullProcessWindowView: View {
                     Text("PPID").frame(width: 70, alignment: .trailing)
                     Text("CPU %").frame(width: 80, alignment: .trailing)
                     Text("MEM MB").frame(width: 90, alignment: .trailing)
-                    Text("Net KB/s").frame(width: 110, alignment: .trailing)
-                    Text("Disk Blocks").frame(width: 110, alignment: .trailing)
+                    Text("Net KB (total)").frame(width: 110, alignment: .trailing)
+                    Text("Disk Blocks (total)").frame(width: 110, alignment: .trailing)
                     Text("").frame(width: 40)
                 }
                 .font(.caption)

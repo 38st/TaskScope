@@ -144,23 +144,23 @@ final class ProcessManager: ObservableObject {
 
     func openApp(_ preset: WatchedAppPreset) async {
         await runAction {
-            let managedAgents = await bootstrapUserLaunchAgents(for: preset)
             let beforeOpen = await currentSnapshot(for: preset)
             let didOpen = beforeOpen.isMainRunning ? true : await openAppBundle(at: preset.appPath)
-            await waitForProcessNamed(preset.mainProcessName, timeoutSeconds: 3)
+            if !beforeOpen.isMainRunning {
+                _ = await bootstrapUserLaunchAgents(for: preset)
+                await waitForProcessNamed(preset.mainProcessName, timeoutSeconds: 3)
+            }
             let daemonResult = await ensureSystemLaunchDaemons(for: preset)
             await refreshAfterMutation()
 
             let now = snapshot(for: preset)
             let daemonDetail = daemonResult.messageSuffix
             if now.isMainRunning {
-                if managedAgents || daemonResult.didChangeState {
+                if daemonResult.didChangeState {
                     message = "Opening \(preset.displayName)\(daemonDetail)."
                 } else {
                     message = "Opening \(preset.displayName)."
                 }
-            } else if managedAgents {
-                message = "Restored \(preset.displayName) launch agents; app is not visible yet."
             } else if daemonResult == .failed {
                 message = "\(preset.displayName) service needs admin approval."
             } else {
@@ -172,13 +172,13 @@ final class ProcessManager: ObservableObject {
     func quitMainApp(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = await unloadUserLaunchAgents(for: preset)
+            let unloadedAgents = before.isMainRunning ? await unloadUserLaunchAgents(for: preset) : false
             await terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
             await settleAfterProcessChange()
             await refreshAfterMutation()
 
             if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
-                message = unloadedAgents ? "No \(preset.displayName) app found; launch agents unloaded." : "No \(preset.displayName) app found."
+                message = "No \(preset.displayName) app found."
             } else if !snapshot(for: preset).isMainRunning {
                 message = unloadedAgents ? "\(preset.displayName) quit and launch agents unloaded." : "\(preset.displayName) quit."
             } else {
@@ -190,6 +190,7 @@ final class ProcessManager: ObservableObject {
     func quitHelpers(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
+            let unloadedAgents = before.hasHelpers ? await unloadUserLaunchAgents(for: preset) : false
             for name in preset.helperProcessNames {
                 await terminateProcess(named: name, forceIfStillRunning: true)
             }
@@ -200,7 +201,7 @@ final class ProcessManager: ObservableObject {
             if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
                 message = "No user helpers found."
             } else if nowHelpers.isEmpty {
-                message = "User helpers quit."
+                message = unloadedAgents ? "User helpers quit and launch agents unloaded." : "User helpers quit."
             } else {
                 message = "User helpers may still run."
             }
@@ -210,7 +211,7 @@ final class ProcessManager: ObservableObject {
     func quitAllKillable(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = await unloadUserLaunchAgents(for: preset)
+            let unloadedAgents = before.hasAny ? await unloadUserLaunchAgents(for: preset) : false
             for name in preset.killableNames {
                 await terminateProcess(named: name, forceIfStillRunning: true)
             }
@@ -219,13 +220,11 @@ final class ProcessManager: ObservableObject {
 
             let nowSnap = snapshot(for: preset)
             if !before.hasAny && !nowSnap.hasAny {
-                message = unloadedAgents ? "No watched processes found; launch agents unloaded." : "No watched processes found."
+                message = "No watched processes found."
             } else if nowSnap.isMainRunning {
                 message = "\(preset.displayName) may still run."
             } else if !nowSnap.helpersRunning.isEmpty {
                 message = "User helpers may still run."
-            } else if !nowSnap.protectedRunning.isEmpty {
-                message = unloadedAgents ? "\(preset.displayName) closed; protected service still running." : "\(preset.displayName) app and helpers quit."
             } else {
                 message = unloadedAgents ? "\(preset.displayName) closed and launch agents unloaded." : "\(preset.displayName) and helpers quit."
             }

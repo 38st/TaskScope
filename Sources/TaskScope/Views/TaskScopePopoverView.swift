@@ -431,7 +431,7 @@ struct TaskScopePopoverView: View {
                         .frame(width: 70, alignment: .trailing)
                     Text("PPID")
                         .frame(width: 70, alignment: .trailing)
-                    Text("NET KB/s")
+                    Text("NET KB")
                         .frame(width: 96, alignment: .trailing)
                     Text("DISK")
                         .frame(width: 96, alignment: .trailing)

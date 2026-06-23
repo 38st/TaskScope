@@ -164,6 +164,9 @@ struct SettingsView: View {
             if let err = importError {
                 Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal)
             }
+            if let err = exportError {
+                Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal)
+            }
         }
         .padding(.vertical)
     }
@@ -347,6 +350,18 @@ private struct RecordingListenerView: NSViewRepresentable {
                 return nil
             }
 
+            context.coordinator.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { _ in
+                onCancel()
+            }
+
+            context.coordinator.resignObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                onCancel()
+            }
+
         } else {
             context.coordinator.removeMonitors()
         }
@@ -356,11 +371,21 @@ private struct RecordingListenerView: NSViewRepresentable {
 
     final class Coordinator {
         var localMonitor: Any?
+        var globalMonitor: Any?
+        var resignObserver: NSObjectProtocol?
 
         func removeMonitors() {
             if let localMonitor {
                 NSEvent.removeMonitor(localMonitor)
                 self.localMonitor = nil
+            }
+            if let globalMonitor {
+                NSEvent.removeMonitor(globalMonitor)
+                self.globalMonitor = nil
+            }
+            if let resignObserver {
+                NotificationCenter.default.removeObserver(resignObserver)
+                self.resignObserver = nil
             }
         }
     }
