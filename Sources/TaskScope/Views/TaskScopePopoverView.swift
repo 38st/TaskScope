@@ -26,6 +26,11 @@ enum ProcessFilterMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum TaskScopePresentationStyle {
+    case menuBarCompact
+    case expandedWindow
+}
+
 struct TaskScopePopoverView: View {
     @ObservedObject var processManager: ProcessManager
     @ObservedObject var loginItemManager: LoginItemManager
@@ -33,6 +38,9 @@ struct TaskScopePopoverView: View {
     @ObservedObject var watchedApps: WatchedAppsStore
     @ObservedObject var savedSelections: SavedSelectionsStore
     @ObservedObject var autoStopRules: AutoStopRulesStore
+    var presentationStyle: TaskScopePresentationStyle = .menuBarCompact
+    var openFullWindow: (() -> Void)?
+
     @StateObject private var history = ProcessHistory()
 
     @State private var pendingTermination: AppProcess?
@@ -47,6 +55,10 @@ struct TaskScopePopoverView: View {
     @State private var showSaveSelectionSheet: Bool = false
     @State private var autoStopTarget: AutoStopRule?
     @State private var autoStopProcess: AppProcess?
+
+    private var isExpandedWindow: Bool {
+        presentationStyle == .expandedWindow
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -86,8 +98,6 @@ struct TaskScopePopoverView: View {
                 let running = Set(processManager.snapshots.flatMap { $0.runningNames })
                 NotificationService.shared.prime(initialRunningNames: running)
             }
-
-            HotkeyManager.shared.onToggle = { togglePopover() }
         }
         .onChange(of: settings.refreshIntervalSeconds) { _, _ in
             processManager.setPolling(
@@ -196,7 +206,10 @@ struct TaskScopePopoverView: View {
                 name: $saveSelectionName,
                 count: processManager.selectedPids.count,
                 onSave: {
-                    savedSelections.save(name: saveSelectionName, pids: Array(processManager.selectedPids))
+                    let selectedProcesses = processManager.processes.filter {
+                        processManager.selectedPids.contains($0.pid)
+                    }
+                    savedSelections.save(name: saveSelectionName, processes: selectedProcesses)
                     showSaveSelectionSheet = false
                 },
                 onCancel: {
@@ -248,16 +261,34 @@ struct TaskScopePopoverView: View {
                     .lineLimit(1)
             }
 
-            HStack(spacing: 12) {
-                SparklineView(samples: history.samples, keyPath: \.systemCPU, color: .orange, label: "CPU")
-                    .frame(width: 70)
-                SparklineView(samples: history.samples, keyPath: \.systemMemoryMB, color: .blue, label: "MEM")
-                    .frame(width: 70)
+            if isExpandedWindow {
+                HStack(spacing: 12) {
+                    SparklineView(samples: history.samples, keyPath: \.systemCPU, color: .orange, label: "CPU")
+                        .frame(width: 70)
+                    SparklineView(samples: history.samples, keyPath: \.systemMemoryMB, color: .blue, label: "MEM")
+                        .frame(width: 70)
+                }
             }
 
             Spacer()
 
             statusPill
+
+            if presentationStyle == .menuBarCompact, let openFullWindow {
+                Button {
+                    openFullWindow()
+                } label: {
+                    Image(systemName: "macwindow")
+                }
+                .buttonStyle(.borderless)
+                .help("Open TaskScope Window")
+            }
+
+            SettingsLink {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Settings")
 
             Button {
                 refreshVisibleSection()
@@ -350,8 +381,8 @@ struct TaskScopePopoverView: View {
                         ForEach(savedSelections.selections) { sel in
                             Button(sel.name) {
                                 processManager.clearSelection()
-                                for pid in sel.pids where processManager.processes.contains(where: { $0.pid == pid }) {
-                                    processManager.toggleSelection(pid)
+                                for process in processManager.processes where sel.matches(process) {
+                                    processManager.toggleSelection(process.pid)
                                 }
                             }
                         }
@@ -394,7 +425,19 @@ struct TaskScopePopoverView: View {
 
             HStack {
                 Text(processCountTitle)
-                Spacer()
+                if isExpandedWindow {
+                    Spacer()
+                    Text("PID")
+                        .frame(width: 70, alignment: .trailing)
+                    Text("PPID")
+                        .frame(width: 70, alignment: .trailing)
+                    Text("NET KB/s")
+                        .frame(width: 96, alignment: .trailing)
+                    Text("DISK")
+                        .frame(width: 96, alignment: .trailing)
+                } else {
+                    Spacer()
+                }
                 Text("CPU")
                     .frame(width: 54, alignment: .trailing)
                 Text("MEM MB")
@@ -422,6 +465,7 @@ struct TaskScopePopoverView: View {
                                         detailProcess: $detailProcess,
                                         detailData: $detailData,
                                         detailFailed: $detailFailed,
+                                        showsExpandedMetrics: isExpandedWindow,
                                         openInActivityMonitor: { openInActivityMonitor(pid: $0) }
                                     )
                                 }
@@ -674,6 +718,7 @@ struct TaskScopePopoverView: View {
             isKeyboardSelected: keyboardSelectedPid == process.pid,
             isHighlightedCPU: process.cpu >= settings.cpuHighlightThreshold,
             isHighlightedMEM: process.memoryMB >= settings.memHighlightThresholdMB,
+            showsExpandedMetrics: isExpandedWindow,
             stopAction: { pendingTermination = process },
             toggleSelection: { processManager.toggleSelection(process.pid) },
             detailAction: {
@@ -720,14 +765,6 @@ struct TaskScopePopoverView: View {
         let target = processes[index]
         keyboardSelectedPid = target.pid
         proxy.scrollTo(target.pid, anchor: .center)
-    }
-
-    private func togglePopover() {
-        if NSApp.isActive {
-            NSApp.hide(nil)
-        } else {
-            NSApp.activate(ignoringOtherApps: true)
-        }
     }
 
     private func evaluateAutoStopRules(_ processes: [AppProcess]) {
@@ -789,6 +826,7 @@ struct ProcessRow: View {
     var isKeyboardSelected: Bool
     var isHighlightedCPU: Bool
     var isHighlightedMEM: Bool
+    var showsExpandedMetrics: Bool = false
     var stopAction: () -> Void
     var toggleSelection: () -> Void
     var detailAction: () -> Void
@@ -819,6 +857,32 @@ struct ProcessRow: View {
             }
 
             Spacer(minLength: 8)
+
+            if showsExpandedMetrics {
+                Text("\(process.pid)")
+                    .monospacedDigit()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 70, alignment: .trailing)
+
+                Text("\(process.parentPID)")
+                    .monospacedDigit()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 70, alignment: .trailing)
+
+                Text(String(format: "%.1f / %.1f", process.netInKB, process.netOutKB))
+                    .monospacedDigit()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 96, alignment: .trailing)
+
+                Text(String(format: "%.0f / %.0f", process.diskReadBlocks, process.diskWriteBlocks))
+                    .monospacedDigit()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 96, alignment: .trailing)
+            }
 
             Text(process.cpu, format: .number.precision(.fractionLength(1)))
                 .monospacedDigit()

@@ -6,7 +6,7 @@ BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-}"
 PRODUCT_NAME="TaskScope"
 APP_NAME="TaskScope"
 BUNDLE_ID="com.local.TaskScope"
-MIN_SYSTEM_VERSION="13.0"
+MIN_SYSTEM_VERSION="14.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIST_DIR="$ROOT_DIR/dist"
@@ -56,6 +56,14 @@ swift "$ROOT_DIR/script/render_icon.swift" "$APP_ICON"
 /usr/libexec/PlistBuddy -c "Add :LSMinimumSystemVersion string $MIN_SYSTEM_VERSION" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST"
 /usr/libexec/PlistBuddy -c "Add :NSPrincipalClass string NSApplication" "$INFO_PLIST"
+
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string com.local.TaskScope" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$INFO_PLIST"
+/usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string taskscope" "$INFO_PLIST"
+
+/usr/libexec/PlistBuddy -c "Add :NSServerUsageDescription string TaskScope uses AppleScript to select processes in Activity Monitor." "$INFO_PLIST"
 
 open_app() {
   /usr/bin/open -n "$APP_BUNDLE"

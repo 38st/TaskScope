@@ -10,6 +10,7 @@ struct ProcessTreeRow: View {
     @Binding var detailProcess: AppProcess?
     @Binding var detailData: ProcessDetail?
     @Binding var detailFailed: Bool
+    var showsExpandedMetrics: Bool
     var openInActivityMonitor: (Int32) -> Void
 
     @State private var expanded: Bool = false
@@ -39,6 +40,7 @@ struct ProcessTreeRow: View {
                     isKeyboardSelected: keyboardSelectedPid == node.process.pid,
                     isHighlightedCPU: node.process.cpu >= settings.cpuHighlightThreshold,
                     isHighlightedMEM: node.process.memoryMB >= settings.memHighlightThresholdMB,
+                    showsExpandedMetrics: showsExpandedMetrics,
                     stopAction: { pendingTermination = node.process },
                     toggleSelection: { processManager.toggleSelection(node.process.pid) },
                     detailAction: {
@@ -98,6 +100,7 @@ struct ProcessTreeRow: View {
                         detailProcess: $detailProcess,
                         detailData: $detailData,
                         detailFailed: $detailFailed,
+                        showsExpandedMetrics: showsExpandedMetrics,
                         openInActivityMonitor: openInActivityMonitor
                     )
                 }

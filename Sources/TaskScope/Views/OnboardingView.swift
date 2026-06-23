@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct OnboardingView: View {
+    @Environment(\.dismiss) private var dismiss
+
     var onComplete: () -> Void
 
     var body: some View {
@@ -52,10 +54,13 @@ struct OnboardingView: View {
 
             Spacer()
 
-            Button("Get Started") { onComplete() }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .keyboardShortcut(.defaultAction)
+            Button("Get Started") {
+                onComplete()
+                dismiss()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .keyboardShortcut(.defaultAction)
         }
         .padding(32)
         .frame(width: 460, height: 560)

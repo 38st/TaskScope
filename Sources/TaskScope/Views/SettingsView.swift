@@ -243,7 +243,8 @@ struct SettingsView: View {
             importError = "Could not read presets from file."
             return
         }
-        for preset in decoded {
+        let existingIds = Set(watchedApps.presets.map { $0.id })
+        for preset in decoded where !existingIds.contains(preset.id) {
             watchedApps.add(preset)
         }
         importError = nil
@@ -293,7 +294,7 @@ private struct HotkeySettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Text("Default: ⌘⇧T toggles the TaskScope popover.")
+                Text("Default: ⌘⇧T shows the TaskScope window.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -328,7 +329,9 @@ private struct RecordingListenerView: NSViewRepresentable {
 
     func updateNSView(_ nsView: NSView, context: Context) {
         if isRecording {
-            context.coordinator.monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard context.coordinator.localMonitor == nil else { return }
+
+            context.coordinator.localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
                 if event.keyCode == 53 {
                     onCancel()
                     return nil
@@ -343,26 +346,26 @@ private struct RecordingListenerView: NSViewRepresentable {
                 onRecord(UInt32(event.keyCode), carbonMods)
                 return nil
             }
-            context.coordinator.monitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { _ in
-            }
+
         } else {
-            if let monitor = context.coordinator.monitor {
-                NSEvent.removeMonitor(monitor)
-                context.coordinator.monitor = nil
-            }
+            context.coordinator.removeMonitors()
         }
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator {
-        var monitor: Any?
+        var localMonitor: Any?
+
+        func removeMonitors() {
+            if let localMonitor {
+                NSEvent.removeMonitor(localMonitor)
+                self.localMonitor = nil
+            }
+        }
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        if let monitor = coordinator.monitor {
-            NSEvent.removeMonitor(monitor)
-            coordinator.monitor = nil
-        }
+        coordinator.removeMonitors()
     }
 }

@@ -2,10 +2,23 @@ import Foundation
 
 @MainActor
 final class SavedSelectionsStore: ObservableObject {
+    struct SavedProcess: Codable, Equatable {
+        var pid: Int32
+        var command: String
+    }
+
     struct SavedSelection: Codable, Identifiable, Equatable {
         var id: UUID = UUID()
         var name: String
         var pids: [Int32]
+        var processes: [SavedProcess]?
+
+        func matches(_ process: AppProcess) -> Bool {
+            guard let processes, !processes.isEmpty else { return false }
+            return processes.contains {
+                $0.pid == process.pid && $0.command == process.command
+            }
+        }
     }
 
     @Published var selections: [SavedSelection] {
@@ -18,8 +31,14 @@ final class SavedSelectionsStore: ObservableObject {
         selections = Self.load(key: key) ?? []
     }
 
-    func save(name: String, pids: [Int32]) {
-        selections.append(SavedSelection(name: name, pids: pids))
+    func save(name: String, processes: [AppProcess]) {
+        selections.append(
+            SavedSelection(
+                name: name,
+                pids: processes.map { $0.pid },
+                processes: processes.map { SavedProcess(pid: $0.pid, command: $0.command) }
+            )
+        )
     }
 
     func remove(at offsets: IndexSet) {

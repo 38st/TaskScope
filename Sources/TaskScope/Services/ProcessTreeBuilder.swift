@@ -25,16 +25,14 @@ final class ProcessTreeBuilder {
             }
         }
 
-        func buildNode(_ pid: Int32) -> ProcessTreeNode {
-            guard var node = nodesById[pid] else {
-                return ProcessTreeNode(process: processes.first(where: { $0.pid == pid })!, children: [])
-            }
+        func buildNode(_ pid: Int32) -> ProcessTreeNode? {
+            guard var node = nodesById[pid] else { return nil }
             if let childPids = childPidsByParent[pid] {
-                node.children = childPids.map { buildNode($0) }
+                node.children = childPids.compactMap { buildNode($0) }
             }
             return node
         }
 
-        return rootPids.map { buildNode($0) }
+        return rootPids.compactMap { buildNode($0) }
     }
 }

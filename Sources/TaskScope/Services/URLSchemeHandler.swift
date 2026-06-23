@@ -52,6 +52,7 @@ final class URLSchemeHandler {
         let path = "/Applications/\(name).app"
         if FileManager.default.fileExists(atPath: path) {
             NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            return
         }
     }
 }

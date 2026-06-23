@@ -30,7 +30,7 @@ final class AutoStopRulesStore: ObservableObject {
     }
 
     private let key = "TaskScope.autoStopRules.v1"
-    private var tracked: [String: Date] = [:]
+    private var tracked: [Int32: Date] = [:]
 
     init() {
         rules = Self.load(key: key) ?? []
@@ -50,27 +50,27 @@ final class AutoStopRulesStore: ObservableObject {
 
     func evaluate(runningProcesses: [AppProcess], onAction: @escaping (AutoStopRule, AppProcess) -> Void) {
         let now = Date()
-        let runningNames = Set(runningProcesses.map { $0.name })
+        let runningPids = Set(runningProcesses.map { $0.pid })
 
         for process in runningProcesses {
             guard let rule = rules.first(where: { $0.processName.caseInsensitiveCompare(process.name) == .orderedSame }) else {
-                tracked.removeValue(forKey: process.name)
+                tracked.removeValue(forKey: process.pid)
                 continue
             }
 
-            let firstSeen = tracked[process.name] ?? now
-            tracked[process.name] = firstSeen
+            let firstSeen = tracked[process.pid] ?? now
+            tracked[process.pid] = firstSeen
 
             let elapsed = now.timeIntervalSince(firstSeen) / 60.0
             if elapsed >= Double(rule.runtimeMinutes) {
                 onAction(rule, process)
-                tracked.removeValue(forKey: process.name)
+                tracked.removeValue(forKey: process.pid)
             }
         }
 
-        let stale = tracked.keys.filter { !runningNames.contains($0) }
-        for name in stale {
-            tracked.removeValue(forKey: name)
+        let stale = tracked.keys.filter { !runningPids.contains($0) }
+        for pid in stale {
+            tracked.removeValue(forKey: pid)
         }
     }
 

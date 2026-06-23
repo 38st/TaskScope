@@ -16,9 +16,13 @@ struct FullProcessWindowView: View {
             footer
         }
         .task {
+            processManager.fetchExtendedStats = true
             if !processManager.hasLoadedProcessList {
                 await processManager.loadProcessList()
             }
+        }
+        .onDisappear {
+            processManager.fetchExtendedStats = false
         }
         .confirmationDialog(
             "Stop Process?",

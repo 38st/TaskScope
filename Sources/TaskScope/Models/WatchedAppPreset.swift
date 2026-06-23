@@ -1,5 +1,17 @@
 import Foundation
 
+struct UserLaunchAgentJob: Codable, Equatable, Hashable {
+    var label: String
+    var plistPath: String
+}
+
+struct SystemLaunchDaemonJob: Codable, Equatable, Hashable {
+    var label: String
+    var plistPath: String
+    var processName: String
+    var servicePort: Int?
+}
+
 struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
     var id: UUID = UUID()
     var displayName: String
@@ -7,6 +19,8 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
     var helperProcessNames: [String]
     var protectedProcessNames: [String]
     var appPath: String
+    var userLaunchAgentJobs: [UserLaunchAgentJob] = []
+    var systemLaunchDaemonJobs: [SystemLaunchDaemonJob] = []
     var notificationsEnabled: Bool = true
     var priority: Int = 0
 
@@ -18,13 +32,88 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
         [mainProcessName] + helperProcessNames
     }
 
+    var lifecycleUserLaunchAgentJobs: [UserLaunchAgentJob] {
+        if usesGlobalProtectLifecycle {
+            return Self.globalProtectUserLaunchAgentJobs
+        }
+        return userLaunchAgentJobs
+    }
+
+    var lifecycleSystemLaunchDaemonJobs: [SystemLaunchDaemonJob] {
+        if usesGlobalProtectLifecycle {
+            return Self.globalProtectSystemLaunchDaemonJobs
+        }
+        return systemLaunchDaemonJobs
+    }
+
+    init(
+        id: UUID = UUID(),
+        displayName: String,
+        mainProcessName: String,
+        helperProcessNames: [String],
+        protectedProcessNames: [String],
+        appPath: String,
+        userLaunchAgentJobs: [UserLaunchAgentJob] = [],
+        systemLaunchDaemonJobs: [SystemLaunchDaemonJob] = [],
+        notificationsEnabled: Bool = true,
+        priority: Int = 0
+    ) {
+        self.id = id
+        self.displayName = displayName
+        self.mainProcessName = mainProcessName
+        self.helperProcessNames = helperProcessNames
+        self.protectedProcessNames = protectedProcessNames
+        self.appPath = appPath
+        self.userLaunchAgentJobs = userLaunchAgentJobs
+        self.systemLaunchDaemonJobs = systemLaunchDaemonJobs
+        self.notificationsEnabled = notificationsEnabled
+        self.priority = priority
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        displayName = try container.decode(String.self, forKey: .displayName)
+        mainProcessName = try container.decode(String.self, forKey: .mainProcessName)
+        helperProcessNames = try container.decodeIfPresent([String].self, forKey: .helperProcessNames) ?? []
+        protectedProcessNames = try container.decodeIfPresent([String].self, forKey: .protectedProcessNames) ?? []
+        appPath = try container.decode(String.self, forKey: .appPath)
+        userLaunchAgentJobs = try container.decodeIfPresent([UserLaunchAgentJob].self, forKey: .userLaunchAgentJobs) ?? []
+        systemLaunchDaemonJobs = try container.decodeIfPresent([SystemLaunchDaemonJob].self, forKey: .systemLaunchDaemonJobs) ?? []
+        notificationsEnabled = try container.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
+        priority = try container.decodeIfPresent(Int.self, forKey: .priority) ?? 0
+    }
+
     static let globalProtect = WatchedAppPreset(
         displayName: "GlobalProtect",
         mainProcessName: "GlobalProtect",
         helperProcessNames: ["PanGPA"],
         protectedProcessNames: ["PanGPS"],
-        appPath: "/Applications/GlobalProtect.app"
+        appPath: "/Applications/GlobalProtect.app",
+        userLaunchAgentJobs: globalProtectUserLaunchAgentJobs,
+        systemLaunchDaemonJobs: globalProtectSystemLaunchDaemonJobs
     )
+
+    private var usesGlobalProtectLifecycle: Bool {
+        mainProcessName == "GlobalProtect"
+            && appPath == "/Applications/GlobalProtect.app"
+    }
+
+    private static let globalProtectUserLaunchAgentJobs = [
+        UserLaunchAgentJob(
+            label: "com.paloaltonetworks.gp.pangpa",
+            plistPath: "/Library/LaunchAgents/com.paloaltonetworks.gp.pangpa.plist"
+        )
+    ]
+
+    private static let globalProtectSystemLaunchDaemonJobs = [
+        SystemLaunchDaemonJob(
+            label: "com.paloaltonetworks.gp.pangpsd",
+            plistPath: "/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist",
+            processName: "PanGPS",
+            servicePort: 4767
+        )
+    ]
 }
 
 struct WatchedAppSnapshot: Equatable {
