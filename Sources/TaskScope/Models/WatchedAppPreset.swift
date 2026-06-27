@@ -99,6 +99,14 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
             && appPath == "/Applications/GlobalProtect.app"
     }
 
+    func matchesLookupName(_ name: String) -> Bool {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty else { return false }
+
+        return displayName.caseInsensitiveCompare(normalizedName) == .orderedSame
+            || mainProcessName.caseInsensitiveCompare(normalizedName) == .orderedSame
+    }
+
     private static let globalProtectUserLaunchAgentJobs = [
         UserLaunchAgentJob(
             label: "com.paloaltonetworks.gp.pangpa",

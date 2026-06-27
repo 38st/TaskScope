@@ -13,7 +13,11 @@ struct StopWatchedAppIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult {
-        _ = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(appName)) 2>/dev/null || true")
+        guard let preset = WatchedAppsDefaults.persistedPresets().first(where: { $0.matchesLookupName(appName) }) else {
+            return .result()
+        }
+
+        _ = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(preset.mainProcessName)) 2>/dev/null || true")
         return .result()
     }
 }
@@ -29,10 +33,12 @@ struct OpenWatchedAppIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult {
-        let path = "/Applications/\(appName).app"
-        if FileManager.default.fileExists(atPath: path) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        guard let preset = WatchedAppsDefaults.persistedPresets().first(where: { $0.matchesLookupName(appName) }),
+              FileManager.default.fileExists(atPath: preset.appPath) else {
+            return .result()
         }
+
+        NSWorkspace.shared.open(URL(fileURLWithPath: preset.appPath))
         return .result()
     }
 }

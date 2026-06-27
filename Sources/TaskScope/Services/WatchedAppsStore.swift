@@ -1,15 +1,32 @@
 import Foundation
 
+enum WatchedAppsDefaults {
+    private static let key = "TaskScope.watchedPresets.v1"
+
+    static func persistedPresets() -> [WatchedAppPreset] {
+        load() ?? [.globalProtect]
+    }
+
+    static func save(_ presets: [WatchedAppPreset]) {
+        if let data = try? JSONEncoder().encode(presets) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private static func load() -> [WatchedAppPreset]? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode([WatchedAppPreset].self, from: data)
+    }
+}
+
 @MainActor
 final class WatchedAppsStore: ObservableObject {
     @Published var presets: [WatchedAppPreset] {
         didSet { save() }
     }
 
-    private let key = "TaskScope.watchedPresets.v1"
-
     init() {
-        presets = Self.load(key: key) ?? [.globalProtect]
+        presets = WatchedAppsDefaults.persistedPresets()
     }
 
     func add(_ preset: WatchedAppPreset) {
@@ -35,13 +52,6 @@ final class WatchedAppsStore: ObservableObject {
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(presets) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
-    }
-
-    private static func load(key: String) -> [WatchedAppPreset]? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode([WatchedAppPreset].self, from: data)
+        WatchedAppsDefaults.save(presets)
     }
 }

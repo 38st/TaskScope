@@ -27,9 +27,7 @@ final class URLSchemeHandler {
 
         switch action {
         case "stop":
-            if let name = target {
-                Task { await Self.stopProcess(named: name) }
-            }
+            break
         case "open":
             if let name = target {
                 Task { await Self.openPreset(named: name) }
@@ -37,23 +35,19 @@ final class URLSchemeHandler {
         case "refresh":
             NotificationCenter.default.post(name: .taskScopeRefreshRequested, object: nil)
         case "quit":
-            NSApplication.shared.terminate(nil)
+            break
         default:
             break
         }
     }
 
-    private static func stopProcess(named name: String) async {
-        let result = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(name)) 2>/dev/null || true")
-        _ = result
-    }
-
     private static func openPreset(named name: String) async {
-        let path = "/Applications/\(name).app"
-        if FileManager.default.fileExists(atPath: path) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        guard let preset = WatchedAppsDefaults.persistedPresets().first(where: { $0.matchesLookupName(name) }),
+              FileManager.default.fileExists(atPath: preset.appPath) else {
             return
         }
+
+        NSWorkspace.shared.open(URL(fileURLWithPath: preset.appPath))
     }
 }
 
