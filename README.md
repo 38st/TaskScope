@@ -28,6 +28,7 @@ After installing, use the app's **Launch at Login** toggle from the installed `/
 
 - Searchable process list sorted by CPU usage
 - CPU and memory columns
+- Create watched app presets and auto-stop rules from the process context menu
 - Stop selected user processes after confirmation
 - GlobalProtect preset for `GlobalProtect` and user-level helpers
 - GlobalProtect user launch-agent unload/restore for close-and-launch control

@@ -55,6 +55,8 @@ struct TaskScopePopoverView: View {
     @State private var showSaveSelectionSheet: Bool = false
     @State private var autoStopTarget: AutoStopRule?
     @State private var autoStopProcess: AppProcess?
+    @State private var quickAutoStopProcess: AppProcess?
+    @State private var quickPresetDraft: QuickWatchedPresetDraft?
 
     private var isExpandedWindow: Bool {
         presentationStyle == .expandedWindow
@@ -214,6 +216,35 @@ struct TaskScopePopoverView: View {
                 },
                 onCancel: {
                     showSaveSelectionSheet = false
+                }
+            )
+        }
+        .sheet(item: $quickAutoStopProcess) { process in
+            QuickAutoStopRuleSheet(
+                process: process,
+                existingRule: autoStopRules.rules.first { rule in
+                    rule.processName.caseInsensitiveCompare(process.name) == .orderedSame
+                },
+                onSave: { processName, runtimeMinutes, action in
+                    saveQuickAutoStopRule(
+                        processName: processName,
+                        runtimeMinutes: runtimeMinutes,
+                        action: action
+                    )
+                },
+                onCancel: {
+                    quickAutoStopProcess = nil
+                }
+            )
+        }
+        .sheet(item: $quickPresetDraft) { draft in
+            QuickWatchedPresetSheet(
+                draft: draft,
+                onSave: { preset in
+                    saveQuickWatchedPreset(preset)
+                },
+                onCancel: {
+                    quickPresetDraft = nil
                 }
             )
         }
@@ -749,6 +780,18 @@ struct TaskScopePopoverView: View {
 
     @ViewBuilder
     private func processContextMenu(for process: AppProcess) -> some View {
+        Button("Create Auto-Stop Rule...") {
+            quickAutoStopProcess = process
+        }
+        Button("Watch This Process...") {
+            quickPresetDraft = QuickWatchedPresetDraft(processes: [process])
+        }
+        if !processManager.selectedPids.isEmpty {
+            Button("Save Selection as Preset...") {
+                quickPresetDraft = QuickWatchedPresetDraft(processes: selectedProcessesForPreset())
+            }
+        }
+        Divider()
         Button("Stop") { pendingTermination = process }
         Button("Force Stop") {
             Task { await processManager.terminate(process, forceKill: true) }
@@ -791,6 +834,56 @@ struct TaskScopePopoverView: View {
                 break
             }
         }
+    }
+
+    private func selectedProcessesForPreset() -> [AppProcess] {
+        processManager.processes.filter { processManager.selectedPids.contains($0.pid) }
+    }
+
+    private func saveQuickAutoStopRule(
+        processName: String,
+        runtimeMinutes: Int,
+        action: AutoStopRule.Action
+    ) {
+        let trimmedName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        if let index = autoStopRules.rules.firstIndex(where: {
+            $0.processName.caseInsensitiveCompare(trimmedName) == .orderedSame
+        }) {
+            autoStopRules.rules[index] = AutoStopRule(
+                id: autoStopRules.rules[index].id,
+                processName: trimmedName,
+                runtimeMinutes: runtimeMinutes,
+                action: action
+            )
+            processManager.setMessage("Updated auto-stop rule for \(trimmedName).")
+        } else {
+            autoStopRules.add(
+                AutoStopRule(
+                    processName: trimmedName,
+                    runtimeMinutes: runtimeMinutes,
+                    action: action
+                )
+            )
+            processManager.setMessage("Added auto-stop rule for \(trimmedName).")
+        }
+
+        quickAutoStopProcess = nil
+    }
+
+    private func saveQuickWatchedPreset(_ preset: WatchedAppPreset) {
+        if watchedApps.presets.contains(where: {
+            $0.mainProcessName.caseInsensitiveCompare(preset.mainProcessName) == .orderedSame
+        }) {
+            processManager.setMessage("\(preset.mainProcessName) is already watched.")
+        } else {
+            watchedApps.add(preset)
+            processManager.setMessage("Watching \(preset.displayName).")
+            Task { await processManager.refreshWatchedStatus(showMessage: false) }
+        }
+
+        quickPresetDraft = nil
     }
 }
 
