@@ -11,6 +11,10 @@ let package = Package(
         .executable(name: "TaskScope", targets: ["TaskScope"])
     ],
     targets: [
-        .executableTarget(name: "TaskScope")
+        .executableTarget(name: "TaskScope"),
+        .testTarget(
+            name: "TaskScopeTests",
+            dependencies: ["TaskScope"]
+        )
     ]
 )

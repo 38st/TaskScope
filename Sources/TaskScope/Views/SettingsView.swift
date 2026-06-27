@@ -165,11 +165,14 @@ struct SettingsView: View {
                     let preset = WatchedAppPreset(
                         displayName: newDisplayName.isEmpty ? newMainProcess : newDisplayName,
                         mainProcessName: newMainProcess,
-                        helperProcessNames: parseList(newHelpers),
-                        protectedProcessNames: parseList(newProtected),
+                        helperProcessNames: PresetInputParser.list(from: newHelpers),
+                        protectedProcessNames: PresetInputParser.list(from: newProtected),
                         appPath: newAppPath,
-                        userLaunchAgentJobs: parseAgentJobs(labels: newAgentLabels, paths: newAgentPlistPaths),
-                        systemLaunchDaemonJobs: parseDaemonJobs(
+                        userLaunchAgentJobs: PresetInputParser.userLaunchAgentJobs(
+                            labels: newAgentLabels,
+                            paths: newAgentPlistPaths
+                        ),
+                        systemLaunchDaemonJobs: PresetInputParser.systemLaunchDaemonJobs(
                             labels: newDaemonLabels,
                             paths: newDaemonPlistPaths,
                             processNames: newDaemonProcessNames,
@@ -251,35 +254,6 @@ struct SettingsView: View {
 
     private var hotkeyTab: some View {
         HotkeySettingsView()
-    }
-
-    private func parseList(_ value: String) -> [String] {
-        value.split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-    }
-
-    private func parseAgentJobs(labels: String, paths: String) -> [UserLaunchAgentJob] {
-        let labelList = parseList(labels)
-        let pathList = parseList(paths)
-        guard !labelList.isEmpty else { return [] }
-        return zip(labelList, pathList).map { UserLaunchAgentJob(label: $0, plistPath: $1) }
-    }
-
-    private func parseDaemonJobs(labels: String, paths: String, processNames: String, ports: String) -> [SystemLaunchDaemonJob] {
-        let labelList = parseList(labels)
-        let pathList = parseList(paths)
-        let nameList = parseList(processNames)
-        let portList = parseList(ports).compactMap { Int($0) }
-        guard !labelList.isEmpty else { return [] }
-        return zip(labelList, pathList).enumerated().map { index, pair in
-            SystemLaunchDaemonJob(
-                label: pair.0,
-                plistPath: pair.1,
-                processName: index < nameList.count ? nameList[index] : pair.0,
-                servicePort: index < portList.count ? portList[index] : nil
-            )
-        }
     }
 
     private func exportPresets() {
