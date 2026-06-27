@@ -29,11 +29,20 @@ final class AutoStopRulesStore: ObservableObject {
         didSet { save() }
     }
 
-    private let key = "TaskScope.autoStopRules.v1"
+    private let userDefaults: UserDefaults
+    private let key: String
+    private let now: () -> Date
     private var tracked: [Int32: Date] = [:]
 
-    init() {
-        rules = Self.load(key: key) ?? []
+    init(
+        userDefaults: UserDefaults = .standard,
+        key: String = "TaskScope.autoStopRules.v1",
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.userDefaults = userDefaults
+        self.key = key
+        self.now = now
+        rules = Self.load(userDefaults: userDefaults, key: key) ?? []
     }
 
     func add(_ rule: AutoStopRule) {
@@ -49,7 +58,7 @@ final class AutoStopRulesStore: ObservableObject {
     }
 
     func evaluate(runningProcesses: [AppProcess], onAction: @escaping (AutoStopRule, AppProcess) -> Void) {
-        let now = Date()
+        let now = now()
         let runningPids = Set(runningProcesses.map { $0.pid })
 
         for process in runningProcesses {
@@ -76,12 +85,12 @@ final class AutoStopRulesStore: ObservableObject {
 
     private func save() {
         if let data = try? JSONEncoder().encode(rules) {
-            UserDefaults.standard.set(data, forKey: key)
+            userDefaults.set(data, forKey: key)
         }
     }
 
-    private static func load(key: String) -> [AutoStopRule]? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+    private static func load(userDefaults: UserDefaults, key: String) -> [AutoStopRule]? {
+        guard let data = userDefaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode([AutoStopRule].self, from: data)
     }
 }

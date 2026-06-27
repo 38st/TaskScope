@@ -159,6 +159,10 @@ struct WatchedAppSnapshot: Equatable {
     }
 }
 
+extension WatchedAppSnapshot: Identifiable {
+    var id: UUID { preset.id }
+}
+
 extension Array where Element == WatchedAppSnapshot {
     var aggregateStatus: ProcessStatus {
         if contains(where: { $0.isMainRunning }) {

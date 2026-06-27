@@ -1,4 +1,3 @@
-import AppKit
 import Darwin
 import Foundation
 import Combine
@@ -92,13 +91,13 @@ final class ProcessManager: ObservableObject {
             for pid in pids where pid != currentPID {
                 Darwin.kill(pid, signal)
             }
-            await settleAfterProcessChange()
+            await ProcessLifecycleController.settleAfterProcessChange()
 
             if !forceKill {
                 for pid in pids where pid != currentPID && isProcessAlive(pid) {
                     Darwin.kill(pid, SIGKILL)
                 }
-                await settleAfterProcessChange()
+                await ProcessLifecycleController.settleAfterProcessChange()
             }
 
             let stopped = pids.filter { !isProcessAlive($0) }.count
@@ -149,12 +148,12 @@ final class ProcessManager: ObservableObject {
     func openApp(_ preset: WatchedAppPreset) async {
         await runAction {
             let beforeOpen = await currentSnapshot(for: preset)
-            let didOpen = beforeOpen.isMainRunning ? true : await openAppBundle(at: preset.appPath)
+            let didOpen = beforeOpen.isMainRunning ? true : await ProcessLifecycleController.openAppBundle(at: preset.appPath)
             if !beforeOpen.isMainRunning {
-                _ = await bootstrapUserLaunchAgents(for: preset)
-                await waitForProcessNamed(preset.mainProcessName, timeoutSeconds: 3)
+                _ = await ProcessLifecycleController.bootstrapUserLaunchAgents(for: preset)
+                await ProcessLifecycleController.waitForProcessNamed(preset.mainProcessName, timeoutSeconds: 3)
             }
-            let daemonResult = await ensureSystemLaunchDaemons(for: preset)
+            let daemonResult = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: preset)
             await refreshAfterMutation()
 
             let now = snapshot(for: preset)
@@ -176,9 +175,9 @@ final class ProcessManager: ObservableObject {
     func quitMainApp(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = before.isMainRunning ? await unloadUserLaunchAgents(for: preset) : false
-            await terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
-            await settleAfterProcessChange()
+            let unloadedAgents = before.isMainRunning ? await ProcessLifecycleController.unloadUserLaunchAgents(for: preset) : false
+            await ProcessLifecycleController.terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
+            await ProcessLifecycleController.settleAfterProcessChange()
             await refreshAfterMutation()
 
             if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
@@ -194,11 +193,11 @@ final class ProcessManager: ObservableObject {
     func quitHelpers(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = before.hasHelpers ? await unloadUserLaunchAgents(for: preset) : false
+            let unloadedAgents = before.hasHelpers ? await ProcessLifecycleController.unloadUserLaunchAgents(for: preset) : false
             for name in preset.helperProcessNames {
-                await terminateProcess(named: name, forceIfStillRunning: true)
+                await ProcessLifecycleController.terminateProcess(named: name, forceIfStillRunning: true)
             }
-            await settleAfterProcessChange()
+            await ProcessLifecycleController.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowHelpers = snapshot(for: preset).helpersRunning
@@ -215,11 +214,11 @@ final class ProcessManager: ObservableObject {
     func quitAllKillable(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = before.hasAny ? await unloadUserLaunchAgents(for: preset) : false
+            let unloadedAgents = before.hasAny ? await ProcessLifecycleController.unloadUserLaunchAgents(for: preset) : false
             for name in preset.killableNames {
-                await terminateProcess(named: name, forceIfStillRunning: true)
+                await ProcessLifecycleController.terminateProcess(named: name, forceIfStillRunning: true)
             }
-            await settleAfterProcessChange()
+            await ProcessLifecycleController.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowSnap = snapshot(for: preset)
@@ -244,14 +243,14 @@ final class ProcessManager: ObservableObject {
         await runAction {
             let signal: Int32 = forceKill ? SIGKILL : SIGTERM
             let result = Darwin.kill(process.pid, signal)
-            await settleAfterProcessChange()
+            await ProcessLifecycleController.settleAfterProcessChange()
 
             if isProcessAlive(process.pid) {
                 if forceKill {
                     message = "Could not stop \(process.name)."
                 } else {
                     Darwin.kill(process.pid, SIGKILL)
-                    await settleAfterProcessChange()
+                    await ProcessLifecycleController.settleAfterProcessChange()
 
                     if isProcessAlive(process.pid) {
                         message = "Could not stop \(process.name)."
@@ -324,174 +323,6 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    private func settleAfterProcessChange() async {
-        try? await Task.sleep(nanoseconds: 300_000_000)
-    }
-
-    private func terminateProcess(named name: String, forceIfStillRunning: Bool) async {
-        _ = await ShellCommandRunner.run(
-            "/usr/bin/pkill -TERM -x \(ShellCommandRunner.shellQuoted(name)) 2>/dev/null || true"
-        )
-
-        guard forceIfStillRunning else { return }
-
-        await settleAfterProcessChange()
-        if await isProcessNamedRunning(name) {
-            _ = await ShellCommandRunner.run(
-                "/usr/bin/pkill -KILL -x \(ShellCommandRunner.shellQuoted(name)) 2>/dev/null || true"
-            )
-        }
-    }
-
-    private func isProcessNamedRunning(_ name: String) async -> Bool {
-        let result = await ShellCommandRunner.run(
-            "/usr/bin/pgrep -x \(ShellCommandRunner.shellQuoted(name)) >/dev/null 2>&1"
-        )
-        return result.exitCode == 0
-    }
-
-    private func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> Bool {
-        let jobs = preset.lifecycleUserLaunchAgentJobs
-        guard !jobs.isEmpty else { return false }
-
-        for job in jobs.reversed() {
-            _ = await ShellCommandRunner.run("""
-            uid=$(/usr/bin/id -u)
-            label=\(ShellCommandRunner.shellQuoted(job.label))
-            plist=\(ShellCommandRunner.shellQuoted(job.plistPath))
-            /bin/launchctl bootout "gui/$uid/$label" >/dev/null 2>&1 || true
-            /bin/launchctl bootout "gui/$uid" "$plist" >/dev/null 2>&1 || true
-            """)
-        }
-
-        await settleAfterProcessChange()
-        return true
-    }
-
-    private func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> Bool {
-        let jobs = preset.lifecycleUserLaunchAgentJobs
-        guard !jobs.isEmpty else { return false }
-
-        for job in jobs {
-            _ = await ShellCommandRunner.run("""
-            uid=$(/usr/bin/id -u)
-            label=\(ShellCommandRunner.shellQuoted(job.label))
-            plist=\(ShellCommandRunner.shellQuoted(job.plistPath))
-            [ -f "$plist" ] || exit 0
-            /bin/launchctl bootstrap "gui/$uid" "$plist" >/dev/null 2>&1 || true
-            /bin/launchctl enable "gui/$uid/$label" >/dev/null 2>&1 || true
-            /bin/launchctl kickstart -k "gui/$uid/$label" >/dev/null 2>&1 || true
-            """)
-        }
-
-        await settleAfterProcessChange()
-        return true
-    }
-
-    private enum LaunchDaemonEnsureResult: Equatable {
-        case notNeeded
-        case alreadyRunning
-        case started
-        case failed
-
-        var didChangeState: Bool {
-            self == .started
-        }
-
-        var messageSuffix: String {
-            switch self {
-            case .notNeeded, .alreadyRunning:
-                ""
-            case .started:
-                "; service started"
-            case .failed:
-                "; service not started"
-            }
-        }
-    }
-
-    private func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LaunchDaemonEnsureResult {
-        let jobs = preset.lifecycleSystemLaunchDaemonJobs
-        guard !jobs.isEmpty else { return .notNeeded }
-
-        var didStartAny = false
-
-        for job in jobs {
-            if await systemLaunchDaemonIsReady(job) {
-                continue
-            }
-
-            let result = await requestAdminBootstrap(for: job)
-            guard result.succeeded else {
-                return .failed
-            }
-
-            didStartAny = true
-            if !(await waitForSystemLaunchDaemon(job, timeoutSeconds: 15)) {
-                return .failed
-            }
-        }
-
-        return didStartAny ? .started : .alreadyRunning
-    }
-
-    private func systemLaunchDaemonIsReady(_ job: SystemLaunchDaemonJob) async -> Bool {
-        if let servicePort = job.servicePort {
-            let result = await ShellCommandRunner.run(
-                "/usr/sbin/lsof -nP -iTCP:\(servicePort) -sTCP:LISTEN >/dev/null 2>&1"
-            )
-            return result.exitCode == 0
-        }
-
-        let daemonLoaded = await ShellCommandRunner.run(
-            "/bin/launchctl print system/\(ShellCommandRunner.shellQuoted(job.label)) >/dev/null 2>&1"
-        )
-        let processRunning = await ShellCommandRunner.run(
-            "/usr/bin/pgrep -x \(ShellCommandRunner.shellQuoted(job.processName)) >/dev/null 2>&1"
-        )
-        return daemonLoaded.exitCode == 0 && processRunning.exitCode == 0
-    }
-
-    private func waitForSystemLaunchDaemon(_ job: SystemLaunchDaemonJob, timeoutSeconds: TimeInterval) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while Date() < deadline {
-            if await systemLaunchDaemonIsReady(job) {
-                return true
-            }
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-        return await systemLaunchDaemonIsReady(job)
-    }
-
-    private func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while Date() < deadline {
-            if await isProcessNamedRunning(name) {
-                return
-            }
-            try? await Task.sleep(nanoseconds: 300_000_000)
-        }
-    }
-
-    private func openAppBundle(at path: String) async -> Bool {
-        let result = await ShellCommandRunner.run(
-            "/usr/bin/open -n \(ShellCommandRunner.shellQuoted(path))"
-        )
-        return result.succeeded
-    }
-
-    private func requestAdminBootstrap(for job: SystemLaunchDaemonJob) async -> ShellCommandResult {
-        let quotedLabel = ShellCommandRunner.shellQuoted(job.label)
-        let quotedPlist = ShellCommandRunner.shellQuoted(job.plistPath)
-        let rootCommand = """
-        if /bin/launchctl print system/\(quotedLabel) >/dev/null 2>&1; then /bin/launchctl kickstart -k system/\(quotedLabel); else /bin/launchctl bootstrap system \(quotedPlist); fi
-        """
-        let appleScript = "do shell script \(ShellCommandRunner.appleScriptString(rootCommand)) with administrator privileges"
-        return await ShellCommandRunner.run(
-            "/usr/bin/osascript -e \(ShellCommandRunner.shellQuoted(appleScript))"
-        )
-    }
-
     private func isProcessAlive(_ pid: Int32) -> Bool {
         errno = 0
         let result = Darwin.kill(pid, 0)
@@ -551,91 +382,9 @@ final class ProcessManager: ObservableObject {
 
     private func currentProcessList() async -> [AppProcess] {
         let limit = processListLimitProvider?() ?? 80
-        let command = "/bin/ps -arcwwwxo pid=,ppid=,pcpu=,rss=,etime=,comm= | /usr/bin/head -n \(limit)"
-        let result = await ShellCommandRunner.run(command)
-
-        guard result.succeeded else {
-            return []
-        }
-
-        var parsed = result.stdout
-            .split(separator: "\n")
-            .compactMap(parseProcessLine)
-
-        if fetchExtendedStats {
-            let netStats = await currentNetworkStats()
-            let diskStats = await currentDiskStats()
-            for index in parsed.indices {
-                parsed[index].netInKB = netStats[parsed[index].pid]?.0 ?? 0
-                parsed[index].netOutKB = netStats[parsed[index].pid]?.1 ?? 0
-                parsed[index].diskReadBlocks = diskStats[parsed[index].pid]?.0 ?? 0
-                parsed[index].diskWriteBlocks = diskStats[parsed[index].pid]?.1 ?? 0
-            }
-        }
-        return parsed
-    }
-
-    private func currentNetworkStats() async -> [Int32: (Double, Double)] {
-        let result = await ShellCommandRunner.run(
-            "/usr/bin/nettop -P -L 1 -n -x -J bytes_in,bytes_out 2>/dev/null || true"
-        )
-        guard result.succeeded else { return [:] }
-        var stats: [Int32: (Double, Double)] = [:]
-        for line in result.stdout.split(separator: "\n") {
-            let parts = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
-            guard parts.count >= 3 else { continue }
-            let namePid = parts[0]
-            guard let dotIndex = namePid.lastIndex(of: "."),
-                  let pid = Int32(namePid[namePid.index(after: dotIndex)...]),
-                  let inBytes = Double(parts[1]),
-                  let outBytes = Double(parts[2]) else { continue }
-            stats[pid] = (inBytes / 1024.0, outBytes / 1024.0)
-        }
-        return stats
-    }
-
-    private func currentDiskStats() async -> [Int32: (Double, Double)] {
-        let result = await ShellCommandRunner.run(
-            "/bin/ps -axo pid=,inblock=,oublock= 2>/dev/null || true"
-        )
-        guard result.succeeded else { return [:] }
-        var stats: [Int32: (Double, Double)] = [:]
-        for line in result.stdout.split(separator: "\n") {
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-            guard parts.count >= 3, let pid = Int32(parts[0]),
-                  let r = Double(parts[1]),
-                  let w = Double(parts[2]) else { continue }
-            stats[pid] = (r, w)
-        }
-        return stats
-    }
-
-    private func parseProcessLine(_ line: Substring) -> AppProcess? {
-        let parts = line.split(
-            separator: " ",
-            maxSplits: 5,
-            omittingEmptySubsequences: true
-        )
-
-        guard parts.count == 6,
-              let pid = Int32(parts[0]),
-              let ppid = Int32(parts[1]),
-              let cpu = Double(parts[2]),
-              let rssKB = Double(parts[3]) else {
-            return nil
-        }
-
-        return AppProcess(
-            pid: pid,
-            parentPID: ppid,
-            cpu: cpu,
-            memoryMB: rssKB / 1024.0,
-            command: String(parts[5]),
-            elapsedTime: String(parts[4]),
-            netInKB: 0,
-            netOutKB: 0,
-            diskReadBlocks: 0,
-            diskWriteBlocks: 0
+        return await ProcessListReader.currentProcessList(
+            limit: limit,
+            fetchExtendedStats: fetchExtendedStats
         )
     }
 
@@ -685,102 +434,4 @@ final class ProcessManager: ObservableObject {
 
     var watchedAppsProvider: (() -> [WatchedAppPreset])?
     var processListLimitProvider: (() -> Int)?
-}
-
-enum ShellCommandRunner {
-    static func run(_ command: String) async -> ShellCommandResult {
-        await withCheckedContinuation { continuation in
-            let process = Process()
-            let standardOutput = Pipe()
-            let standardError = Pipe()
-            let outputCapture = PipeCapture()
-            let errorCapture = PipeCapture()
-
-            process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            process.arguments = ["-c", command]
-            process.standardOutput = standardOutput
-            process.standardError = standardError
-
-            standardOutput.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-
-                if !data.isEmpty {
-                    outputCapture.append(data)
-                }
-            }
-
-            standardError.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-
-                if !data.isEmpty {
-                    errorCapture.append(data)
-                }
-            }
-
-            process.terminationHandler = { finishedProcess in
-                standardOutput.fileHandleForReading.readabilityHandler = nil
-                standardError.fileHandleForReading.readabilityHandler = nil
-
-                outputCapture.append(standardOutput.fileHandleForReading.readDataToEndOfFile())
-                errorCapture.append(standardError.fileHandleForReading.readDataToEndOfFile())
-
-                continuation.resume(
-                    returning: ShellCommandResult(
-                        command: command,
-                        stdout: outputCapture.string.trimmingCharacters(in: .whitespacesAndNewlines),
-                        stderr: errorCapture.string.trimmingCharacters(in: .whitespacesAndNewlines),
-                        exitCode: finishedProcess.terminationStatus
-                    )
-                )
-            }
-
-            do {
-                try process.run()
-            } catch {
-                standardOutput.fileHandleForReading.readabilityHandler = nil
-                standardError.fileHandleForReading.readabilityHandler = nil
-
-                continuation.resume(
-                    returning: ShellCommandResult(
-                        command: command,
-                        stdout: "",
-                        stderr: error.localizedDescription,
-                        exitCode: -1
-                    )
-                )
-            }
-        }
-    }
-
-    static func shellQuoted(_ value: String) -> String {
-        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
-    }
-
-    static func appleScriptString(_ value: String) -> String {
-        let escaped = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: " ")
-        return "\"\(escaped)\""
-    }
-
-    private final class PipeCapture: @unchecked Sendable {
-        private let lock = NSLock()
-        private var data = Data()
-
-        var string: String {
-            lock.lock()
-            defer {
-                lock.unlock()
-            }
-
-            return String(data: data, encoding: .utf8) ?? ""
-        }
-
-        func append(_ newData: Data) {
-            lock.lock()
-            data.append(newData)
-            lock.unlock()
-        }
-    }
 }
