@@ -16,9 +16,13 @@ struct ProcessRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
-                .onTapGesture { toggleSelection() }
+            Button(action: toggleSelection) {
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel(isSelected ? "Remove \(process.name) from selection" : "Add \(process.name) to selection")
+            .accessibilityHint("Changes the batch action selection")
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -52,13 +56,13 @@ struct ProcessRow: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 70, alignment: .trailing)
 
-                Text(String(format: "%.1f / %.1f", process.netInKB, process.netOutKB))
+                Text(metricPair(process.netInKB, process.netOutKB, decimals: 1))
                     .monospacedDigit()
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 96, alignment: .trailing)
 
-                Text(String(format: "%.0f / %.0f", process.diskReadBlocks, process.diskWriteBlocks))
+                Text(metricPair(process.diskReadBlocks, process.diskWriteBlocks, decimals: 0))
                     .monospacedDigit()
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -85,6 +89,7 @@ struct ProcessRow: View {
             .buttonStyle(.borderless)
             .disabled(isCurrentProcess)
             .help(isCurrentProcess ? "Use Quit TaskScope" : "Stop Process")
+            .accessibilityLabel("Stop \(process.name)")
             .frame(width: 28)
         }
         .padding(.horizontal, 16)
@@ -96,5 +101,19 @@ struct ProcessRow: View {
                 Color.orange.opacity(0.08)
             }
         }
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private func metricPair(_ first: Double?, _ second: Double?, decimals: Int) -> String {
+        guard let first, let second else { return "—" }
+        return String(format: "%.*f / %.*f", decimals, first, decimals, second)
+    }
+
+    private var accessibilitySummary: String {
+        var values = ["CPU \(process.cpu.formatted(.number.precision(.fractionLength(1)))) percent"]
+        values.append("memory \(process.memoryMB.formatted(.number.precision(.fractionLength(0)))) megabytes")
+        if isHighlightedCPU { values.append("high CPU") }
+        if isHighlightedMEM { values.append("high memory") }
+        return values.joined(separator: ", ")
     }
 }

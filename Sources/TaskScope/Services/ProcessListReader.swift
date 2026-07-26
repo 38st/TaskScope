@@ -46,10 +46,10 @@ enum ProcessListReader {
             let netStats = await currentNetworkStats()
             let diskStats = await currentDiskStats()
             for index in parsed.indices {
-                parsed[index].netInKB = netStats[parsed[index].pid]?.0 ?? 0
-                parsed[index].netOutKB = netStats[parsed[index].pid]?.1 ?? 0
-                parsed[index].diskReadBlocks = diskStats[parsed[index].pid]?.0 ?? 0
-                parsed[index].diskWriteBlocks = diskStats[parsed[index].pid]?.1 ?? 0
+                parsed[index].netInKB = netStats?[parsed[index].pid]?.0
+                parsed[index].netOutKB = netStats?[parsed[index].pid]?.1
+                parsed[index].diskReadBlocks = diskStats?[parsed[index].pid]?.0
+                parsed[index].diskWriteBlocks = diskStats?[parsed[index].pid]?.1
             }
         }
 
@@ -76,10 +76,10 @@ enum ProcessListReader {
                 command: String(extendedParts[10]),
                 elapsedTime: String(extendedParts[9]),
                 startTime: extendedParts[4...8].joined(separator: " "),
-                netInKB: 0,
-                netOutKB: 0,
-                diskReadBlocks: 0,
-                diskWriteBlocks: 0
+                netInKB: nil,
+                netOutKB: nil,
+                diskReadBlocks: nil,
+                diskWriteBlocks: nil
             )
         }
 
@@ -104,18 +104,18 @@ enum ProcessListReader {
             memoryMB: rssKB / 1024.0,
             command: String(legacyParts[5]),
             elapsedTime: String(legacyParts[4]),
-            netInKB: 0,
-            netOutKB: 0,
-            diskReadBlocks: 0,
-            diskWriteBlocks: 0
+            netInKB: nil,
+            netOutKB: nil,
+            diskReadBlocks: nil,
+            diskWriteBlocks: nil
         )
     }
 
-    private static func currentNetworkStats() async -> [Int32: (Double, Double)] {
+    private static func currentNetworkStats() async -> [Int32: (Double, Double)]? {
         let result = await ShellCommandRunner.run(
             "/usr/bin/nettop -P -L 1 -n -x -J bytes_in,bytes_out"
         )
-        guard result.succeeded else { return [:] }
+        guard result.succeeded else { return nil }
         var stats: [Int32: (Double, Double)] = [:]
         for line in result.stdout.split(separator: "\n") {
             let parts = line.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
@@ -127,14 +127,14 @@ enum ProcessListReader {
                   let outBytes = Double(parts[2]) else { continue }
             stats[pid] = (inBytes / 1024.0, outBytes / 1024.0)
         }
-        return stats
+        return stats.isEmpty ? nil : stats
     }
 
-    private static func currentDiskStats() async -> [Int32: (Double, Double)] {
+    private static func currentDiskStats() async -> [Int32: (Double, Double)]? {
         let result = await ShellCommandRunner.run(
             "/bin/ps -axo pid=,inblock=,oublock="
         )
-        guard result.succeeded else { return [:] }
+        guard result.succeeded else { return nil }
         var stats: [Int32: (Double, Double)] = [:]
         for line in result.stdout.split(separator: "\n") {
             let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
@@ -143,6 +143,6 @@ enum ProcessListReader {
                   let w = Double(parts[2]) else { continue }
             stats[pid] = (r, w)
         }
-        return stats
+        return stats.isEmpty ? nil : stats
     }
 }

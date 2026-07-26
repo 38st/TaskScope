@@ -103,6 +103,7 @@ final class AutoStopRulesStore: ObservableObject {
     @Published private(set) var engineError: String?
     @Published private(set) var isEngineRunning = false
     @Published private(set) var validationError: String?
+    @Published private(set) var recoveryMessages: [String] = []
 
     var currentPrompt: AutoStopPrompt? {
         pendingPrompts.first
@@ -133,8 +134,19 @@ final class AutoStopRulesStore: ObservableObject {
         self.inventory = inventory
         self.eventLimit = max(1, eventLimit)
         self.now = now
-        rules = Self.load([AutoStopRule].self, userDefaults: userDefaults, key: key) ?? []
-        events = Self.load([AutoStopEvent].self, userDefaults: userDefaults, key: eventsKey) ?? []
+        let loadedRules = Self.loadRecovering(
+            [AutoStopRule].self,
+            userDefaults: userDefaults,
+            key: key
+        )
+        let loadedEvents = Self.loadRecovering(
+            [AutoStopEvent].self,
+            userDefaults: userDefaults,
+            key: eventsKey
+        )
+        rules = loadedRules.value ?? []
+        events = loadedEvents.value ?? []
+        recoveryMessages = [loadedRules.message, loadedEvents.message].compactMap { $0 }
     }
 
     deinit {
@@ -402,12 +414,18 @@ final class AutoStopRulesStore: ObservableObject {
         userDefaults.set(data, forKey: eventsKey)
     }
 
-    private static func load<T: Decodable>(
+    private static func loadRecovering<T: Decodable>(
         _ type: T.Type,
         userDefaults: UserDefaults,
         key: String
-    ) -> T? {
-        guard let data = userDefaults.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
+    ) -> (value: T?, message: String?) {
+        guard let data = userDefaults.data(forKey: key) else { return (nil, nil) }
+        do {
+            return (try JSONDecoder().decode(type, from: data), nil)
+        } catch {
+            let backupKey = "\(key).corruptBackup"
+            userDefaults.set(data, forKey: backupKey)
+            return (nil, "Unreadable data was backed up as \(backupKey).")
+        }
     }
 }

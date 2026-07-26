@@ -32,12 +32,12 @@ struct OnboardingView: View {
                 OnboardingRow(
                     icon: "scope",
                     title: "Watch Apps",
-                    description: "TaskScope watches apps like GlobalProtect and notifies you when they start or stop."
+                    description: "TaskScope watches apps like GlobalProtect. Notifications stay off until you explicitly enable them in Settings."
                 )
                 OnboardingRow(
                     icon: "stop.circle",
                     title: "Stop Processes",
-                    description: "Click any process in the popover to stop it. Use Force Stop for unresponsive processes."
+                    description: "Select a row to inspect it, then use its Stop button or context menu. Force Stop is an explicit immediate kill."
                 )
                 OnboardingRow(
                     icon: "gearshape",
@@ -47,7 +47,7 @@ struct OnboardingView: View {
                 OnboardingRow(
                     icon: "keyboard",
                     title: "Keyboard",
-                    description: "Use ↑/↓ to navigate, Enter to stop, Cmd+A to select all, Cmd+Shift+A to clear."
+                    description: "Use ↑/↓ to navigate visible rows, Return to review Stop, Cmd+A to select visible rows, and Cmd+Shift+A to clear."
                 )
             }
             .padding(.horizontal, 8)

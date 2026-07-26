@@ -141,6 +141,21 @@ final class AutoStopRulesStoreTests: XCTestCase {
         XCTAssertNil(appProcess(pid: 1, elapsed: "invalid").runtimeSeconds)
     }
 
+    func testCorruptRulesAndEventsAreBackedUp() {
+        let corruptRules = Data([0xFF, 0x01])
+        let corruptEvents = Data([0xFE, 0x02])
+        userDefaults.set(corruptRules, forKey: key)
+        userDefaults.set(corruptEvents, forKey: eventsKey)
+
+        let store = makeStore()
+
+        XCTAssertTrue(store.rules.isEmpty)
+        XCTAssertTrue(store.events.isEmpty)
+        XCTAssertEqual(store.recoveryMessages.count, 2)
+        XCTAssertEqual(userDefaults.data(forKey: "\(key).corruptBackup"), corruptRules)
+        XCTAssertEqual(userDefaults.data(forKey: "\(eventsKey).corruptBackup"), corruptEvents)
+    }
+
     private func makeStore(
         inventory: any ProcessInventoryProviding = StubInventory(processes: []),
         eventLimit: Int = 200

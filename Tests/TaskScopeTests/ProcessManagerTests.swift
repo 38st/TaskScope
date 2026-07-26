@@ -239,6 +239,24 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(lifecycle.calls.contains("terminate:ExampleHelper"))
     }
 
+    func testExpandedMetricConsumersEnableCollectionAndRefreshLoadedList() async {
+        let target = process(pid: 42, name: "Example")
+        let inventory = FakeProcessInventory(results: [.success([target])])
+        let manager = makeManager(inventory: inventory)
+
+        await manager.loadProcessList()
+        await manager.beginExtendedMetrics()
+        await manager.beginExtendedMetrics()
+
+        XCTAssertEqual(inventory.fetchExtendedRequests, [false, true])
+        XCTAssertTrue(manager.fetchExtendedStats)
+
+        manager.endExtendedMetrics()
+        XCTAssertTrue(manager.fetchExtendedStats)
+        manager.endExtendedMetrics()
+        XCTAssertFalse(manager.fetchExtendedStats)
+    }
+
     private func makeManager(
         inventory: any ProcessInventoryProviding,
         signaler: FakeProcessSignaler = FakeProcessSignaler(),
@@ -387,12 +405,14 @@ private actor BlockingProcessInventory: ProcessInventoryProviding {
 
 private final class FakeProcessInventory: ProcessInventoryProviding {
     private var results: [Result<[AppProcess], ProcessInventoryError>]
+    private(set) var fetchExtendedRequests: [Bool] = []
 
     init(results: [Result<[AppProcess], ProcessInventoryError>]) {
         self.results = results
     }
 
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        fetchExtendedRequests.append(fetchExtendedStats)
         guard !results.isEmpty else {
             return .failure(.commandFailed("No fake result configured."))
         }

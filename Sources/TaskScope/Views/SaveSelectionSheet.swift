@@ -3,6 +3,7 @@ import SwiftUI
 struct SaveSelectionSheet: View {
     @Binding var name: String
     let count: Int
+    let validationError: String?
     let onSave: () -> Void
     let onCancel: () -> Void
 
@@ -16,6 +17,12 @@ struct SaveSelectionSheet: View {
 
             TextField("Selection name", text: $name)
                 .textFieldStyle(.roundedBorder)
+
+            if let validationError {
+                Text(validationError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
 
             HStack {
                 Button("Cancel", action: onCancel)

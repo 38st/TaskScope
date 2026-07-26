@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct ProcessTreeRow: View {
+struct ProcessTreeRow<ContextMenuContent: View>: View {
     var node: ProcessTreeNode
     var depth: Int
     var settings: SettingsStore
@@ -13,6 +13,7 @@ struct ProcessTreeRow: View {
     @Binding var expandedPids: Set<Int32>
     var showsExpandedMetrics: Bool
     var openInActivityMonitor: (Int32) -> Void
+    @ViewBuilder var contextMenuContent: (AppProcess) -> ContextMenuContent
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -30,6 +31,11 @@ struct ProcessTreeRow: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.borderless)
+                    .accessibilityLabel(
+                        isExpanded
+                            ? "Collapse children of \(node.process.name)"
+                            : "Expand children of \(node.process.name)"
+                    )
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.caption)
@@ -72,24 +78,7 @@ struct ProcessTreeRow: View {
             }
             .id(node.process.pid)
             .contextMenu {
-                Button("Stop") { pendingTermination = node.process }
-                Button("Force Stop") {
-                    Task { await processManager.terminate(node.process, forceKill: true) }
-                }
-                Divider()
-                Button("Show Detail") {
-                    detailData = nil
-                    detailFailed = false
-                    detailProcess = node.process
-                }
-                Button("Copy Command") {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(node.process.command, forType: .string)
-                }
-                Divider()
-                Button("Open in Activity Monitor") {
-                    openInActivityMonitor(node.process.pid)
-                }
+                contextMenuContent(node.process)
             }
 
             if isExpanded {
@@ -106,7 +95,8 @@ struct ProcessTreeRow: View {
                         detailFailed: $detailFailed,
                         expandedPids: $expandedPids,
                         showsExpandedMetrics: showsExpandedMetrics,
-                        openInActivityMonitor: openInActivityMonitor
+                        openInActivityMonitor: openInActivityMonitor,
+                        contextMenuContent: contextMenuContent
                     )
                 }
             }

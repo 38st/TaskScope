@@ -38,6 +38,11 @@ final class ProcessManager: ObservableObject {
 
     @Published private(set) var selectedPids: Set<Int32> = []
     @Published private(set) var processLoadError: String?
+    @Published private(set) var lifecycleReport: LifecycleReport?
+
+    func dismissLifecycleReport() {
+        lifecycleReport = nil
+    }
 
     var enableNotifications: Bool = true
 
@@ -54,6 +59,7 @@ final class ProcessManager: ObservableObject {
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
     private var operationIsRunning = false
     private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    private var extendedMetricsConsumers = 0
 
     init(
         processInventory: any ProcessInventoryProviding = SystemProcessInventory(),
@@ -132,6 +138,14 @@ final class ProcessManager: ObservableObject {
 
     func selectionSnapshot() -> [ProcessIdentity] {
         fullProcessInventory.compactMap { selectedIdentities[$0.pid] }
+    }
+
+    var inventorySnapshot: [AppProcess] {
+        fullProcessInventory
+    }
+
+    func selectedProcessesSnapshot() -> [AppProcess] {
+        fullProcessInventory.filter { selectedIdentities[$0.pid] == $0.identity }
     }
 
     func batchTerminate(_ requestedIdentities: [ProcessIdentity], forceKill: Bool = false) async {
@@ -232,15 +246,30 @@ final class ProcessManager: ObservableObject {
 
             let daemonResult = await lifecycle.ensureSystemLaunchDaemons(for: preset)
             guard daemonResult.succeeded else {
+                lifecycleReport = LifecycleReport(
+                    title: "\(preset.displayName) Service Results",
+                    jobs: daemonResult.jobs
+                )
                 message = "Could not open \(preset.displayName): \(daemonResult.failureSummary ?? "required service failed")."
                 return
             }
 
             let agentResult = await lifecycle.bootstrapUserLaunchAgents(for: preset)
             guard agentResult.succeeded else {
+                lifecycleReport = LifecycleReport(
+                    title: "\(preset.displayName) Service Results",
+                    jobs: daemonResult.jobs + agentResult.jobs
+                )
                 message = "Could not open \(preset.displayName): \(agentResult.failureSummary ?? "required user job failed")."
                 return
             }
+            let serviceJobs = daemonResult.jobs + agentResult.jobs
+            lifecycleReport = serviceJobs.isEmpty
+                ? nil
+                : LifecycleReport(
+                    title: "\(preset.displayName) Service Results",
+                    jobs: serviceJobs
+                )
 
             let beforeOpen = await currentSnapshot(for: preset)
             let didOpen: Bool
@@ -280,6 +309,12 @@ final class ProcessManager: ObservableObject {
         await runAction {
             let before = await currentSnapshot(for: preset)
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
+            lifecycleReport = agentResult.jobs.isEmpty
+                ? nil
+                : LifecycleReport(
+                    title: "\(preset.displayName) Relaunch Jobs",
+                    jobs: agentResult.jobs
+                )
             await lifecycle.terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
             await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
@@ -302,6 +337,12 @@ final class ProcessManager: ObservableObject {
         await runAction {
             let before = await currentSnapshot(for: preset)
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
+            lifecycleReport = agentResult.jobs.isEmpty
+                ? nil
+                : LifecycleReport(
+                    title: "\(preset.displayName) Relaunch Jobs",
+                    jobs: agentResult.jobs
+                )
             for name in preset.helperProcessNames {
                 await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
             }
@@ -327,6 +368,12 @@ final class ProcessManager: ObservableObject {
         await runAction {
             let before = await currentSnapshot(for: preset)
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
+            lifecycleReport = agentResult.jobs.isEmpty
+                ? nil
+                : LifecycleReport(
+                    title: "\(preset.displayName) Relaunch Jobs",
+                    jobs: agentResult.jobs
+                )
             for name in preset.killableNames {
                 await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
             }
@@ -491,7 +538,23 @@ final class ProcessManager: ObservableObject {
         publishDisplayProcesses()
     }
 
-    @Published var fetchExtendedStats: Bool = false
+    @Published private(set) var fetchExtendedStats: Bool = false
+
+    func beginExtendedMetrics() async {
+        extendedMetricsConsumers += 1
+        guard extendedMetricsConsumers == 1 else { return }
+        fetchExtendedStats = true
+        if hasLoadedProcessList {
+            await loadProcessList(showMessage: false)
+        }
+    }
+
+    func endExtendedMetrics() {
+        extendedMetricsConsumers = max(0, extendedMetricsConsumers - 1)
+        if extendedMetricsConsumers == 0 {
+            fetchExtendedStats = false
+        }
+    }
 
     private func publishDisplayProcesses() {
         var sorted = fullProcessInventory

@@ -1,12 +1,45 @@
 import AppKit
 import SwiftUI
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+enum TaskScopeLaunchContext: Equatable {
+    case interactive
+    case background
+
+    static func detect(arguments: [String], launchedAsLoginItem: Bool) -> TaskScopeLaunchContext {
+        if launchedAsLoginItem
+            || arguments.contains("--background")
+            || arguments.contains("--automation") {
+            return .background
+        }
+        return .interactive
+    }
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    @Published private(set) var launchContext: TaskScopeLaunchContext = .interactive
+
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.setActivationPolicy(.regular)
+        let loginDescriptor = NSAppleEventManager.shared()
+            .currentAppleEvent?
+            .paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))
+        launchContext = TaskScopeLaunchContext.detect(
+            arguments: ProcessInfo.processInfo.arguments,
+            launchedAsLoginItem: loginDescriptor?.booleanValue ?? false
+        )
+
+        NSApp.setActivationPolicy(launchContext == .background ? .accessory : .regular)
         HotkeyManager.shared.register()
         URLSchemeHandler.shared.register()
-        NSApp.activate(ignoringOtherApps: true)
+        if launchContext == .interactive {
+            NSApp.activate(ignoringOtherApps: true)
+        } else {
+            DispatchQueue.main.async {
+                NSApp.windows
+                    .filter { $0.title == "TaskScope" || $0.title == "TaskScope Processes" }
+                    .forEach { $0.orderOut(nil) }
+            }
+        }
     }
 }
 
@@ -45,7 +78,9 @@ struct TaskScopeApp: App {
             .environmentObject(watchedApps)
             .task {
                 await bootstrapRuntimeIfNeeded()
-                openOnboardingIfNeeded()
+                if appDelegate.launchContext == .interactive {
+                    openOnboardingIfNeeded()
+                }
             }
         }
         .defaultSize(width: 900, height: 600)
@@ -118,10 +153,13 @@ struct TaskScopeApp: App {
         }
         .task {
             await bootstrapRuntimeIfNeeded()
-            openOnboardingIfNeeded()
+            if appDelegate.launchContext == .interactive {
+                openOnboardingIfNeeded()
+            }
         }
         .onChange(of: settings.refreshIntervalSeconds) { _, _ in
             configurePolling()
+            processHistory.start(cadence: settings.refreshIntervalSeconds)
         }
         .onChange(of: settings.autoRefreshProcessList) { _, _ in
             configurePolling()
@@ -146,9 +184,6 @@ struct TaskScopeApp: App {
             NotificationService.shared.prime(initialRunningNames: eligibleNotificationNames())
             Task { await processManager.refreshWatchedStatus(showMessage: false) }
         }
-        .onChange(of: processManager.processes) { _, processes in
-            processHistory.record(processes: processes)
-        }
     }
 
     private func bootstrapRuntimeIfNeeded() async {
@@ -168,10 +203,11 @@ struct TaskScopeApp: App {
         AppCommandBus.shared.install { command in
             await coordinator.perform(command)
         }
-        HotkeyManager.shared.onToggle = {
+        HotkeyManager.shared.onShow = {
             showTaskScopeWindow()
         }
         configurePolling()
+        processHistory.start(cadence: settings.refreshIntervalSeconds)
         autoStopRules.start(cadence: 10) { process in
             await processManager.terminate(process)
         }

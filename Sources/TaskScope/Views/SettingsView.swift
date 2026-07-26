@@ -25,7 +25,10 @@ struct SettingsView: View {
     @State private var editingRule: AutoStopRule?
     @State private var exportError: String?
     @State private var importError: String?
+    @State private var presetValidationError: String?
     @State private var showImporter = false
+    @State private var showPresetEditor = false
+    @State private var editingPresetID: UUID?
 
     var body: some View {
         TabView {
@@ -53,6 +56,9 @@ struct SettingsView: View {
                 },
                 onCancel: { editingRule = nil }
             )
+        }
+        .sheet(isPresented: $showPresetEditor) {
+            presetEditorSheet
         }
     }
 
@@ -106,6 +112,14 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            if let recoveryMessage = settings.recoveryMessage {
+                Section("Recovered Settings") {
+                    Text(recoveryMessage)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+            }
         }
         .formStyle(.grouped)
         .padding()
@@ -116,6 +130,11 @@ struct SettingsView: View {
             HStack {
                 Text("Watched Apps").font(.headline)
                 Spacer()
+                Button {
+                    prepareNewPreset()
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
                 Button {
                     exportPresets()
                 } label: {
@@ -129,12 +148,28 @@ struct SettingsView: View {
             }
             .padding(.horizontal)
 
+            if let issue = watchedApps.persistenceIssue {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(issue)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Button("Reset Presets After Backup", role: .destructive) {
+                        watchedApps.resetAfterCorruption()
+                    }
+                }
+                .padding(.horizontal)
+            }
+
             List {
                 ForEach(watchedApps.presets) { preset in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             Text(preset.displayName).fontWeight(.semibold)
                             Spacer()
+                            Button("Edit") {
+                                prepareToEdit(preset)
+                            }
+                            .buttonStyle(.borderless)
                             Toggle("", isOn: Binding(
                                 get: { preset.notificationsEnabled },
                                 set: { newValue in
@@ -159,66 +194,6 @@ struct SettingsView: View {
                 .onDelete { watchedApps.remove(at: $0) }
             }
 
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Add Preset").font(.headline)
-                TextFieldRow(label: "Display name", text: $newDisplayName)
-                TextFieldRow(label: "Main process name", text: $newMainProcess)
-                TextFieldRow(label: "Helpers (comma-separated)", text: $newHelpers)
-                TextFieldRow(label: "Protected (comma-separated)", text: $newProtected)
-                TextFieldRow(label: "App path", text: $newAppPath)
-
-                Divider().padding(.vertical, 4)
-
-                Text("Launch Agents (optional)").font(.subheadline).fontWeight(.medium)
-                TextFieldRow(label: "Agent labels (comma-separated)", text: $newAgentLabels)
-                TextFieldRow(label: "Agent plist paths (comma-separated)", text: $newAgentPlistPaths)
-
-                Divider().padding(.vertical, 4)
-
-                Text("System Launch Daemons (optional)").font(.subheadline).fontWeight(.medium)
-                TextFieldRow(label: "Daemon labels (comma-separated)", text: $newDaemonLabels)
-                TextFieldRow(label: "Daemon plist paths (comma-separated)", text: $newDaemonPlistPaths)
-                TextFieldRow(label: "Daemon process names (comma-separated)", text: $newDaemonProcessNames)
-                TextFieldRow(label: "Daemon service ports (comma-separated)", text: $newDaemonPorts)
-
-                Button("Add Preset") {
-                    let preset = WatchedAppPreset(
-                        displayName: newDisplayName.isEmpty ? newMainProcess : newDisplayName,
-                        mainProcessName: newMainProcess,
-                        helperProcessNames: PresetInputParser.list(from: newHelpers),
-                        protectedProcessNames: PresetInputParser.list(from: newProtected),
-                        appPath: newAppPath,
-                        userLaunchAgentJobs: PresetInputParser.userLaunchAgentJobs(
-                            labels: newAgentLabels,
-                            paths: newAgentPlistPaths
-                        ),
-                        systemLaunchDaemonJobs: PresetInputParser.systemLaunchDaemonJobs(
-                            labels: newDaemonLabels,
-                            paths: newDaemonPlistPaths,
-                            processNames: newDaemonProcessNames,
-                            ports: newDaemonPorts
-                        )
-                    )
-                    watchedApps.add(preset)
-                    newDisplayName = ""
-                    newMainProcess = ""
-                    newHelpers = ""
-                    newProtected = ""
-                    newAppPath = "/Applications/"
-                    newAgentLabels = ""
-                    newAgentPlistPaths = ""
-                    newDaemonLabels = ""
-                    newDaemonPlistPaths = ""
-                    newDaemonProcessNames = ""
-                    newDaemonPorts = ""
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(newMainProcess.isEmpty)
-            }
-            .padding(.horizontal)
-
             if let err = importError {
                 Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal)
             }
@@ -229,8 +204,64 @@ struct SettingsView: View {
         .padding(.vertical)
     }
 
+    private var presetEditorSheet: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(editingPresetID == nil ? "Add Watched App" : "Edit Watched App")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    TextFieldRow(label: "Display name", text: $newDisplayName)
+                    TextFieldRow(label: "Main process name", text: $newMainProcess)
+                    TextFieldRow(label: "Helpers (comma-separated)", text: $newHelpers)
+                    TextFieldRow(label: "Protected (comma-separated)", text: $newProtected)
+                    TextFieldRow(label: "App bundle path", text: $newAppPath)
+
+                    Divider().padding(.vertical, 4)
+                    Text("Launch Agents (optional)").font(.headline)
+                    TextFieldRow(label: "Labels", text: $newAgentLabels)
+                    TextFieldRow(label: "Plist paths", text: $newAgentPlistPaths)
+
+                    Divider().padding(.vertical, 4)
+                    Text("System Launch Daemons (optional)").font(.headline)
+                    TextFieldRow(label: "Labels", text: $newDaemonLabels)
+                    TextFieldRow(label: "Plist paths", text: $newDaemonPlistPaths)
+                    TextFieldRow(label: "Process names", text: $newDaemonProcessNames)
+                    TextFieldRow(label: "Ports (blank allowed)", text: $newDaemonPorts)
+                }
+            }
+
+            if let error = presetValidationError ?? watchedApps.validationError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button("Cancel") { showPresetEditor = false }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(editingPresetID == nil ? "Add Preset" : "Save Changes") {
+                    savePresetEditor()
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(newMainProcess.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 620, height: 560)
+    }
+
     private var autoStopTab: some View {
         VStack(alignment: .leading, spacing: 12) {
+            ForEach(autoStopRules.recoveryMessages, id: \.self) { message in
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .padding(.horizontal)
+            }
             List {
                 Section("Rules") {
                     ForEach(autoStopRules.rules) { rule in
@@ -346,6 +377,82 @@ struct SettingsView: View {
         HotkeySettingsView()
     }
 
+    private func prepareNewPreset() {
+        editingPresetID = nil
+        newDisplayName = ""
+        newMainProcess = ""
+        newHelpers = ""
+        newProtected = ""
+        newAppPath = "/Applications/"
+        newAgentLabels = ""
+        newAgentPlistPaths = ""
+        newDaemonLabels = ""
+        newDaemonPlistPaths = ""
+        newDaemonProcessNames = ""
+        newDaemonPorts = ""
+        presetValidationError = nil
+        showPresetEditor = true
+    }
+
+    private func prepareToEdit(_ preset: WatchedAppPreset) {
+        editingPresetID = preset.id
+        newDisplayName = preset.displayName
+        newMainProcess = preset.mainProcessName
+        newHelpers = preset.helperProcessNames.joined(separator: ", ")
+        newProtected = preset.protectedProcessNames.joined(separator: ", ")
+        newAppPath = preset.appPath
+        newAgentLabels = preset.userLaunchAgentJobs.map(\.label).joined(separator: ", ")
+        newAgentPlistPaths = preset.userLaunchAgentJobs.map(\.plistPath).joined(separator: ", ")
+        newDaemonLabels = preset.systemLaunchDaemonJobs.map(\.label).joined(separator: ", ")
+        newDaemonPlistPaths = preset.systemLaunchDaemonJobs.map(\.plistPath).joined(separator: ", ")
+        newDaemonProcessNames = preset.systemLaunchDaemonJobs.map(\.processName).joined(separator: ", ")
+        newDaemonPorts = preset.systemLaunchDaemonJobs
+            .map { $0.servicePort.map(String.init) ?? "" }
+            .joined(separator: ",")
+        presetValidationError = nil
+        showPresetEditor = true
+    }
+
+    private func savePresetEditor() {
+        let agents = PresetInputParser.parseUserLaunchAgentJobs(
+            labels: newAgentLabels,
+            paths: newAgentPlistPaths
+        )
+        let daemons = PresetInputParser.parseSystemLaunchDaemonJobs(
+            labels: newDaemonLabels,
+            paths: newDaemonPlistPaths,
+            processNames: newDaemonProcessNames,
+            ports: newDaemonPorts
+        )
+        let mappingErrors = agents.errors + daemons.errors
+        guard mappingErrors.isEmpty else {
+            presetValidationError = mappingErrors.joined(separator: " ")
+            return
+        }
+
+        let existing = editingPresetID.flatMap { id in
+            watchedApps.presets.first(where: { $0.id == id })
+        }
+        let preset = WatchedAppPreset(
+            id: existing?.id ?? UUID(),
+            displayName: newDisplayName.isEmpty ? newMainProcess : newDisplayName,
+            mainProcessName: newMainProcess,
+            helperProcessNames: PresetInputParser.list(from: newHelpers),
+            protectedProcessNames: PresetInputParser.list(from: newProtected),
+            appPath: newAppPath,
+            userLaunchAgentJobs: agents.value,
+            systemLaunchDaemonJobs: daemons.value,
+            notificationsEnabled: existing?.notificationsEnabled ?? true
+        )
+        let saved = existing == nil ? watchedApps.add(preset) : watchedApps.update(preset)
+        guard saved else {
+            presetValidationError = watchedApps.validationError
+            return
+        }
+        presetValidationError = nil
+        showPresetEditor = false
+    }
+
     private func exportPresets() {
         guard let data = try? JSONEncoder().encode(watchedApps.presets) else { return }
         let panel = NSSavePanel()
@@ -367,10 +474,15 @@ struct SettingsView: View {
             return
         }
         let existingIds = Set(watchedApps.presets.map { $0.id })
+        var rejected = 0
         for preset in decoded where !existingIds.contains(preset.id) {
-            watchedApps.add(preset)
+            if !watchedApps.add(preset) {
+                rejected += 1
+            }
         }
-        importError = nil
+        importError = rejected == 0
+            ? nil
+            : "\(rejected) imported preset\(rejected == 1 ? " was" : "s were") rejected by validation."
     }
 }
 
@@ -443,7 +555,7 @@ private struct HotkeySettingsView: View {
     var body: some View {
         Form {
             Section("Global Hotkey") {
-                Toggle("Enable global toggle hotkey", isOn: $hotkey.hotkeyEnabled)
+                Toggle("Enable global Show TaskScope hotkey", isOn: $hotkey.hotkeyEnabled)
 
                 HStack {
                     Text("Current Hotkey")
@@ -466,6 +578,14 @@ private struct HotkeySettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                Text(hotkey.registrationStatus.message)
+                    .font(.caption)
+                    .foregroundStyle(
+                        hotkey.registrationStatus == .registered
+                            ? Color.secondary
+                            : Color.orange
+                    )
+
                 Text("Default: ⌘⇧T shows the TaskScope window.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -477,8 +597,7 @@ private struct HotkeySettingsView: View {
             RecordingListenerView(
                 isRecording: $recording,
                 onRecord: { keyCode, modifiers in
-                    hotkey.keyCode = keyCode
-                    hotkey.modifiers = modifiers
+                    _ = hotkey.updateShortcut(keyCode: keyCode, modifiers: modifiers)
                     recording = false
                 },
                 onCancel: {

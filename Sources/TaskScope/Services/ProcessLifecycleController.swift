@@ -40,6 +40,12 @@ struct LifecycleBatchResult: Equatable {
     }
 }
 
+struct LifecycleReport: Identifiable, Equatable {
+    var id = UUID()
+    var title: String
+    var jobs: [LifecycleJobResult]
+}
+
 protocol ProcessLifecycleServicing {
     func appBundleExists(at path: String) -> Bool
     func settleAfterProcessChange() async

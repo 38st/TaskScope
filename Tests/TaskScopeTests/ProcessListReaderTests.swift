@@ -13,6 +13,8 @@ final class ProcessListReaderTests: XCTestCase {
         XCTAssertEqual(process?.memoryMB, 2.0)
         XCTAssertEqual(process?.elapsedTime, "01:02:03")
         XCTAssertEqual(process?.command, "/Applications/Example App.app/Contents/MacOS/Example App")
+        XCTAssertNil(process?.netInKB)
+        XCTAssertNil(process?.diskReadBlocks)
     }
 
     func testParseProcessLineRejectsMalformedRows() {

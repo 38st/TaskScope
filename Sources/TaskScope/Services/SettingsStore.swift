@@ -1,19 +1,19 @@
-import Foundation
 import Combine
+import Foundation
 
 @MainActor
 final class SettingsStore: ObservableObject {
     @Published var refreshIntervalSeconds: Double {
-        didSet { save() }
+        didSet { normalizeAndSave() }
     }
     @Published var processListLimit: Int {
-        didSet { save() }
+        didSet { normalizeAndSave() }
     }
     @Published var cpuHighlightThreshold: Double {
-        didSet { save() }
+        didSet { normalizeAndSave() }
     }
     @Published var memHighlightThresholdMB: Double {
-        didSet { save() }
+        didSet { normalizeAndSave() }
     }
     @Published var autoRefreshProcessList: Bool {
         didSet { save() }
@@ -21,30 +21,52 @@ final class SettingsStore: ObservableObject {
     @Published var enableNotifications: Bool {
         didSet { save() }
     }
-
     @Published var selectedSectionRaw: String {
-        didSet { save() }
+        didSet { normalizeAndSave() }
     }
     @Published var searchText: String {
-        didSet { save() }
+        didSet { normalizeAndSave() }
     }
     @Published var sortKeyRaw: String {
-        didSet { save() }
+        didSet { normalizeAndSave() }
     }
+    @Published private(set) var recoveryMessage: String?
 
-    private let key = "TaskScope.settings.v1"
+    private let userDefaults: UserDefaults
+    private let key: String
+    private var isNormalizing = false
 
-    init() {
-        let decoded = Self.load(key: key)
-        refreshIntervalSeconds = decoded?.refreshIntervalSeconds ?? 10
-        processListLimit = decoded?.processListLimit ?? 80
-        cpuHighlightThreshold = decoded?.cpuHighlightThreshold ?? 30
-        memHighlightThresholdMB = decoded?.memHighlightThresholdMB ?? 1024
-        autoRefreshProcessList = decoded?.autoRefreshProcessList ?? false
-        enableNotifications = decoded?.enableNotifications ?? true
-        selectedSectionRaw = decoded?.selectedSectionRaw ?? TaskScopeSection.processes.rawValue
-        searchText = decoded?.searchText ?? ""
-        sortKeyRaw = decoded?.sortKeyRaw ?? ProcessSortKey.cpu.rawValue
+    init(
+        userDefaults: UserDefaults = .standard,
+        key: String = "TaskScope.settings.v1"
+    ) {
+        self.userDefaults = userDefaults
+        self.key = key
+        let result = Self.load(userDefaults: userDefaults, key: key)
+        let decoded: CodableSettings
+        switch result {
+        case .missing:
+            decoded = .defaults
+            recoveryMessage = nil
+        case .loaded(let settings):
+            decoded = settings.normalized()
+            recoveryMessage = nil
+        case .corrupt(let data):
+            decoded = .defaults
+            let backupKey = "\(key).corruptBackup"
+            userDefaults.set(data, forKey: backupKey)
+            recoveryMessage = "Settings were unreadable. The original data was backed up as \(backupKey)."
+        }
+
+        refreshIntervalSeconds = decoded.refreshIntervalSeconds
+        processListLimit = decoded.processListLimit
+        cpuHighlightThreshold = decoded.cpuHighlightThreshold
+        memHighlightThresholdMB = decoded.memHighlightThresholdMB
+        autoRefreshProcessList = decoded.autoRefreshProcessList
+        enableNotifications = decoded.enableNotifications
+        selectedSectionRaw = decoded.selectedSectionRaw
+        searchText = decoded.searchText
+        sortKeyRaw = decoded.sortKeyRaw
     }
 
     var sortKey: ProcessSortKey {
@@ -55,8 +77,26 @@ final class SettingsStore: ObservableObject {
         TaskScopeSection(rawValue: selectedSectionRaw) ?? .processes
     }
 
-    private func save() {
-        let codable = CodableSettings(
+    private func normalizeAndSave() {
+        guard !isNormalizing else { return }
+        let normalized = currentSettings.normalized()
+        if normalized != currentSettings {
+            isNormalizing = true
+            refreshIntervalSeconds = normalized.refreshIntervalSeconds
+            processListLimit = normalized.processListLimit
+            cpuHighlightThreshold = normalized.cpuHighlightThreshold
+            memHighlightThresholdMB = normalized.memHighlightThresholdMB
+            selectedSectionRaw = normalized.selectedSectionRaw
+            searchText = normalized.searchText
+            sortKeyRaw = normalized.sortKeyRaw
+            isNormalizing = false
+        }
+        save()
+    }
+
+    private var currentSettings: CodableSettings {
+        CodableSettings(
+            schemaVersion: CodableSettings.currentSchemaVersion,
             refreshIntervalSeconds: refreshIntervalSeconds,
             processListLimit: processListLimit,
             cpuHighlightThreshold: cpuHighlightThreshold,
@@ -67,12 +107,38 @@ final class SettingsStore: ObservableObject {
             searchText: searchText,
             sortKeyRaw: sortKeyRaw
         )
-        if let data = try? JSONEncoder().encode(codable) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
     }
 
-    private struct CodableSettings: Codable {
+    private func save() {
+        guard !isNormalizing,
+              let data = try? JSONEncoder().encode(currentSettings.normalized()) else {
+            return
+        }
+        userDefaults.set(data, forKey: key)
+    }
+
+    private enum LoadResult {
+        case missing
+        case loaded(CodableSettings)
+        case corrupt(Data)
+    }
+
+    private struct CodableSettings: Codable, Equatable {
+        static let currentSchemaVersion = 2
+        static let defaults = CodableSettings(
+            schemaVersion: currentSchemaVersion,
+            refreshIntervalSeconds: 10,
+            processListLimit: 80,
+            cpuHighlightThreshold: 30,
+            memHighlightThresholdMB: 1024,
+            autoRefreshProcessList: false,
+            enableNotifications: false,
+            selectedSectionRaw: TaskScopeSection.processes.rawValue,
+            searchText: "",
+            sortKeyRaw: ProcessSortKey.cpu.rawValue
+        )
+
+        var schemaVersion: Int
         var refreshIntervalSeconds: Double
         var processListLimit: Int
         var cpuHighlightThreshold: Double
@@ -82,10 +148,110 @@ final class SettingsStore: ObservableObject {
         var selectedSectionRaw: String
         var searchText: String
         var sortKeyRaw: String
+
+        private enum CodingKeys: String, CodingKey {
+            case schemaVersion
+            case refreshIntervalSeconds
+            case processListLimit
+            case cpuHighlightThreshold
+            case memHighlightThresholdMB
+            case autoRefreshProcessList
+            case enableNotifications
+            case selectedSectionRaw
+            case searchText
+            case sortKeyRaw
+        }
+
+        init(
+            schemaVersion: Int,
+            refreshIntervalSeconds: Double,
+            processListLimit: Int,
+            cpuHighlightThreshold: Double,
+            memHighlightThresholdMB: Double,
+            autoRefreshProcessList: Bool,
+            enableNotifications: Bool,
+            selectedSectionRaw: String,
+            searchText: String,
+            sortKeyRaw: String
+        ) {
+            self.schemaVersion = schemaVersion
+            self.refreshIntervalSeconds = refreshIntervalSeconds
+            self.processListLimit = processListLimit
+            self.cpuHighlightThreshold = cpuHighlightThreshold
+            self.memHighlightThresholdMB = memHighlightThresholdMB
+            self.autoRefreshProcessList = autoRefreshProcessList
+            self.enableNotifications = enableNotifications
+            self.selectedSectionRaw = selectedSectionRaw
+            self.searchText = searchText
+            self.sortKeyRaw = sortKeyRaw
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let defaults = Self.defaults
+            schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+            refreshIntervalSeconds = try container.decodeIfPresent(
+                Double.self,
+                forKey: .refreshIntervalSeconds
+            ) ?? defaults.refreshIntervalSeconds
+            processListLimit = try container.decodeIfPresent(
+                Int.self,
+                forKey: .processListLimit
+            ) ?? defaults.processListLimit
+            cpuHighlightThreshold = try container.decodeIfPresent(
+                Double.self,
+                forKey: .cpuHighlightThreshold
+            ) ?? defaults.cpuHighlightThreshold
+            memHighlightThresholdMB = try container.decodeIfPresent(
+                Double.self,
+                forKey: .memHighlightThresholdMB
+            ) ?? defaults.memHighlightThresholdMB
+            autoRefreshProcessList = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .autoRefreshProcessList
+            ) ?? defaults.autoRefreshProcessList
+            enableNotifications = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .enableNotifications
+            ) ?? defaults.enableNotifications
+            selectedSectionRaw = try container.decodeIfPresent(
+                String.self,
+                forKey: .selectedSectionRaw
+            ) ?? defaults.selectedSectionRaw
+            searchText = try container.decodeIfPresent(
+                String.self,
+                forKey: .searchText
+            ) ?? defaults.searchText
+            sortKeyRaw = try container.decodeIfPresent(
+                String.self,
+                forKey: .sortKeyRaw
+            ) ?? defaults.sortKeyRaw
+        }
+
+        func normalized() -> CodableSettings {
+            var value = self
+            value.schemaVersion = Self.currentSchemaVersion
+            value.refreshIntervalSeconds = min(60, max(2, refreshIntervalSeconds))
+            value.processListLimit = min(200, max(10, processListLimit))
+            value.cpuHighlightThreshold = min(100, max(1, cpuHighlightThreshold))
+            value.memHighlightThresholdMB = min(8192, max(100, memHighlightThresholdMB))
+            if TaskScopeSection(rawValue: selectedSectionRaw) == nil {
+                value.selectedSectionRaw = TaskScopeSection.processes.rawValue
+            }
+            value.searchText = String(searchText.prefix(500))
+            if ProcessSortKey(rawValue: sortKeyRaw) == nil {
+                value.sortKeyRaw = ProcessSortKey.cpu.rawValue
+            }
+            return value
+        }
     }
 
-    private static func load(key: String) -> CodableSettings? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(CodableSettings.self, from: data)
+    private static func load(userDefaults: UserDefaults, key: String) -> LoadResult {
+        guard let data = userDefaults.data(forKey: key) else { return .missing }
+        do {
+            return .loaded(try JSONDecoder().decode(CodableSettings.self, from: data))
+        } catch {
+            return .corrupt(data)
+        }
     }
 }

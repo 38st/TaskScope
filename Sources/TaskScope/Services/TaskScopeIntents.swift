@@ -3,8 +3,8 @@ import Foundation
 
 @available(macOS 13.0, *)
 struct StopWatchedAppIntent: AppIntent {
-    static var title: LocalizedStringResource = "Stop Watched App"
-    static var description = IntentDescription("Stop a watched app's main process by name.")
+    static let title: LocalizedStringResource = "Stop Watched App"
+    static let description = IntentDescription("Stop a watched app's main process by name.")
 
     @Parameter(title: "App Name")
     var appName: String
@@ -19,8 +19,8 @@ struct StopWatchedAppIntent: AppIntent {
 
 @available(macOS 13.0, *)
 struct OpenWatchedAppIntent: AppIntent {
-    static var title: LocalizedStringResource = "Open Watched App"
-    static var description = IntentDescription("Open a watched app by name.")
+    static let title: LocalizedStringResource = "Open Watched App"
+    static let description = IntentDescription("Open a watched app by name.")
 
     @Parameter(title: "App Name")
     var appName: String
@@ -35,8 +35,8 @@ struct OpenWatchedAppIntent: AppIntent {
 
 @available(macOS 13.0, *)
 struct RefreshTaskScopeIntent: AppIntent {
-    static var title: LocalizedStringResource = "Refresh TaskScope"
-    static var description = IntentDescription("Request TaskScope to refresh its watched status.")
+    static let title: LocalizedStringResource = "Refresh TaskScope"
+    static let description = IntentDescription("Request TaskScope to refresh its watched status.")
 
     static var openAppWhenRun: Bool { true }
 

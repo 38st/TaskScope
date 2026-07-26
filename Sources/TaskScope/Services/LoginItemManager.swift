@@ -1,41 +1,122 @@
 import Foundation
 import ServiceManagement
 
-@MainActor
-final class LoginItemManager: ObservableObject {
-    @Published private(set) var isEnabled = false
-    @Published private(set) var message: String?
+enum LoginItemState: Equatable {
+    case notRegistered
+    case enabled
+    case requiresApproval
+    case notFound
 
-    init() {
-        refresh()
+    var label: String {
+        switch self {
+        case .notRegistered: "Off"
+        case .enabled: "On"
+        case .requiresApproval: "Requires Approval"
+        case .notFound: "Unavailable"
+        }
     }
+}
 
-    func refresh() {
-        isEnabled = SMAppService.mainApp.status == .enabled
-    }
+protocol LoginItemServicing {
+    var state: LoginItemState { get }
+    func register() throws
+    func unregister() throws
+    func openSystemSettings()
+}
 
-    func setEnabled(_ enabled: Bool) {
-        do {
-            if enabled {
-                if SMAppService.mainApp.status != .enabled {
-                    try SMAppService.mainApp.register()
-                }
-            } else if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            }
-
-            message = enabled ? "Launch at Login on." : "Launch at Login off."
-            refreshAfterDelay()
-        } catch {
-            refresh()
-            message = "Could not update login item."
+struct SystemLoginItemService: LoginItemServicing {
+    var state: LoginItemState {
+        switch SMAppService.mainApp.status {
+        case .notRegistered: .notRegistered
+        case .enabled: .enabled
+        case .requiresApproval: .requiresApproval
+        case .notFound: .notFound
+        @unknown default: .notFound
         }
     }
 
-    private func refreshAfterDelay() {
-        Task {
-            try? await Task.sleep(nanoseconds: 750_000_000)
+    func register() throws {
+        try SMAppService.mainApp.register()
+    }
+
+    func unregister() throws {
+        try SMAppService.mainApp.unregister()
+    }
+
+    func openSystemSettings() {
+        SMAppService.openSystemSettingsLoginItems()
+    }
+}
+
+@MainActor
+final class LoginItemManager: ObservableObject {
+    @Published private(set) var state: LoginItemState = .notRegistered
+    @Published private(set) var message: String?
+
+    var isEnabled: Bool {
+        state == .enabled
+    }
+
+    private let service: any LoginItemServicing
+    private var delayedRefreshTask: Task<Void, Never>?
+
+    init(service: any LoginItemServicing = SystemLoginItemService()) {
+        self.service = service
+        refresh()
+    }
+
+    deinit {
+        delayedRefreshTask?.cancel()
+    }
+
+    func refresh() {
+        state = service.state
+        message = message(for: state)
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        delayedRefreshTask?.cancel()
+        do {
+            if enabled {
+                if service.state == .notRegistered {
+                    try service.register()
+                }
+            } else if service.state == .enabled || service.state == .requiresApproval {
+                try service.unregister()
+            }
             refresh()
+            scheduleVerification()
+        } catch {
+            refresh()
+            message = "Could not update Launch at Login: \(error.localizedDescription)"
+        }
+    }
+
+    func openSystemSettings() {
+        service.openSystemSettings()
+    }
+
+    private func scheduleVerification() {
+        delayedRefreshTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 750_000_000)
+            } catch {
+                return
+            }
+            self?.refresh()
+        }
+    }
+
+    private func message(for state: LoginItemState) -> String {
+        switch state {
+        case .notRegistered:
+            "Launch at Login is off."
+        case .enabled:
+            "Launch at Login is on."
+        case .requiresApproval:
+            "Launch at Login requires approval in System Settings."
+        case .notFound:
+            "Launch at Login is unavailable for this app bundle."
         }
     }
 }

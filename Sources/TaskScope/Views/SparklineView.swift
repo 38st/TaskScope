@@ -5,6 +5,7 @@ struct SparklineView: View {
     var keyPath: KeyPath<ProcessHistory.Sample, Double>
     var color: Color
     var label: String
+    var unit: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -12,10 +13,10 @@ struct SparklineView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             Canvas { context, size in
-                guard samples.count > 1 else { return }
+                guard !samples.isEmpty else { return }
                 let values = samples.map { $0[keyPath: keyPath] }
                 guard let max = values.max(), max > 0 else { return }
-                let stepX = size.width / CGFloat(values.count - 1)
+                let stepX = values.count == 1 ? 0 : size.width / CGFloat(values.count - 1)
                 var path = Path()
                 for (index, value) in values.enumerated() {
                     let x = CGFloat(index) * stepX
@@ -26,9 +27,27 @@ struct SparklineView: View {
                         path.addLine(to: CGPoint(x: x, y: y))
                     }
                 }
-                context.stroke(path, with: .color(color), lineWidth: 1.5)
+                if values.count == 1 {
+                    let point = CGPoint(x: size.width / 2, y: size.height / 2)
+                    context.fill(
+                        Path(ellipseIn: CGRect(x: point.x - 2, y: point.y - 2, width: 4, height: 4)),
+                        with: .color(color)
+                    )
+                } else {
+                    context.stroke(path, with: .color(color), lineWidth: 1.5)
+                }
             }
             .frame(height: 24)
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(label)
+        .accessibilityValue(accessibilitySummary)
+    }
+
+    private var accessibilitySummary: String {
+        guard let latest = samples.last?[keyPath: keyPath] else {
+            return "No samples"
+        }
+        return "Latest \(latest.formatted(.number.precision(.fractionLength(1)))) \(unit), \(samples.count) samples"
     }
 }

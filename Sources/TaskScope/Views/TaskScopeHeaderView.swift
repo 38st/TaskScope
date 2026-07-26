@@ -3,6 +3,7 @@ import SwiftUI
 struct TaskScopeHeaderView: View {
     var status: ProcessStatus
     var samples: [ProcessHistory.Sample]
+    var samplingState: ProcessHistory.SamplingState
     var showsMetrics: Bool
     var showsOpenWindowButton: Bool
     var openFullWindow: (() -> Void)?
@@ -32,11 +33,24 @@ struct TaskScopeHeaderView: View {
 
             if showsMetrics {
                 HStack(spacing: 12) {
-                    SparklineView(samples: samples, keyPath: \.systemCPU, color: .orange, label: "CPU")
+                    SparklineView(
+                        samples: samples,
+                        keyPath: \.observedProcessCPU,
+                        color: .orange,
+                        label: "PROC CPU %",
+                        unit: "percent"
+                    )
                         .frame(width: 70)
-                    SparklineView(samples: samples, keyPath: \.systemMemoryMB, color: .blue, label: "MEM")
+                    SparklineView(
+                        samples: samples,
+                        keyPath: \.observedProcessMemoryMB,
+                        color: .blue,
+                        label: "PROC RSS",
+                        unit: "megabytes"
+                    )
                         .frame(width: 70)
                 }
+                .help("Full observed process inventory · \(samplingState.label)")
             }
 
             Spacer()

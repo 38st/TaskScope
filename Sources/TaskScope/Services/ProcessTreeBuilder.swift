@@ -6,33 +6,106 @@ struct ProcessTreeNode: Identifiable, Equatable {
     var id: Int32 { process.pid }
 }
 
-@MainActor
-final class ProcessTreeBuilder {
-    static func build(from processes: [AppProcess], ppidMap: [Int32: Int32]) -> [ProcessTreeNode] {
-        var nodesById: [Int32: ProcessTreeNode] = [:]
-        for process in processes {
-            nodesById[process.pid] = ProcessTreeNode(process: process, children: [])
+enum ProcessTreeBuilder {
+    /// Builds a stable tree and, when `matchingPIDs` is supplied, retains every
+    /// available ancestor needed to give matching rows hierarchy context.
+    static func build(
+        from processes: [AppProcess],
+        ppidMap: [Int32: Int32],
+        matchingPIDs: Set<Int32>? = nil
+    ) -> [ProcessTreeNode] {
+        let allByID = Dictionary(uniqueKeysWithValues: processes.map { ($0.pid, $0) })
+        let includedIDs = includedProcessIDs(
+            allIDs: Set(allByID.keys),
+            ppidMap: ppidMap,
+            matchingPIDs: matchingPIDs
+        )
+        let nodesByID = allByID.filter { includedIDs.contains($0.key) }
+        var effectiveParent: [Int32: Int32] = [:]
+
+        for pid in includedIDs {
+            guard let parent = ppidMap[pid],
+                  parent != 0,
+                  includedIDs.contains(parent) else {
+                continue
+            }
+            effectiveParent[pid] = parent
         }
 
-        var childPidsByParent: [Int32: [Int32]] = [:]
-        var rootPids: [Int32] = []
-        for process in processes {
-            let parent = ppidMap[process.pid]
-            if let parentPid = parent, parentPid != 0, nodesById[parentPid] != nil {
-                childPidsByParent[parentPid, default: []].append(process.pid)
-            } else {
-                rootPids.append(process.pid)
+        breakCycles(in: &effectiveParent, includedIDs: includedIDs)
+
+        var childPIDsByParent: [Int32: [Int32]] = [:]
+        for (child, parent) in effectiveParent {
+            childPIDsByParent[parent, default: []].append(child)
+        }
+        for parent in childPIDsByParent.keys {
+            childPIDsByParent[parent]?.sort()
+        }
+
+        let rootPIDs = includedIDs
+            .filter { effectiveParent[$0] == nil }
+            .sorted()
+
+        func buildNode(_ pid: Int32, ancestors: Set<Int32>) -> ProcessTreeNode? {
+            guard let process = nodesByID[pid], !ancestors.contains(pid) else { return nil }
+            var nextAncestors = ancestors
+            nextAncestors.insert(pid)
+            let children = (childPIDsByParent[pid] ?? []).compactMap {
+                buildNode($0, ancestors: nextAncestors)
+            }
+            return ProcessTreeNode(process: process, children: children)
+        }
+
+        return rootPIDs.compactMap { buildNode($0, ancestors: []) }
+    }
+
+    private static func includedProcessIDs(
+        allIDs: Set<Int32>,
+        ppidMap: [Int32: Int32],
+        matchingPIDs: Set<Int32>?
+    ) -> Set<Int32> {
+        guard let matchingPIDs else { return allIDs }
+        var included = matchingPIDs.intersection(allIDs)
+
+        for match in matchingPIDs {
+            var current = match
+            var visited: Set<Int32> = []
+            while visited.insert(current).inserted,
+                  let parent = ppidMap[current],
+                  parent != 0,
+                  allIDs.contains(parent) {
+                included.insert(parent)
+                current = parent
             }
         }
+        return included
+    }
 
-        func buildNode(_ pid: Int32) -> ProcessTreeNode? {
-            guard var node = nodesById[pid] else { return nil }
-            if let childPids = childPidsByParent[pid] {
-                node.children = childPids.compactMap { buildNode($0) }
+    private static func breakCycles(
+        in parents: inout [Int32: Int32],
+        includedIDs: Set<Int32>
+    ) {
+        var globallyVisited: Set<Int32> = []
+
+        for start in includedIDs.sorted() where !globallyVisited.contains(start) {
+            var path: [Int32] = []
+            var position: [Int32: Int] = [:]
+            var current: Int32? = start
+
+            while let pid = current, includedIDs.contains(pid) {
+                if let cycleStart = position[pid] {
+                    let cycle = Array(path[cycleStart...])
+                    if let deterministicRoot = cycle.min() {
+                        parents.removeValue(forKey: deterministicRoot)
+                    }
+                    break
+                }
+                if globallyVisited.contains(pid) { break }
+                position[pid] = path.count
+                path.append(pid)
+                current = parents[pid]
             }
-            return node
+            globallyVisited.formUnion(path)
         }
-
-        return rootPids.compactMap { buildNode($0) }
     }
 }

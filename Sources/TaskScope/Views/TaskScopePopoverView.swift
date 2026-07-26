@@ -54,8 +54,13 @@ struct TaskScopePopoverView: View {
     @State private var expandedTreePids: Set<Int32> = []
     @State private var saveSelectionName: String = ""
     @State private var showSaveSelectionSheet: Bool = false
+    @State private var pendingRecallSelection: SavedSelectionsStore.SavedSelection?
+    @State private var pendingRecallResult: SavedSelectionsStore.RecallResult?
+    @State private var renameSelection: SavedSelectionsStore.SavedSelection?
+    @State private var renameSelectionName = ""
     @State private var quickAutoStopProcess: AppProcess?
     @State private var quickPresetDraft: QuickWatchedPresetDraft?
+    @State private var registeredExtendedMetrics = false
 
     private var isExpandedWindow: Bool {
         presentationStyle == .expandedWindow
@@ -82,9 +87,31 @@ struct TaskScopePopoverView: View {
             footer
         }
         .background(.regularMaterial)
+        .onAppear {
+            guard isExpandedWindow, !registeredExtendedMetrics else { return }
+            registeredExtendedMetrics = true
+            Task { await processManager.beginExtendedMetrics() }
+        }
+        .onDisappear {
+            guard registeredExtendedMetrics else { return }
+            registeredExtendedMetrics = false
+            processManager.endExtendedMetrics()
+        }
         .onChange(of: processManager.processes) { _, newProcesses in
             if let pid = keyboardSelectedPid, !newProcesses.contains(where: { $0.pid == pid }) {
                 keyboardSelectedPid = nil
+            }
+            expandFilteredTreeAncestors()
+        }
+        .onChange(of: settings.searchText) { _, _ in
+            expandFilteredTreeAncestors()
+        }
+        .onChange(of: filterMode) { _, _ in
+            expandFilteredTreeAncestors()
+        }
+        .onChange(of: treeMode) { _, enabled in
+            if enabled {
+                expandFilteredTreeAncestors()
             }
         }
         .confirmationDialog(
@@ -163,16 +190,63 @@ struct TaskScopePopoverView: View {
             SaveSelectionSheet(
                 name: $saveSelectionName,
                 count: processManager.selectedPids.count,
+                validationError: savedSelections.validationError,
                 onSave: {
-                    let selectedProcesses = processManager.processes.filter {
-                        processManager.selectedPids.contains($0.pid)
+                    if savedSelections.save(
+                        name: saveSelectionName,
+                        processes: processManager.selectedProcessesSnapshot()
+                    ) {
+                        showSaveSelectionSheet = false
                     }
-                    savedSelections.save(name: saveSelectionName, processes: selectedProcesses)
-                    showSaveSelectionSheet = false
                 },
                 onCancel: {
                     showSaveSelectionSheet = false
                 }
+            )
+        }
+        .sheet(item: $pendingRecallSelection) { selection in
+            if let result = pendingRecallResult {
+                SavedSelectionRecallSheet(
+                    selection: selection,
+                    result: result,
+                    onApply: {
+                        processManager.select(result.matched)
+                        pendingRecallSelection = nil
+                        pendingRecallResult = nil
+                    },
+                    onCancel: {
+                        pendingRecallSelection = nil
+                        pendingRecallResult = nil
+                    }
+                )
+            }
+        }
+        .sheet(item: $renameSelection) { selection in
+            RenameSavedSelectionSheet(
+                originalName: selection.name,
+                name: $renameSelectionName,
+                validationError: savedSelections.validationError,
+                onSave: {
+                    if savedSelections.rename(selection, to: renameSelectionName) {
+                        renameSelection = nil
+                    }
+                },
+                onCancel: { renameSelection = nil }
+            )
+        }
+        .sheet(
+            item: Binding(
+                get: { processManager.lifecycleReport },
+                set: { value in
+                    if value == nil {
+                        processManager.dismissLifecycleReport()
+                    }
+                }
+            )
+        ) { report in
+            LifecycleReportSheet(
+                report: report,
+                onClose: { processManager.dismissLifecycleReport() }
             )
         }
         .sheet(item: $quickAutoStopProcess) { process in
@@ -231,6 +305,7 @@ struct TaskScopePopoverView: View {
         TaskScopeHeaderView(
             status: processManager.status,
             samples: history.samples,
+            samplingState: history.state,
             showsMetrics: isExpandedWindow,
             showsOpenWindowButton: presentationStyle == .menuBarCompact && openFullWindow != nil,
             openFullWindow: openFullWindow,
@@ -311,14 +386,29 @@ struct TaskScopePopoverView: View {
                 .help("Tree View")
 
                 Menu {
+                    if let recoveryMessage = savedSelections.recoveryMessage {
+                        Text(recoveryMessage)
+                        Divider()
+                    }
                     if savedSelections.selections.isEmpty {
                         Text("No saved selections")
                     } else {
                         ForEach(savedSelections.selections) { sel in
-                            Button(sel.name) {
-                                processManager.clearSelection()
-                                for process in processManager.processes where sel.matches(process) {
-                                    processManager.toggleSelection(process.pid)
+                            Menu(sel.name) {
+                                Button("Preview & Recall…") {
+                                    pendingRecallResult = savedSelections.resolve(
+                                        sel,
+                                        in: processManager.inventorySnapshot
+                                    )
+                                    pendingRecallSelection = sel
+                                }
+                                Button("Rename…") {
+                                    renameSelectionName = sel.name
+                                    renameSelection = sel
+                                }
+                                Divider()
+                                Button("Delete", role: .destructive) {
+                                    savedSelections.remove(sel)
                                 }
                             }
                         }
@@ -327,7 +417,7 @@ struct TaskScopePopoverView: View {
                     if !processManager.selectedPids.isEmpty {
                         Button("Save Current Selection…") {
                             saveSelectionName = ""
-                            showSaveSelectionSheet = true
+            showSaveSelectionSheet = true
                         }
                     }
                 } label: {
@@ -368,9 +458,9 @@ struct TaskScopePopoverView: View {
                         .frame(width: 70, alignment: .trailing)
                     Text("PPID")
                         .frame(width: 70, alignment: .trailing)
-                    Text("NET KB")
+                    Text("NET KB TOTAL")
                         .frame(width: 96, alignment: .trailing)
-                    Text("DISK")
+                    Text("DISK BLKS TOTAL")
                         .frame(width: 96, alignment: .trailing)
                 } else {
                     Spacer()
@@ -386,7 +476,32 @@ struct TaskScopePopoverView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 16)
 
-            if processManager.hasLoadedProcessList {
+            if processManager.hasLoadedProcessList, filteredProcesses.isEmpty {
+                VStack(spacing: 10) {
+                    Image(systemName: processManager.processLoadError == nil ? "line.3.horizontal.decrease.circle" : "exclamationmark.triangle")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text(processManager.processLoadError == nil ? "No Matching Processes" : "Process List Unavailable")
+                        .font(.headline)
+                    Text(processManager.processLoadError ?? "Adjust the search or filter to show processes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    HStack {
+                        if processManager.processLoadError == nil {
+                            Button("Clear Search & Filter") {
+                                settings.searchText = ""
+                                filterMode = .all
+                            }
+                        }
+                        Button("Retry") {
+                            Task { await processManager.loadProcessList() }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(24)
+            } else if processManager.hasLoadedProcessList {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0) {
@@ -404,7 +519,10 @@ struct TaskScopePopoverView: View {
                                         detailFailed: $detailFailed,
                                         expandedPids: $expandedTreePids,
                                         showsExpandedMetrics: isExpandedWindow,
-                                        openInActivityMonitor: { openInActivityMonitor(pid: $0) }
+                                        openInActivityMonitor: { openInActivityMonitor(pid: $0) },
+                                        contextMenuContent: { process in
+                                            processContextMenu(for: process)
+                                        }
                                     )
                                 }
                             } else {
@@ -510,6 +628,12 @@ struct TaskScopePopoverView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if loginItemManager.state == .requiresApproval {
+                    Button("Open Login Item Settings") {
+                        loginItemManager.openSystemSettings()
+                    }
+                    .buttonStyle(.bordered)
+                }
             }
             .padding(16)
         }
@@ -606,7 +730,14 @@ struct TaskScopePopoverView: View {
     }
 
     private var treeRoots: [ProcessTreeNode] {
-        ProcessTreeBuilder.build(from: filteredProcesses, ppidMap: processManager.ppidMap)
+        let matchingPIDs = Set(filteredProcesses.map(\.pid))
+        let isFiltering = !settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || filterMode != .all
+        return ProcessTreeBuilder.build(
+            from: processManager.processes,
+            ppidMap: processManager.ppidMap,
+            matchingPIDs: isFiltering ? matchingPIDs : nil
+        )
     }
 
     private var keyboardNavigationProcesses: [AppProcess] {
@@ -636,6 +767,22 @@ struct TaskScopePopoverView: View {
             ? " and \(pendingBatchTargets.count - names.count) more"
             : ""
         return "Stop \(pendingBatchTargets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
+    }
+
+    private func expandFilteredTreeAncestors() {
+        let isFiltering = !settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || filterMode != .all
+        guard treeMode, isFiltering else { return }
+
+        func collectParents(_ nodes: [ProcessTreeNode]) {
+            for node in nodes {
+                if !node.children.isEmpty {
+                    expandedTreePids.insert(node.process.pid)
+                    collectParents(node.children)
+                }
+            }
+        }
+        collectParents(treeRoots)
     }
 
     @ViewBuilder

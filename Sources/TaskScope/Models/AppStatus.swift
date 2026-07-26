@@ -72,10 +72,10 @@ struct AppProcess: Identifiable, Equatable {
     var command: String
     var elapsedTime: String
     var startTime: String
-    var netInKB: Double
-    var netOutKB: Double
-    var diskReadBlocks: Double
-    var diskWriteBlocks: Double
+    var netInKB: Double?
+    var netOutKB: Double?
+    var diskReadBlocks: Double?
+    var diskWriteBlocks: Double?
 
     init(
         pid: Int32,
@@ -85,10 +85,10 @@ struct AppProcess: Identifiable, Equatable {
         command: String,
         elapsedTime: String,
         startTime: String = "",
-        netInKB: Double,
-        netOutKB: Double,
-        diskReadBlocks: Double,
-        diskWriteBlocks: Double
+        netInKB: Double?,
+        netOutKB: Double?,
+        diskReadBlocks: Double?,
+        diskWriteBlocks: Double?
     ) {
         self.pid = pid
         self.parentPID = parentPID
