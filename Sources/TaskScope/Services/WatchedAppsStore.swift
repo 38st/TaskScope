@@ -2,6 +2,8 @@ import Foundation
 
 @MainActor
 final class WatchedAppsStore: ObservableObject {
+    nonisolated static let defaultPersistenceKey = "TaskScope.watchedPresets.v1"
+
     @Published var presets: [WatchedAppPreset] {
         didSet { persistIfAllowed() }
     }
@@ -14,7 +16,7 @@ final class WatchedAppsStore: ObservableObject {
 
     init(
         userDefaults: UserDefaults = .standard,
-        key: String = "TaskScope.watchedPresets.v1"
+        key: String = WatchedAppsStore.defaultPersistenceKey
     ) {
         self.userDefaults = userDefaults
         self.key = key

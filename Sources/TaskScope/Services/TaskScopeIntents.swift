@@ -2,34 +2,135 @@ import AppIntents
 import Foundation
 
 @available(macOS 13.0, *)
+struct WatchedPresetEntity: AppEntity {
+    static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Watched App")
+    static let defaultQuery = WatchedPresetEntityQuery()
+
+    let id: UUID
+    let displayName: String
+
+    init(id: UUID, displayName: String) {
+        self.id = id
+        self.displayName = displayName
+    }
+
+    init(preset: WatchedAppPreset) {
+        self.init(id: preset.id, displayName: preset.displayName)
+    }
+
+    var displayRepresentation: DisplayRepresentation {
+        DisplayRepresentation(title: "\(displayName)")
+    }
+}
+
+struct WatchedPresetCatalog: Sendable {
+    private let suiteName: String?
+    private let key: String
+
+    init(
+        suiteName: String? = nil,
+        key: String = WatchedAppsStore.defaultPersistenceKey
+    ) {
+        self.suiteName = suiteName
+        self.key = key
+    }
+
+    func entities() -> [WatchedPresetEntity] {
+        let userDefaults = suiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
+        let presets: [WatchedAppPreset]
+        if let data = userDefaults.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([WatchedAppPreset].self, from: data) {
+            presets = decoded
+        } else if userDefaults.data(forKey: key) == nil {
+            presets = [.globalProtect]
+        } else {
+            // Match WatchedAppsStore's corruption policy: do not silently replace
+            // unreadable user data with a default automation target.
+            presets = []
+        }
+
+        return presets.map(WatchedPresetEntity.init(preset:))
+    }
+}
+
+@available(macOS 13.0, *)
+struct WatchedPresetEntityQuery: EntityStringQuery {
+    private let catalog: WatchedPresetCatalog
+
+    init() {
+        catalog = WatchedPresetCatalog()
+    }
+
+    init(catalog: WatchedPresetCatalog) {
+        self.catalog = catalog
+    }
+
+    func entities(for identifiers: [WatchedPresetEntity.ID]) async throws -> [WatchedPresetEntity] {
+        let requested = Set(identifiers)
+        return catalog.entities().filter { requested.contains($0.id) }
+    }
+
+    func entities(matching string: String) async throws -> [WatchedPresetEntity] {
+        let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return catalog.entities() }
+        return catalog.entities().filter {
+            $0.displayName.localizedCaseInsensitiveContains(normalized)
+        }
+    }
+
+    func suggestedEntities() async throws -> [WatchedPresetEntity] {
+        catalog.entities()
+    }
+}
+
+@available(macOS 13.0, *)
+enum TaskScopeIntentDialog {
+    static func message(
+        for result: TaskScopeCommandResult,
+        action: String
+    ) -> String {
+        switch result.status {
+        case .completed:
+            return result.message
+        case .rejected:
+            return "Couldn’t \(action): \(result.message)"
+        case .failed:
+            return "Failed to \(action): \(result.message)"
+        }
+    }
+}
+
+@available(macOS 13.0, *)
 struct StopWatchedAppIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Watched App"
-    static let description = IntentDescription("Stop a watched app's main process by name.")
+    static let description = IntentDescription("Stop a watched app using TaskScope's managed lifecycle.")
 
-    @Parameter(title: "App Name")
-    var appName: String
+    @Parameter(title: "Watched App")
+    var app: WatchedPresetEntity
 
     static var openAppWhenRun: Bool { true }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = await AppCommandBus.shared.submit(.stopPreset(appName))
-        return .result(dialog: IntentDialog(stringLiteral: result.message))
+        let result = await AppCommandBus.shared.submit(.stopPreset(app.displayName))
+        let message = TaskScopeIntentDialog.message(for: result, action: "stop \(app.displayName)")
+        return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }
 
 @available(macOS 13.0, *)
 struct OpenWatchedAppIntent: AppIntent {
     static let title: LocalizedStringResource = "Open Watched App"
-    static let description = IntentDescription("Open a watched app by name.")
+    static let description = IntentDescription("Open a watched app using TaskScope's managed lifecycle.")
 
-    @Parameter(title: "App Name")
-    var appName: String
+    @Parameter(title: "Watched App")
+    var app: WatchedPresetEntity
 
     static var openAppWhenRun: Bool { true }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = await AppCommandBus.shared.submit(.openPreset(appName))
-        return .result(dialog: IntentDialog(stringLiteral: result.message))
+        let result = await AppCommandBus.shared.submit(.openPreset(app.displayName))
+        let message = TaskScopeIntentDialog.message(for: result, action: "open \(app.displayName)")
+        return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }
 
@@ -42,7 +143,8 @@ struct RefreshTaskScopeIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await AppCommandBus.shared.submit(.refresh)
-        return .result(dialog: IntentDialog(stringLiteral: result.message))
+        let message = TaskScopeIntentDialog.message(for: result, action: "refresh TaskScope")
+        return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }
 
@@ -57,13 +159,13 @@ struct TaskScopeShortcuts: AppShortcutsProvider {
         )
         AppShortcut(
             intent: StopWatchedAppIntent(),
-            phrases: ["Stop watched app in \(.applicationName)"],
+            phrases: ["Stop \(\.$app) in \(.applicationName)"],
             shortTitle: "Stop Watched App",
             systemImageName: "stop.circle"
         )
         AppShortcut(
             intent: OpenWatchedAppIntent(),
-            phrases: ["Open watched app in \(.applicationName)"],
+            phrases: ["Open \(\.$app) in \(.applicationName)"],
             shortTitle: "Open Watched App",
             systemImageName: "arrow.up.forward.app"
         )
