@@ -43,11 +43,11 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         XCTAssertTrue(selector.requestedPIDs.isEmpty)
     }
 
-    func testAutomationDenialStopsRetryingAndProvidesRecoveryInstructions() async {
+    func testAccessibilityDenialStopsRetryingAndProvidesRecoveryInstructions() async {
         let opener = FakeActivityMonitorOpener()
         let checker = FakeActivityMonitorProcessChecker(results: [true, true])
         let selector = FakeActivityMonitorProcessSelector(
-            results: [.automationDenied("Not authorized to send Apple events.")]
+            results: [.accessibilityDenied("Accessibility access was denied.")]
         )
         let coordinator = makeCoordinator(opener: opener, checker: checker, selector: selector)
 
@@ -55,10 +55,10 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(
             outcome,
-            .automationDenied("Not authorized to send Apple events.")
+            .accessibilityDenied("Accessibility access was denied.")
         )
         XCTAssertEqual(selector.requestedPIDs, [99])
-        XCTAssertTrue(outcome.message(for: 99).contains("Privacy & Security > Automation"))
+        XCTAssertTrue(outcome.message(for: 99).contains("Privacy & Security > Accessibility"))
     }
 
     func testReadinessIsRetriedUntilSelectionSucceeds() async {
@@ -121,6 +121,131 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         XCTAssertEqual(selector.requestedPIDs, [654])
     }
 
+    func testSystemSelectorRequestsAccessibilityAndReturnsDenialWithoutSelecting() {
+        let runtime = FakeActivityMonitorAccessibilityRuntime(
+            trusted: false,
+            applicationPID: 700,
+            result: .selected
+        )
+        let selector = SystemActivityMonitorProcessSelector(runtime: runtime)
+
+        let result = selector.select(pid: 42)
+
+        guard case .accessibilityDenied = result else {
+            return XCTFail("Expected an Accessibility denial, got \(result)")
+        }
+        XCTAssertEqual(runtime.promptValues, [true])
+        XCTAssertTrue(runtime.selectionRequests.isEmpty)
+    }
+
+    func testSystemSelectorRetriesWhenActivityMonitorHasNotRegisteredYet() {
+        let runtime = FakeActivityMonitorAccessibilityRuntime(
+            trusted: true,
+            applicationPID: nil,
+            result: .selected
+        )
+        let selector = SystemActivityMonitorProcessSelector(runtime: runtime)
+
+        XCTAssertEqual(selector.select(pid: 42), .notReady)
+        XCTAssertEqual(runtime.promptValues, [true])
+        XCTAssertTrue(runtime.selectionRequests.isEmpty)
+    }
+
+    func testSystemSelectorForwardsExactPIDToAccessibilityRuntime() {
+        let runtime = FakeActivityMonitorAccessibilityRuntime(
+            trusted: true,
+            applicationPID: 700,
+            result: .selected
+        )
+        let selector = SystemActivityMonitorProcessSelector(runtime: runtime)
+
+        XCTAssertEqual(selector.select(pid: 42), .selected)
+        XCTAssertEqual(runtime.selectionRequests, [.init(applicationPID: 700, targetPID: 42)])
+    }
+
+    func testPIDCellMatcherUsesStableColumnIdentifierAndExactValue() {
+        XCTAssertEqual(
+            ActivityMonitorPIDCellMatcher.pidColumnIndex(
+                in: ["Command", "CPUUsage", "PID", "UID"]
+            ),
+            2
+        )
+        XCTAssertNil(
+            ActivityMonitorPIDCellMatcher.pidColumnIndex(
+                in: ["Command", "Process ID", "UID"]
+            )
+        )
+        XCTAssertTrue(
+            ActivityMonitorPIDCellMatcher.matches(
+                value: "21081" as NSString,
+                targetPID: 21_081
+            )
+        )
+        XCTAssertFalse(
+            ActivityMonitorPIDCellMatcher.matches(
+                value: "121081" as NSString,
+                targetPID: 21_081
+            )
+        )
+    }
+
+    func testPIDCellMatcherUsesAXColumnRangeWhenEmptyCellsAreOmitted() {
+        let visibleCellColumnRanges: [CFRange?] = [
+            CFRange(location: 0, length: 1),
+            CFRange(location: 1, length: 1),
+            CFRange(location: 2, length: 1),
+            CFRange(location: 3, length: 1),
+            CFRange(location: 5, length: 1),
+            CFRange(location: 6, length: 1),
+            CFRange(location: 7, length: 1),
+            CFRange(location: 8, length: 1),
+            CFRange(location: 9, length: 1),
+        ]
+
+        XCTAssertEqual(
+            ActivityMonitorPIDCellMatcher.cellIndex(
+                columnRanges: visibleCellColumnRanges,
+                containing: 8
+            ),
+            7
+        )
+        XCTAssertNil(
+            ActivityMonitorPIDCellMatcher.cellIndex(
+                columnRanges: visibleCellColumnRanges,
+                containing: 4
+            )
+        )
+    }
+
+    func testPIDCellMatcherSupportsSpansAndRejectsInvalidRanges() {
+        let columnRanges: [CFRange?] = [
+            nil,
+            CFRange(location: -1, length: 1),
+            CFRange(location: 2, length: 0),
+            CFRange(location: 4, length: 3),
+        ]
+
+        XCTAssertEqual(
+            ActivityMonitorPIDCellMatcher.cellIndex(
+                columnRanges: columnRanges,
+                containing: 6
+            ),
+            3
+        )
+        XCTAssertNil(
+            ActivityMonitorPIDCellMatcher.cellIndex(
+                columnRanges: columnRanges,
+                containing: -1
+            )
+        )
+        XCTAssertNil(
+            ActivityMonitorPIDCellMatcher.cellIndex(
+                columnRanges: columnRanges,
+                containing: 7
+            )
+        )
+    }
+
     private func makeCoordinator(
         opener: FakeActivityMonitorOpener,
         checker: FakeActivityMonitorProcessChecker,
@@ -180,6 +305,51 @@ private final class FakeActivityMonitorProcessSelector: ActivityMonitorProcessSe
     func select(pid: Int32) -> ActivityMonitorSelectionAttempt {
         requestedPIDs.append(pid)
         return results.isEmpty ? .notReady : results.removeFirst()
+    }
+}
+
+@MainActor
+private final class FakeActivityMonitorAccessibilityRuntime:
+    ActivityMonitorAccessibilityRuntime
+{
+    struct SelectionRequest: Equatable {
+        let applicationPID: pid_t
+        let targetPID: Int32
+    }
+
+    private let trusted: Bool
+    private let applicationPID: pid_t?
+    private let result: ActivityMonitorSelectionAttempt
+    private(set) var promptValues: [Bool] = []
+    private(set) var selectionRequests: [SelectionRequest] = []
+
+    init(
+        trusted: Bool,
+        applicationPID: pid_t?,
+        result: ActivityMonitorSelectionAttempt
+    ) {
+        self.trusted = trusted
+        self.applicationPID = applicationPID
+        self.result = result
+    }
+
+    func isProcessTrusted(prompt: Bool) -> Bool {
+        promptValues.append(prompt)
+        return trusted
+    }
+
+    func activityMonitorProcessIdentifier() -> pid_t? {
+        applicationPID
+    }
+
+    func selectProcessRow(
+        applicationPID: pid_t,
+        targetPID: Int32
+    ) -> ActivityMonitorSelectionAttempt {
+        selectionRequests.append(
+            .init(applicationPID: applicationPID, targetPID: targetPID)
+        )
+        return result
     }
 }
 
