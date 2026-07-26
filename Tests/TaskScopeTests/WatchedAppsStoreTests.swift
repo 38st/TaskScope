@@ -5,7 +5,7 @@ import XCTest
 final class WatchedAppsStoreTests: XCTestCase {
     private let suiteName = "TaskScope.WatchedAppsStoreTests"
     private let key = "watched-presets-tests"
-    private var defaults: UserDefaults!
+    nonisolated(unsafe) private var defaults: UserDefaults!
 
     override func setUp() {
         super.setUp()

@@ -57,7 +57,7 @@ final class ProcessHistoryTests: XCTestCase {
     }
 }
 
-private final class HistoryInventory: ProcessInventoryProviding {
+private final class HistoryInventory: ProcessInventoryProviding, @unchecked Sendable {
     private var results: [Result<[AppProcess], ProcessInventoryError>]
 
     init(results: [Result<[AppProcess], ProcessInventoryError>]) {

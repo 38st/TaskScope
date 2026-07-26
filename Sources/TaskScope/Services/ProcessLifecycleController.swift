@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-enum LifecycleJobState: String, Equatable {
+enum LifecycleJobState: String, Equatable, Sendable {
     case missing
     case alreadyLoaded
     case alreadyUnloaded
@@ -10,7 +10,7 @@ enum LifecycleJobState: String, Equatable {
     case verified
 }
 
-struct LifecycleJobResult: Equatable {
+struct LifecycleJobResult: Equatable, Sendable {
     var label: String
     var state: LifecycleJobState
     var detail: String
@@ -20,7 +20,7 @@ struct LifecycleJobResult: Equatable {
     }
 }
 
-struct LifecycleBatchResult: Equatable {
+struct LifecycleBatchResult: Equatable, Sendable {
     var jobs: [LifecycleJobResult]
 
     static let notNeeded = LifecycleBatchResult(jobs: [])
@@ -40,13 +40,13 @@ struct LifecycleBatchResult: Equatable {
     }
 }
 
-struct LifecycleReport: Identifiable, Equatable {
+struct LifecycleReport: Identifiable, Equatable, Sendable {
     var id = UUID()
     var title: String
     var jobs: [LifecycleJobResult]
 }
 
-protocol ProcessLifecycleServicing {
+protocol ProcessLifecycleServicing: Sendable {
     func appBundleExists(at path: String) -> Bool
     func settleAfterProcessChange() async
     func terminateProcess(named name: String, forceIfStillRunning: Bool) async

@@ -1,6 +1,6 @@
 import Foundation
 
-enum ProcessInventoryError: Error, Equatable, LocalizedError {
+enum ProcessInventoryError: Error, Equatable, LocalizedError, Sendable {
     case commandFailed(String)
     case parseFailed
 
@@ -14,7 +14,7 @@ enum ProcessInventoryError: Error, Equatable, LocalizedError {
     }
 }
 
-protocol ProcessInventoryProviding {
+protocol ProcessInventoryProviding: Sendable {
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError>
 }
 

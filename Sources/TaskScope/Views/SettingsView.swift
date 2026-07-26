@@ -642,13 +642,13 @@ private struct RecordingListenerView: NSViewRepresentable {
                 onCancel()
             }
 
-            context.coordinator.resignObserver = NotificationCenter.default.addObserver(
-                forName: NSApplication.didResignActiveNotification,
-                object: nil,
-                queue: .main
-            ) { _ in
-                onCancel()
-            }
+            context.coordinator.onCancel = onCancel
+            NotificationCenter.default.addObserver(
+                context.coordinator,
+                selector: #selector(Coordinator.applicationDidResignActive),
+                name: NSApplication.didResignActiveNotification,
+                object: nil
+            )
 
         } else {
             context.coordinator.removeMonitors()
@@ -657,10 +657,15 @@ private struct RecordingListenerView: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator {
+    @MainActor
+    final class Coordinator: NSObject {
         var localMonitor: Any?
         var globalMonitor: Any?
-        var resignObserver: NSObjectProtocol?
+        var onCancel: (() -> Void)?
+
+        @objc func applicationDidResignActive() {
+            onCancel?()
+        }
 
         func removeMonitors() {
             if let localMonitor {
@@ -671,10 +676,12 @@ private struct RecordingListenerView: NSViewRepresentable {
                 NSEvent.removeMonitor(globalMonitor)
                 self.globalMonitor = nil
             }
-            if let resignObserver {
-                NotificationCenter.default.removeObserver(resignObserver)
-                self.resignObserver = nil
-            }
+            NotificationCenter.default.removeObserver(
+                self,
+                name: NSApplication.didResignActiveNotification,
+                object: nil
+            )
+            onCancel = nil
         }
     }
 

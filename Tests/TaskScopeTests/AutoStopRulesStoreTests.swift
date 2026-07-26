@@ -3,11 +3,11 @@ import XCTest
 
 @MainActor
 final class AutoStopRulesStoreTests: XCTestCase {
-    private var userDefaults: UserDefaults!
+    nonisolated(unsafe) private var userDefaults: UserDefaults!
     private let suiteName = "TaskScope.AutoStopRulesStoreTests"
     private let key = "auto-stop-rules-tests"
     private let eventsKey = "auto-stop-events-tests"
-    private var currentDate: Date!
+    nonisolated(unsafe) private var currentDate: Date!
 
     override func setUp() {
         super.setUp()

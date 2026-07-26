@@ -5,7 +5,7 @@ import XCTest
 final class SettingsStoreTests: XCTestCase {
     private let suiteName = "TaskScope.SettingsStoreTests"
     private let key = "settings-tests"
-    private var defaults: UserDefaults!
+    nonisolated(unsafe) private var defaults: UserDefaults!
 
     override func setUp() {
         super.setUp()

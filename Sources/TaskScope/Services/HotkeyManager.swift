@@ -33,8 +33,8 @@ final class HotkeyManager: ObservableObject {
 
     var onShow: (() -> Void)?
 
-    private var hotkeyRef: EventHotKeyRef?
-    private var eventHandler: EventHandlerRef?
+    nonisolated(unsafe) private var hotkeyRef: EventHotKeyRef?
+    nonisolated(unsafe) private var eventHandler: EventHandlerRef?
     private let defaults: UserDefaults
     private let defaultsKey: String
     private var nextRegistrationID: UInt32 = 1

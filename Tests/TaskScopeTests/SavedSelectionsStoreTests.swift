@@ -5,7 +5,7 @@ import XCTest
 final class SavedSelectionsStoreTests: XCTestCase {
     private let suiteName = "TaskScope.SavedSelectionsStoreTests"
     private let key = "saved-selections-tests"
-    private var defaults: UserDefaults!
+    nonisolated(unsafe) private var defaults: UserDefaults!
 
     override func setUp() {
         super.setUp()

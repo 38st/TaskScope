@@ -1,18 +1,18 @@
 import Foundation
 
-struct UserLaunchAgentJob: Codable, Equatable, Hashable {
+struct UserLaunchAgentJob: Codable, Equatable, Hashable, Sendable {
     var label: String
     var plistPath: String
 }
 
-struct SystemLaunchDaemonJob: Codable, Equatable, Hashable {
+struct SystemLaunchDaemonJob: Codable, Equatable, Hashable, Sendable {
     var label: String
     var plistPath: String
     var processName: String
     var servicePort: Int?
 }
 
-struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
+struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
     var id: UUID = UUID()
     var displayName: String
     var mainProcessName: String
@@ -120,7 +120,7 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
     ]
 }
 
-struct WatchedAppSnapshot: Equatable {
+struct WatchedAppSnapshot: Equatable, Sendable {
     var preset: WatchedAppPreset
     var runningNames: Set<String>
 

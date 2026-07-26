@@ -1,6 +1,6 @@
 import Foundation
 
-enum ProcessStatus: Equatable {
+enum ProcessStatus: Equatable, Sendable {
     case idle
     case helpersOnly
     case protectedOnly
@@ -46,7 +46,7 @@ enum ProcessStatus: Equatable {
     }
 }
 
-enum ProcessSortKey: String, CaseIterable, Identifiable {
+enum ProcessSortKey: String, CaseIterable, Identifiable, Sendable {
     case cpu
     case memory
     case name
@@ -64,7 +64,7 @@ enum ProcessSortKey: String, CaseIterable, Identifiable {
     }
 }
 
-struct AppProcess: Identifiable, Equatable {
+struct AppProcess: Identifiable, Equatable, Sendable {
     var pid: Int32
     var parentPID: Int32
     var cpu: Double
@@ -145,13 +145,13 @@ struct AppProcess: Identifiable, Equatable {
     }
 }
 
-struct ProcessIdentity: Hashable, Codable {
+struct ProcessIdentity: Hashable, Codable, Sendable {
     var pid: Int32
     var startTime: String
     var command: String
 }
 
-enum ProcessActionResult: Equatable {
+enum ProcessActionResult: Equatable, Sendable {
     case stopped
     case requestedStillRunning
     case stale
@@ -170,7 +170,7 @@ struct ProcessDetail: Equatable {
     var command: String
 }
 
-struct ShellCommandResult: Equatable {
+struct ShellCommandResult: Equatable, Sendable {
     var command: String
     var stdout: String
     var stderr: String

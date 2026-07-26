@@ -84,6 +84,13 @@ struct TaskScopeApp: App {
             }
         }
         .defaultSize(width: 900, height: 600)
+        .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About TaskScope") {
+                    showAboutWindow()
+                }
+            }
+        }
 
         MenuBarExtra {
             TaskScopePopoverView(
@@ -115,7 +122,7 @@ struct TaskScopeApp: App {
             )
         }
 
-        WindowGroup("About TaskScope") {
+        WindowGroup("About TaskScope", id: "about") {
             AboutView()
         }
         .windowResizability(.contentSize)
@@ -260,6 +267,12 @@ struct TaskScopeApp: App {
             openWindow(id: "processes")
         }
 
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func showAboutWindow() {
+        NSApp.setActivationPolicy(.regular)
+        openWindow(id: "about")
         NSApp.activate(ignoringOtherApps: true)
     }
 

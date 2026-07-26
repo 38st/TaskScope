@@ -316,7 +316,7 @@ final class ProcessManagerTests: XCTestCase {
     }
 }
 
-private final class FakeLifecycleService: ProcessLifecycleServicing {
+private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked Sendable {
     var appExists = true
     var daemonResult = LifecycleBatchResult.notNeeded
     var agentLoadResult = LifecycleBatchResult.notNeeded
@@ -403,7 +403,7 @@ private actor BlockingProcessInventory: ProcessInventoryProviding {
     }
 }
 
-private final class FakeProcessInventory: ProcessInventoryProviding {
+private final class FakeProcessInventory: ProcessInventoryProviding, @unchecked Sendable {
     private var results: [Result<[AppProcess], ProcessInventoryError>]
     private(set) var fetchExtendedRequests: [Bool] = []
 
