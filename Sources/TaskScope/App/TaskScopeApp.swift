@@ -71,6 +71,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private let previouslyFrontmostApplication: NSRunningApplication?
     private var launchPhase = TaskScopeLaunchPhase.starting
     private var interactiveLaunchTask: Task<Void, Never>?
+    private var automaticWindowSuppressionTask: Task<Void, Never>?
 
     override init() {
         launchContext = .pending
@@ -138,14 +139,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // Launch Services delivers a cold-open URL after did-finish. Keep
             // restored/default windows suppressed until that launch event has
             // had a chance to reach the handler registered during will-finish.
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            try? await Task.sleep(nanoseconds: 500_000_000)
             guard let self, !Task.isCancelled, self.launchPhase == .starting else {
                 return
             }
 
             self.launchPhase = .running
             self.interactiveLaunchTask = nil
-            self.promoteInteractiveLaunch()
+            if NSApp.isActive {
+                self.promoteInteractiveLaunch()
+            } else {
+                self.finalizeInactiveInteractiveLaunch()
+            }
         }
     }
 
@@ -188,9 +193,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func finalizeBackgroundLaunch() {
         NSApp.setActivationPolicy(.accessory)
         suppressAutomaticWindowPresentation()
+        startAutomaticWindowSuppression()
+    }
+
+    private func finalizeInactiveInteractiveLaunch() {
+        NSApp.setActivationPolicy(.accessory)
+        hideAutomaticWindows()
+        NSApp.deactivate()
+        if let previous = previouslyFrontmostApplication,
+           previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previous.activate()
+        }
+        startAutomaticWindowSuppression()
+    }
+
+    private func startAutomaticWindowSuppression() {
+        automaticWindowSuppressionTask?.cancel()
+        automaticWindowSuppressionTask = Task { @MainActor [weak self] in
+            // SwiftUI/AppKit restoration can order a default window after the
+            // launch callback. Sweep briefly until an explicit presentation
+            // request wins, so quiet launch contexts stay visually quiet.
+            for _ in 0..<50 {
+                guard let self,
+                      !Task.isCancelled,
+                      !self.windowPresentationAllowed else {
+                    return
+                }
+                self.hideAutomaticWindows()
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            self?.automaticWindowSuppressionTask = nil
+        }
     }
 
     private func promoteInteractiveLaunch() {
+        automaticWindowSuppressionTask?.cancel()
+        automaticWindowSuppressionTask = nil
         launchContext = .interactive
         windowPresentationAllowed = true
         NSApp.setActivationPolicy(.regular)
@@ -219,6 +257,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func permitWindowPresentation() {
         interactiveLaunchTask?.cancel()
         interactiveLaunchTask = nil
+        automaticWindowSuppressionTask?.cancel()
+        automaticWindowSuppressionTask = nil
         launchPhase = .running
         windowPresentationAllowed = true
         NSApp.setActivationPolicy(.regular)
