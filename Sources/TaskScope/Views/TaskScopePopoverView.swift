@@ -41,6 +41,7 @@ struct TaskScopePopoverView: View {
     @ObservedObject var history: ProcessHistory
     var presentationStyle: TaskScopePresentationStyle = .menuBarCompact
     var openFullWindow: (() -> Void)?
+    private let activityMonitor: any ActivityMonitorCoordinating = ActivityMonitorCoordinator()
 
     @State private var pendingTermination: AppProcess?
     @State private var pendingBatch: Bool = false
@@ -697,28 +698,9 @@ struct TaskScopePopoverView: View {
     }
 
     private func openInActivityMonitor(pid: Int32) {
-        let url = URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")
-        let config = NSWorkspace.OpenConfiguration()
-        config.activates = true
-        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, openError in
-            if let openError {
-                DispatchQueue.main.async {
-                    processManager.setMessage("Could not open Activity Monitor: \(openError.localizedDescription)")
-                }
-                return
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                let script = "tell application \"Activity Monitor\" to set selected processes to (every process whose unix id is \(pid))"
-                guard let appleScript = NSAppleScript(source: script) else { return }
-                var err: NSDictionary?
-                appleScript.executeAndReturnError(&err)
-                if let err {
-                    let message = err[NSAppleScript.errorMessage] as? String ?? "Unknown AppleScript error"
-                    DispatchQueue.main.async {
-                        processManager.setMessage("Activity Monitor selection failed: \(message)")
-                    }
-                }
-            }
+        Task {
+            let outcome = await activityMonitor.openAndSelect(pid: pid)
+            processManager.setMessage(outcome.message(for: pid))
         }
     }
 
