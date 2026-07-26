@@ -108,7 +108,7 @@ struct StopWatchedAppIntent: AppIntent {
     @Parameter(title: "Watched App")
     var app: WatchedPresetEntity
 
-    static var openAppWhenRun: Bool { true }
+    static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await AppCommandBus.shared.submit(.stopPreset(app.displayName))
@@ -125,7 +125,7 @@ struct OpenWatchedAppIntent: AppIntent {
     @Parameter(title: "Watched App")
     var app: WatchedPresetEntity
 
-    static var openAppWhenRun: Bool { true }
+    static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await AppCommandBus.shared.submit(.openPreset(app.displayName))
@@ -139,7 +139,7 @@ struct RefreshTaskScopeIntent: AppIntent {
     static let title: LocalizedStringResource = "Refresh TaskScope"
     static let description = IntentDescription("Request TaskScope to refresh its watched status.")
 
-    static var openAppWhenRun: Bool { true }
+    static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await AppCommandBus.shared.submit(.refresh)

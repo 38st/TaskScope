@@ -31,6 +31,7 @@ final class ProcessManager: ObservableObject {
         message = text
     }
     @Published private(set) var isWorking = false
+    @Published private(set) var operationState: ProcessOperationState = .idle
 
     @Published var sortKey: ProcessSortKey = .cpu {
         didSet { resortProcesses() }
@@ -39,9 +40,14 @@ final class ProcessManager: ObservableObject {
     @Published private(set) var selectedPids: Set<Int32> = []
     @Published private(set) var processLoadError: String?
     @Published private(set) var lifecycleReport: LifecycleReport?
+    @Published private(set) var batchActionReport: ProcessBatchActionReport?
 
     func dismissLifecycleReport() {
         lifecycleReport = nil
+    }
+
+    func dismissBatchActionReport() {
+        batchActionReport = nil
     }
 
     var enableNotifications: Bool = true
@@ -57,8 +63,28 @@ final class ProcessManager: ObservableObject {
     private let settleAfterProcessChange: () async -> Void
     private var fullProcessInventory: [AppProcess] = []
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
-    private var operationIsRunning = false
-    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+    private enum ReadOperation: Equatable {
+        case watchedStatus
+        case processList
+    }
+
+    private enum OperationKind: Equatable {
+        case read(ReadOperation)
+        case mutation
+
+        var isMutation: Bool {
+            self == .mutation
+        }
+    }
+
+    private struct OperationWaiter {
+        var id: UUID
+        var kind: OperationKind
+        var continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private var activeOperation: OperationKind?
+    private var operationWaiters: [OperationWaiter] = []
     private var extendedMetricsConsumers = 0
 
     init(
@@ -136,12 +162,30 @@ final class ProcessManager: ObservableObject {
         )
     }
 
+    func restrictSelection(to visibleProcesses: [AppProcess]) {
+        let visibleIdentities = Set(visibleProcesses.map(\.identity))
+        selectedIdentities = selectedIdentities.filter { visibleIdentities.contains($0.value) }
+        selectedPids = Set(selectedIdentities.keys)
+    }
+
     func selectionSnapshot() -> [ProcessIdentity] {
         fullProcessInventory.compactMap { selectedIdentities[$0.pid] }
     }
 
     var inventorySnapshot: [AppProcess] {
         fullProcessInventory
+    }
+
+    func displayProcesses(
+        matching predicate: (AppProcess) -> Bool = { _ in true }
+    ) -> [AppProcess] {
+        let limit = processListLimitProvider?() ?? 80
+        return Array(
+            sorted(fullProcessInventory)
+                .lazy
+                .filter(predicate)
+                .prefix(max(0, limit))
+        )
     }
 
     func selectedProcessesSnapshot() -> [AppProcess] {
@@ -154,10 +198,20 @@ final class ProcessManager: ObservableObject {
             return
         }
 
-        await runAction {
+        await runAction(kind: .mutation) {
             let currentResult = await processInventory.load(fetchExtendedStats: false)
             guard case .success(let currentProcesses) = currentResult else {
                 message = "Could not verify selected processes."
+                batchActionReport = ProcessBatchActionReport(
+                    title: forceKill ? "Force Stop Results" : "Stop Results",
+                    targets: requestedIdentities.map {
+                        ProcessTargetActionResult(
+                            identity: $0,
+                            name: $0.command.isEmpty ? "PID \($0.pid)" : URL(fileURLWithPath: $0.command).lastPathComponent,
+                            state: .stale
+                        )
+                    }
+                )
                 return
             }
 
@@ -165,24 +219,64 @@ final class ProcessManager: ObservableObject {
                 uniqueKeysWithValues: currentProcesses.map { ($0.identity, $0) }
             )
             let verified = requestedIdentities.compactMap { currentByIdentity[$0] }
-            let staleCount = requestedIdentities.count - verified.count
+            var targetResults = requestedIdentities.compactMap { identity -> ProcessTargetActionResult? in
+                guard currentByIdentity[identity] == nil else { return nil }
+                return ProcessTargetActionResult(
+                    identity: identity,
+                    name: identity.command.isEmpty
+                        ? "PID \(identity.pid)"
+                        : URL(fileURLWithPath: identity.command).lastPathComponent,
+                    state: .stale
+                )
+            }
+            let staleCount = targetResults.count
             guard !verified.isEmpty else {
                 clearSelection()
                 message = "Selection changed; \(staleCount) no longer matched. Nothing was stopped."
+                batchActionReport = ProcessBatchActionReport(
+                    title: forceKill ? "Force Stop Results" : "Stop Results",
+                    targets: targetResults
+                )
                 await refreshAfterMutation()
                 return
             }
 
             let signal: Int32 = forceKill ? SIGKILL : SIGTERM
-            var accepted = 0
+            var acceptedIdentities: Set<ProcessIdentity> = []
             for process in verified where process.pid != currentPID {
-                if processSignaler.send(signal, to: process.pid) {
-                    accepted += 1
+                guard processSignaler.send(signal, to: process.pid) else {
+                    targetResults.append(ProcessTargetActionResult(
+                        identity: process.identity,
+                        name: process.name,
+                        state: .signalRejected
+                    ))
+                    continue
                 }
+                acceptedIdentities.insert(process.identity)
             }
             await settleAfterProcessChange()
 
-            let stopped = verified.filter { !processSignaler.isAlive($0.pid) }.count
+            for process in verified where acceptedIdentities.contains(process.identity) {
+                targetResults.append(ProcessTargetActionResult(
+                    identity: process.identity,
+                    name: process.name,
+                    state: processSignaler.isAlive(process.pid)
+                        ? .requestedStillRunning
+                        : .stopped
+                ))
+            }
+            targetResults.sort { lhs, rhs in
+                let lhsIndex = requestedIdentities.firstIndex(of: lhs.identity) ?? Int.max
+                let rhsIndex = requestedIdentities.firstIndex(of: rhs.identity) ?? Int.max
+                return lhsIndex < rhsIndex
+            }
+            batchActionReport = ProcessBatchActionReport(
+                title: forceKill ? "Force Stop Results" : "Stop Results",
+                targets: targetResults
+            )
+
+            let accepted = acceptedIdentities.count
+            let stopped = targetResults.filter { $0.state == .stopped }.count
             clearSelection()
             if forceKill {
                 message = "Force stopped \(stopped) of \(requestedIdentities.count) selected."
@@ -199,7 +293,7 @@ final class ProcessManager: ObservableObject {
     }
 
     func refreshWatchedStatus(showMessage: Bool = true) async {
-        await runAction {
+        await runAction(kind: .read(.watchedStatus)) {
             switch await currentSnapshots() {
             case .success(let watched):
                 apply(watched)
@@ -217,7 +311,7 @@ final class ProcessManager: ObservableObject {
     }
 
     func loadProcessList(showMessage: Bool = true) async {
-        await runAction {
+        await runAction(kind: .read(.processList)) {
             switch await processInventory.load(fetchExtendedStats: fetchExtendedStats) {
             case .success(let inventory):
                 fullProcessInventory = inventory
@@ -237,10 +331,16 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    func openApp(_ preset: WatchedAppPreset) async {
-        await runAction {
+    @discardableResult
+    func openApp(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
+        var commandResult = TaskScopeCommandResult(
+            status: .failed,
+            message: "Open did not complete."
+        )
+        await runAction(kind: .mutation) {
             guard lifecycle.appBundleExists(at: preset.appPath) else {
                 message = "Could not open \(preset.displayName): app bundle is missing at \(preset.appPath)."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
 
@@ -251,6 +351,7 @@ final class ProcessManager: ObservableObject {
                     jobs: daemonResult.jobs
                 )
                 message = "Could not open \(preset.displayName): \(daemonResult.failureSummary ?? "required service failed")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
 
@@ -261,6 +362,7 @@ final class ProcessManager: ObservableObject {
                     jobs: daemonResult.jobs + agentResult.jobs
                 )
                 message = "Could not open \(preset.displayName): \(agentResult.failureSummary ?? "required user job failed")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
             let serviceJobs = daemonResult.jobs + agentResult.jobs
@@ -280,6 +382,7 @@ final class ProcessManager: ObservableObject {
             }
             guard didOpen else {
                 message = "Could not open \(preset.displayName)."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
 
@@ -299,14 +402,22 @@ final class ProcessManager: ObservableObject {
                 message = restored
                     ? "Opened \(preset.displayName) after restoring required services."
                     : "Opened \(preset.displayName)."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else {
                 message = "\(preset.displayName) was launched, but its main process could not be verified."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             }
         }
+        return commandResult
     }
 
-    func quitMainApp(_ preset: WatchedAppPreset) async {
-        await runAction {
+    @discardableResult
+    func quitMainApp(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
+        var commandResult = TaskScopeCommandResult(
+            status: .failed,
+            message: "Quit did not complete."
+        )
+        await runAction(kind: .mutation) {
             let before = await currentSnapshot(for: preset)
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             lifecycleReport = agentResult.jobs.isEmpty
@@ -321,20 +432,30 @@ final class ProcessManager: ObservableObject {
 
             if !agentResult.succeeded {
                 message = "Quit \(preset.displayName), but relaunch jobs failed: \(agentResult.failureSummary ?? "unknown failure")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
                 message = "No \(preset.displayName) app found."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else if !snapshot(for: preset).isMainRunning {
                 message = agentResult.didChangeState
                     ? "\(preset.displayName) quit and launch agents unloaded."
                     : "\(preset.displayName) quit."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else {
                 message = "\(preset.displayName) may still run."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             }
         }
+        return commandResult
     }
 
-    func quitHelpers(_ preset: WatchedAppPreset) async {
-        await runAction {
+    @discardableResult
+    func quitHelpers(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
+        var commandResult = TaskScopeCommandResult(
+            status: .failed,
+            message: "Helper stop did not complete."
+        )
+        await runAction(kind: .mutation) {
             let before = await currentSnapshot(for: preset)
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             lifecycleReport = agentResult.jobs.isEmpty
@@ -352,20 +473,30 @@ final class ProcessManager: ObservableObject {
             let nowHelpers = snapshot(for: preset).helpersRunning
             if !agentResult.succeeded {
                 message = "Helper stop was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
                 message = "No user helpers found."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else if nowHelpers.isEmpty {
                 message = agentResult.didChangeState
                     ? "User helpers quit and launch agents unloaded."
                     : "User helpers quit."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else {
                 message = "User helpers may still run."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             }
         }
+        return commandResult
     }
 
-    func quitAllKillable(_ preset: WatchedAppPreset) async {
-        await runAction {
+    @discardableResult
+    func quitAllKillable(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
+        var commandResult = TaskScopeCommandResult(
+            status: .failed,
+            message: "Close did not complete."
+        )
+        await runAction(kind: .mutation) {
             let before = await currentSnapshot(for: preset)
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             lifecycleReport = agentResult.jobs.isEmpty
@@ -383,18 +514,24 @@ final class ProcessManager: ObservableObject {
             let nowSnap = snapshot(for: preset)
             if !agentResult.succeeded {
                 message = "Close was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.hasAny && !nowSnap.hasAny {
                 message = "No watched processes found."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else if nowSnap.isMainRunning {
                 message = "\(preset.displayName) may still run."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !nowSnap.helpersRunning.isEmpty {
                 message = "User helpers may still run."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else {
                 message = agentResult.didChangeState
                     ? "\(preset.displayName) closed and launch agents unloaded."
                     : "\(preset.displayName) and helpers quit."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
             }
         }
+        return commandResult
     }
 
     @discardableResult
@@ -405,7 +542,7 @@ final class ProcessManager: ObservableObject {
         }
 
         var result: ProcessActionResult = .rejected
-        await runAction {
+        await runAction(kind: .mutation) {
             let verificationResult = await processInventory.load(fetchExtendedStats: false)
             guard case .success(let currentProcesses) = verificationResult,
                   currentProcesses.contains(where: { $0.identity == process.identity }) else {
@@ -472,7 +609,7 @@ final class ProcessManager: ObservableObject {
 
     var ppidMap: [Int32: Int32] {
         var map: [Int32: Int32] = [:]
-        for p in processes { map[p.pid] = p.parentPID }
+        for p in fullProcessInventory { map[p.pid] = p.parentPID }
         return map
     }
 
@@ -557,8 +694,12 @@ final class ProcessManager: ObservableObject {
     }
 
     private func publishDisplayProcesses() {
-        var sorted = fullProcessInventory
-        sorted.sort { lhs, rhs in
+        processes = displayProcesses()
+        reconcileSelection(with: processes)
+    }
+
+    private func sorted(_ inventory: [AppProcess]) -> [AppProcess] {
+        inventory.sorted { lhs, rhs in
             switch sortKey {
             case .cpu:
                 if lhs.cpu == rhs.cpu {
@@ -577,9 +718,6 @@ final class ProcessManager: ObservableObject {
                 return lhs.pid < rhs.pid
             }
         }
-        let limit = processListLimitProvider?() ?? 80
-        processes = Array(sorted.prefix(max(0, limit)))
-        reconcileSelection(with: fullProcessInventory)
     }
 
     private func resortProcesses() {
@@ -603,35 +741,93 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    private func runAction(_ operation: () async -> Void) async {
-        await acquireOperationSlot()
+    @discardableResult
+    private func runAction(
+        kind: OperationKind,
+        _ operation: () async -> Void
+    ) async -> Bool {
+        guard await acquireOperationSlot(for: kind) else {
+            if !Task.isCancelled {
+                operationState = .coalesced
+            }
+            return false
+        }
+        guard !Task.isCancelled else {
+            releaseOperationSlot()
+            return false
+        }
 
         isWorking = true
+        operationState = kind.isMutation ? .runningMutation : .runningRefresh
         defer {
             isWorking = false
             releaseOperationSlot()
         }
 
         await operation()
+        return true
     }
 
-    private func acquireOperationSlot() async {
-        if !operationIsRunning {
-            operationIsRunning = true
-            return
+    private func acquireOperationSlot(for kind: OperationKind) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if activeOperation == nil {
+            activeOperation = kind
+            return true
         }
 
-        await withCheckedContinuation { continuation in
-            operationWaiters.append(continuation)
+        if case .read(let requestedRead) = kind {
+            let activeMatches = activeOperation == .read(requestedRead)
+            let queuedMatches = operationWaiters.contains { $0.kind == .read(requestedRead) }
+            if activeMatches || queuedMatches {
+                return false
+            }
+        }
+
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard !Task.isCancelled else {
+                    continuation.resume(returning: false)
+                    return
+                }
+                operationWaiters.append(
+                    OperationWaiter(
+                        id: waiterID,
+                        kind: kind,
+                        continuation: continuation
+                    )
+                )
+                operationState = .queued
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.cancelOperationWaiter(id: waiterID)
+            }
+        }
+    }
+
+    private func cancelOperationWaiter(id: UUID) {
+        guard let index = operationWaiters.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        let waiter = operationWaiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
+        if operationWaiters.isEmpty, let activeOperation {
+            operationState = activeOperation.isMutation
+                ? .runningMutation
+                : .runningRefresh
         }
     }
 
     private func releaseOperationSlot() {
         if operationWaiters.isEmpty {
-            operationIsRunning = false
+            activeOperation = nil
+            operationState = .idle
         } else {
-            let next = operationWaiters.removeFirst()
-            next.resume()
+            let nextIndex = operationWaiters.firstIndex { $0.kind.isMutation } ?? 0
+            let next = operationWaiters.remove(at: nextIndex)
+            activeOperation = next.kind
+            next.continuation.resume(returning: true)
         }
     }
 

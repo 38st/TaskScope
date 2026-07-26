@@ -17,29 +17,128 @@ enum TaskScopeLaunchContext: Equatable {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
-    @Published private(set) var launchContext: TaskScopeLaunchContext = .interactive
+    @Published private(set) var launchContext: TaskScopeLaunchContext
+    @Published private(set) var windowPresentationAllowed: Bool
+    private let previouslyFrontmostApplication: NSRunningApplication?
+    private var explicitBackgroundLaunch: Bool
+
+    override init() {
+        let detectedContext = TaskScopeLaunchContext.detect(
+            arguments: ProcessInfo.processInfo.arguments,
+            launchedAsLoginItem: false
+        )
+        explicitBackgroundLaunch = detectedContext == .background
+        launchContext = .background
+        windowPresentationAllowed = false
+        previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
+        super.init()
+    }
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        detectExplicitBackgroundLaunch()
+        if explicitBackgroundLaunch {
+            NSApp.setActivationPolicy(.accessory)
+        } else {
+            NSApp.setActivationPolicy(.regular)
+        }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(windowDidBecomeVisible(_:)),
+            name: NSWindow.didBecomeMainNotification,
+            object: nil
+        )
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        detectExplicitBackgroundLaunch()
+
+        HotkeyManager.shared.register()
+        URLSchemeHandler.shared.register()
+        if explicitBackgroundLaunch {
+            finalizeBackgroundLaunch()
+        } else if NSApp.isActive {
+            promoteInteractiveLaunch()
+        } else {
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard let self, !self.windowPresentationAllowed else { return }
+                if NSApp.isActive {
+                    self.promoteInteractiveLaunch()
+                } else {
+                    self.finalizeBackgroundLaunch()
+                }
+            }
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard !explicitBackgroundLaunch, !windowPresentationAllowed else { return }
+        promoteInteractiveLaunch()
+    }
+
+    private func detectExplicitBackgroundLaunch() {
         let loginDescriptor = NSAppleEventManager.shared()
             .currentAppleEvent?
             .paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))
-        launchContext = TaskScopeLaunchContext.detect(
+        explicitBackgroundLaunch = TaskScopeLaunchContext.detect(
             arguments: ProcessInfo.processInfo.arguments,
             launchedAsLoginItem: loginDescriptor?.booleanValue ?? false
-        )
+        ) == .background
+    }
 
-        NSApp.setActivationPolicy(launchContext == .background ? .accessory : .regular)
-        HotkeyManager.shared.register()
-        URLSchemeHandler.shared.register()
-        if launchContext == .interactive {
-            NSApp.activate(ignoringOtherApps: true)
-        } else {
-            DispatchQueue.main.async {
-                NSApp.windows
-                    .filter { $0.title == "TaskScope" || $0.title == "TaskScope Processes" }
-                    .forEach { $0.orderOut(nil) }
+    @objc
+    private func windowDidBecomeVisible(_ notification: Notification) {
+        guard launchContext == .background,
+              !windowPresentationAllowed,
+              let window = notification.object as? NSWindow,
+              automaticWindowTitles.contains(window.title) else {
+            return
+        }
+        window.orderOut(nil)
+    }
+
+    private func hideAutomaticWindows() {
+        NSApp.windows
+            .filter { automaticWindowTitles.contains($0.title) }
+            .forEach { $0.orderOut(nil) }
+    }
+
+    private var automaticWindowTitles: Set<String> {
+        ["TaskScope", "TaskScope Processes", "Onboarding", "About TaskScope"]
+    }
+
+    private func finalizeBackgroundLaunch() {
+        launchContext = .background
+        NSApp.setActivationPolicy(.accessory)
+        suppressAutomaticWindowPresentation()
+    }
+
+    private func promoteInteractiveLaunch() {
+        launchContext = .interactive
+        windowPresentationAllowed = true
+        NSApp.setActivationPolicy(.regular)
+        DispatchQueue.main.async {
+            if let window = NSApp.windows.first(where: {
+                $0.title == "TaskScope" || $0.title == "TaskScope Processes"
+            }) {
+                window.makeKeyAndOrderFront(nil)
             }
         }
+    }
+
+    func suppressAutomaticWindowPresentation() {
+        guard launchContext == .background, !windowPresentationAllowed else { return }
+        hideAutomaticWindows()
+        NSApp.deactivate()
+        if let previous = previouslyFrontmostApplication,
+           previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+            previous.activate()
+        }
+    }
+
+    func permitWindowPresentation() {
+        windowPresentationAllowed = true
+        NSApp.setActivationPolicy(.regular)
     }
 }
 
@@ -47,10 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 struct TaskScopeApp: App {
     @Environment(\.openWindow) private var openWindow
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var processManager = ProcessManager()
+    @StateObject private var processManager: ProcessManager
     @StateObject private var loginItemManager = LoginItemManager()
     @StateObject private var settings = SettingsStore()
-    @StateObject private var watchedApps = WatchedAppsStore()
+    @StateObject private var watchedApps: WatchedAppsStore
     @StateObject private var savedSelections = SavedSelectionsStore()
     @StateObject private var autoStopRules = AutoStopRulesStore()
     @StateObject private var processHistory = ProcessHistory()
@@ -60,26 +159,54 @@ struct TaskScopeApp: App {
     @State private var didRequestOnboarding = false
     @State private var commandCoordinator: AppCommandCoordinator?
 
+    init() {
+        let processManager = ProcessManager()
+        let watchedApps = WatchedAppsStore()
+        let coordinator = AppCommandCoordinator(
+            processManager: processManager,
+            presets: { watchedApps.presets }
+        )
+
+        processManager.watchedAppsProvider = { watchedApps.presets }
+        AppCommandBus.shared.install { command in
+            await coordinator.perform(command)
+        }
+
+        _processManager = StateObject(wrappedValue: processManager)
+        _watchedApps = StateObject(wrappedValue: watchedApps)
+        _commandCoordinator = State(initialValue: coordinator)
+    }
+
     var body: some Scene {
         WindowGroup("TaskScope", id: "processes") {
-            TaskScopePopoverView(
-                processManager: processManager,
-                loginItemManager: loginItemManager,
-                settings: settings,
-                watchedApps: watchedApps,
-                savedSelections: savedSelections,
-                autoStopRules: autoStopRules,
-                history: processHistory,
-                presentationStyle: .expandedWindow,
-                openFullWindow: nil
-            )
-            .frame(minWidth: 760, minHeight: 560)
-            .environmentObject(settings)
-            .environmentObject(watchedApps)
-            .task {
-                await bootstrapRuntimeIfNeeded()
-                if appDelegate.launchContext == .interactive {
-                    openOnboardingIfNeeded()
+            Group {
+                if appDelegate.windowPresentationAllowed {
+                    TaskScopePopoverView(
+                        processManager: processManager,
+                        loginItemManager: loginItemManager,
+                        settings: settings,
+                        watchedApps: watchedApps,
+                        savedSelections: savedSelections,
+                        autoStopRules: autoStopRules,
+                        history: processHistory,
+                        presentationStyle: .expandedWindow,
+                        openFullWindow: nil
+                    )
+                    .frame(minWidth: 760, minHeight: 560)
+                    .environmentObject(settings)
+                    .environmentObject(watchedApps)
+                    .task {
+                        await bootstrapRuntimeIfNeeded()
+                        if appDelegate.launchContext == .interactive {
+                            openOnboardingIfNeeded()
+                        }
+                    }
+                } else {
+                    Color.clear
+                        .frame(width: 1, height: 1)
+                        .onAppear {
+                            appDelegate.suppressAutomaticWindowPresentation()
+                        }
                 }
             }
         }
@@ -202,14 +329,6 @@ struct TaskScopeApp: App {
         processManager.processListLimitProvider = { settings.processListLimit }
         processManager.sortKey = settings.sortKey
         processManager.enableNotifications = settings.enableNotifications
-        let coordinator = AppCommandCoordinator(
-            processManager: processManager,
-            presets: { watchedApps.presets }
-        )
-        commandCoordinator = coordinator
-        AppCommandBus.shared.install { command in
-            await coordinator.perform(command)
-        }
         HotkeyManager.shared.onShow = {
             showTaskScopeWindow()
         }
@@ -257,6 +376,7 @@ struct TaskScopeApp: App {
     }
 
     private func showTaskScopeWindow() {
+        appDelegate.permitWindowPresentation()
         NSApp.setActivationPolicy(.regular)
         NSApp.unhide(nil)
 

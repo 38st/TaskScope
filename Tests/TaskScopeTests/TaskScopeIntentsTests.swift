@@ -3,6 +3,12 @@ import XCTest
 
 @available(macOS 13.0, *)
 final class TaskScopeIntentsTests: XCTestCase {
+    func testShortcutsDoNotRequestForegroundActivation() {
+        XCTAssertFalse(RefreshTaskScopeIntent.openAppWhenRun)
+        XCTAssertFalse(OpenWatchedAppIntent.openAppWhenRun)
+        XCTAssertFalse(StopWatchedAppIntent.openAppWhenRun)
+    }
+
     private let suiteName = "TaskScope.TaskScopeIntentsTests"
     private let key = "watched-presets-intent-tests"
     private var defaults: UserDefaults!

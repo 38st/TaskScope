@@ -56,15 +56,13 @@ final class AppCommandCoordinator {
             guard let preset = preset(named: name) else {
                 return missingPresetResult(name)
             }
-            await processManager.openApp(preset)
-            return resultFromManagerMessage()
+            return await processManager.openApp(preset)
 
         case .stopPreset(let name):
             guard let preset = preset(named: name) else {
                 return missingPresetResult(name)
             }
-            await processManager.quitAllKillable(preset)
-            return resultFromManagerMessage()
+            return await processManager.quitAllKillable(preset)
 
         case .quitApplication:
             terminateApplication()
@@ -83,17 +81,6 @@ final class AppCommandCoordinator {
         )
     }
 
-    private func resultFromManagerMessage() -> TaskScopeCommandResult {
-        let lowercased = processManager.message.lowercased()
-        let failed = lowercased.contains("could not")
-            || lowercased.contains("failed")
-            || lowercased.contains("incomplete")
-            || lowercased.contains("could not be verified")
-        return TaskScopeCommandResult(
-            status: failed ? .failed : .completed,
-            message: processManager.message
-        )
-    }
 }
 
 @MainActor

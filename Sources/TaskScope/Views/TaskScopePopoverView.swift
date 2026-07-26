@@ -115,6 +115,9 @@ struct TaskScopePopoverView: View {
                 expandFilteredTreeAncestors()
             }
         }
+        .onChange(of: renderedProcessIdentities) { _, _ in
+            processManager.restrictSelection(to: renderedSelectionProcesses)
+        }
         .confirmationDialog(
             "Stop Process?",
             isPresented: Binding(
@@ -236,18 +239,19 @@ struct TaskScopePopoverView: View {
             )
         }
         .sheet(
-            item: Binding(
-                get: { processManager.lifecycleReport },
-                set: { value in
-                    if value == nil {
-                        processManager.dismissLifecycleReport()
-                    }
-                }
-            )
+            item: lifecycleReportBinding
         ) { report in
             LifecycleReportSheet(
                 report: report,
                 onClose: { processManager.dismissLifecycleReport() }
+            )
+        }
+        .sheet(
+            item: batchActionReportBinding
+        ) { report in
+            ProcessBatchActionReportSheet(
+                report: report,
+                onClose: { processManager.dismissBatchActionReport() }
             )
         }
         .sheet(item: $quickAutoStopProcess) { process in
@@ -280,7 +284,7 @@ struct TaskScopePopoverView: View {
             )
         }
         .alert(
-            "Auto-Stop: \(autoStopRules.currentPrompt?.process.name ?? "")",
+            autoStopPromptTitle,
             isPresented: Binding(
                 get: { autoStopRules.currentPrompt != nil },
                 set: { isPresented in
@@ -651,28 +655,23 @@ struct TaskScopePopoverView: View {
 
     private var filteredProcesses: [AppProcess] {
         let trimmedSearch = settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let watchedNames = Set(processManager.snapshots.flatMap { $0.preset.allProcessNames })
 
-        let searched: [AppProcess]
-        if trimmedSearch.isEmpty {
-            searched = processManager.processes
-        } else {
-            searched = processManager.processes.filter { process in
-                process.name.localizedCaseInsensitiveContains(trimmedSearch) ||
-                    process.command.localizedCaseInsensitiveContains(trimmedSearch) ||
-                    String(process.pid).contains(trimmedSearch)
-            }
-        }
+        return processManager.displayProcesses { process in
+            let matchesSearch = trimmedSearch.isEmpty
+                || process.name.localizedCaseInsensitiveContains(trimmedSearch)
+                || process.command.localizedCaseInsensitiveContains(trimmedSearch)
+                || String(process.pid).contains(trimmedSearch)
+            guard matchesSearch else { return false }
 
-        switch filterMode {
-        case .all:
-            return searched
-        case .watched:
-            let watchedNames = Set(processManager.snapshots.flatMap { $0.preset.allProcessNames })
-            return searched.filter { watchedNames.contains($0.name) }
-        case .highlighted:
-            return searched.filter {
-                $0.cpu >= settings.cpuHighlightThreshold ||
-                $0.memoryMB >= settings.memHighlightThresholdMB
+            switch filterMode {
+            case .all:
+                return true
+            case .watched:
+                return watchedNames.contains(process.name)
+            case .highlighted:
+                return process.cpu >= settings.cpuHighlightThreshold
+                    || process.memoryMB >= settings.memHighlightThresholdMB
             }
         }
     }
@@ -713,12 +712,10 @@ struct TaskScopePopoverView: View {
 
     private var treeRoots: [ProcessTreeNode] {
         let matchingPIDs = Set(filteredProcesses.map(\.pid))
-        let isFiltering = !settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || filterMode != .all
         return ProcessTreeBuilder.build(
-            from: processManager.processes,
+            from: processManager.inventorySnapshot,
             ppidMap: processManager.ppidMap,
-            matchingPIDs: isFiltering ? matchingPIDs : nil
+            matchingPIDs: matchingPIDs
         )
     }
 
@@ -740,6 +737,14 @@ struct TaskScopePopoverView: View {
         return flatten(treeRoots)
     }
 
+    private var renderedSelectionProcesses: [AppProcess] {
+        treeMode ? visibleTreeProcesses : filteredProcesses
+    }
+
+    private var renderedProcessIdentities: [ProcessIdentity] {
+        renderedSelectionProcesses.map(\.identity)
+    }
+
     private var pendingBatchConfirmationMessage: String {
         let names = pendingBatchTargets.prefix(3).map { identity in
             let component = URL(fileURLWithPath: identity.command).lastPathComponent
@@ -749,6 +754,35 @@ struct TaskScopePopoverView: View {
             ? " and \(pendingBatchTargets.count - names.count) more"
             : ""
         return "Stop \(pendingBatchTargets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
+    }
+
+    private var autoStopPromptTitle: String {
+        guard let processName = autoStopRules.currentPrompt?.process.name else {
+            return "Auto-Stop"
+        }
+        return "Auto-Stop: \(processName)"
+    }
+
+    private var lifecycleReportBinding: Binding<LifecycleReport?> {
+        Binding(
+            get: { processManager.lifecycleReport },
+            set: { value in
+                if value == nil {
+                    processManager.dismissLifecycleReport()
+                }
+            }
+        )
+    }
+
+    private var batchActionReportBinding: Binding<ProcessBatchActionReport?> {
+        Binding(
+            get: { processManager.batchActionReport },
+            set: { value in
+                if value == nil {
+                    processManager.dismissBatchActionReport()
+                }
+            }
+        )
     }
 
     private func expandFilteredTreeAncestors() {

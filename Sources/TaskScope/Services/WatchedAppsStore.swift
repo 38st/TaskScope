@@ -2,6 +2,11 @@ import Foundation
 
 @MainActor
 final class WatchedAppsStore: ObservableObject {
+    struct ImportResult: Equatable {
+        var importedCount: Int
+        var rejectedCount: Int
+    }
+
     nonisolated static let defaultPersistenceKey = "TaskScope.watchedPresets.v1"
 
     @Published var presets: [WatchedAppPreset] {
@@ -78,6 +83,22 @@ final class WatchedAppsStore: ObservableObject {
         allowsPersistence = true
         persistenceIssue = nil
         persistIfAllowed()
+    }
+
+    func importPresets(_ candidates: [WatchedAppPreset]) -> ImportResult {
+        var seenIDs = Set(presets.map(\.id))
+        var imported = 0
+        var rejected = 0
+
+        for preset in candidates {
+            guard seenIDs.insert(preset.id).inserted, add(preset) else {
+                rejected += 1
+                continue
+            }
+            imported += 1
+        }
+
+        return ImportResult(importedCount: imported, rejectedCount: rejected)
     }
 
     private func validateAndNormalize(_ preset: WatchedAppPreset) -> WatchedAppPreset? {

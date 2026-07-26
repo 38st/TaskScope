@@ -1,4 +1,5 @@
 import XCTest
+import UserNotifications
 @testable import TaskScope
 
 final class NotificationBaselineTests: XCTestCase {
@@ -36,5 +37,26 @@ final class NotificationBaselineTests: XCTestCase {
 
         XCTAssertEqual(transition.started, ["New"])
         XCTAssertEqual(transition.stopped, ["Old"])
+    }
+
+    @MainActor
+    func testAuthorizationMappingAndDeliveryEligibilityAreExplicit() {
+        XCTAssertEqual(
+            NotificationService.authorizationState(for: .notDetermined),
+            .notDetermined
+        )
+        XCTAssertEqual(NotificationService.authorizationState(for: .denied), .denied)
+        XCTAssertEqual(NotificationService.authorizationState(for: .authorized), .authorized)
+        XCTAssertEqual(NotificationService.authorizationState(for: .provisional), .provisional)
+        XCTAssertTrue(NotificationService.canDeliver(for: .authorized))
+        XCTAssertTrue(NotificationService.canDeliver(for: .provisional))
+        XCTAssertFalse(NotificationService.canDeliver(for: .denied))
+        XCTAssertFalse(NotificationService.canDeliver(for: .notDetermined))
+    }
+
+    func testForegroundPresentationUsesBannerWithoutSound() {
+        let options = NotificationService.foregroundPresentationOptions
+        XCTAssertTrue(options.contains(.banner))
+        XCTAssertFalse(options.contains(.sound))
     }
 }

@@ -25,7 +25,7 @@ struct ProcessNotificationBaseline {
 
 @MainActor
 final class NotificationService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
-    enum AuthorizationState: Equatable {
+    enum AuthorizationState: Equatable, Sendable {
         case unknown
         case notDetermined
         case denied
@@ -62,19 +62,25 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
 
     func refreshAuthorizationStatus() async {
         let settings = await UNUserNotificationCenter.current().notificationSettings()
-        switch settings.authorizationStatus {
+        authorizationState = Self.authorizationState(for: settings.authorizationStatus)
+    }
+
+    static func authorizationState(
+        for status: UNAuthorizationStatus
+    ) -> AuthorizationState {
+        switch status {
         case .notDetermined:
-            authorizationState = .notDetermined
+            .notDetermined
         case .denied:
-            authorizationState = .denied
+            .denied
         case .authorized:
-            authorizationState = .authorized
+            .authorized
         case .provisional:
-            authorizationState = .provisional
+            .provisional
         case .ephemeral:
-            authorizationState = .provisional
+            .provisional
         @unknown default:
-            authorizationState = .unknown
+            .unknown
         }
     }
 
@@ -107,11 +113,17 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner]
+        Self.foregroundPresentationOptions
     }
 
+    nonisolated static let foregroundPresentationOptions: UNNotificationPresentationOptions = [.banner]
+
     private var canDeliver: Bool {
-        authorizationState == .authorized || authorizationState == .provisional
+        Self.canDeliver(for: authorizationState)
+    }
+
+    nonisolated static func canDeliver(for state: AuthorizationState) -> Bool {
+        state == .authorized || state == .provisional
     }
 
     private func notify(title: String, body: String) {

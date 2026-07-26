@@ -162,7 +162,51 @@ enum ProcessActionResult: Equatable, Sendable {
     }
 }
 
-struct ProcessDetail: Equatable {
+enum ProcessOperationState: Equatable {
+    case idle
+    case runningMutation
+    case runningRefresh
+    case queued
+    case coalesced
+}
+
+enum ProcessTargetActionState: Equatable {
+    case stopped
+    case requestedStillRunning
+    case stale
+    case signalRejected
+
+    var label: String {
+        switch self {
+        case .stopped:
+            "Stopped"
+        case .requestedStillRunning:
+            "Still running"
+        case .stale:
+            "No longer matched"
+        case .signalRejected:
+            "Signal rejected"
+        }
+    }
+}
+
+struct ProcessTargetActionResult: Identifiable, Equatable {
+    var identity: ProcessIdentity
+    var name: String
+    var state: ProcessTargetActionState
+
+    var id: ProcessIdentity {
+        identity
+    }
+}
+
+struct ProcessBatchActionReport: Identifiable, Equatable {
+    var id = UUID()
+    var title: String
+    var targets: [ProcessTargetActionResult]
+}
+
+struct ProcessDetail: Equatable, Sendable {
     var pid: Int32
     var parentPID: Int32
     var user: String

@@ -35,6 +35,65 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(manager.processes.map(\.pid), [3, 2])
     }
 
+    func testFilteringOccursBeforeLimitSoOffscreenWatchedTargetIsDiscoverable() async {
+        let highCPU = process(pid: 1, cpu: 90, name: "HighCPU")
+        let watched = process(pid: 2, cpu: 0, name: "Watched")
+        let inventory = FakeProcessInventory(results: [.success([highCPU, watched])])
+        let manager = makeManager(inventory: inventory)
+        manager.processListLimitProvider = { 1 }
+
+        await manager.loadProcessList()
+
+        XCTAssertEqual(manager.processes.map(\.pid), [highCPU.pid])
+        XCTAssertEqual(
+            manager.displayProcesses { $0.name == "Watched" }.map(\.pid),
+            [watched.pid]
+        )
+    }
+
+    func testFullInventoryRetainsAncestorOutsideDisplayLimitForTreeContext() async {
+        let parent = AppProcess(
+            pid: 10,
+            parentPID: 1,
+            cpu: 0,
+            memoryMB: 0,
+            command: "Parent",
+            elapsedTime: "00:10",
+            startTime: "parent-start",
+            netInKB: nil,
+            netOutKB: nil,
+            diskReadBlocks: nil,
+            diskWriteBlocks: nil
+        )
+        let child = AppProcess(
+            pid: 11,
+            parentPID: parent.pid,
+            cpu: 90,
+            memoryMB: 0,
+            command: "Child",
+            elapsedTime: "00:10",
+            startTime: "child-start",
+            netInKB: nil,
+            netOutKB: nil,
+            diskReadBlocks: nil,
+            diskWriteBlocks: nil
+        )
+        let inventory = FakeProcessInventory(results: [.success([parent, child])])
+        let manager = makeManager(inventory: inventory)
+        manager.processListLimitProvider = { 1 }
+
+        await manager.loadProcessList()
+        let roots = ProcessTreeBuilder.build(
+            from: manager.inventorySnapshot,
+            ppidMap: manager.ppidMap,
+            matchingPIDs: Set(manager.processes.map(\.pid))
+        )
+
+        XCTAssertEqual(manager.processes.map(\.pid), [child.pid])
+        XCTAssertEqual(roots.map(\.process.pid), [parent.pid])
+        XCTAssertEqual(roots.first?.children.map(\.process.pid), [child.pid])
+    }
+
     func testWatchedNamesWithRegexCharactersMatchLiterally() async {
         let watched = process(pid: 42, name: "Codex (Renderer)")
         let inventory = FakeProcessInventory(results: [.success([watched])])
@@ -86,6 +145,29 @@ final class ProcessManagerTests: XCTestCase {
 
         XCTAssertTrue(manager.selectedPids.isEmpty)
         XCTAssertTrue(manager.selectionSnapshot().isEmpty)
+    }
+
+    func testSelectionIsPrunedWhenProcessFallsOutsideRefreshedDisplayLimit() async {
+        let target = process(pid: 42, cpu: 90, name: "Target")
+        let other = process(pid: 43, cpu: 10, name: "Other")
+        let promoted = process(pid: 44, cpu: 100, name: "Promoted")
+        let inventory = FakeProcessInventory(
+            results: [
+                .success([target, other]),
+                .success([target, promoted])
+            ]
+        )
+        let manager = makeManager(inventory: inventory)
+        manager.processListLimitProvider = { 1 }
+
+        await manager.loadProcessList()
+        manager.toggleSelection(target.pid)
+        XCTAssertEqual(manager.selectedPids, [target.pid])
+
+        await manager.loadProcessList()
+
+        XCTAssertEqual(manager.processes.map(\.pid), [promoted.pid])
+        XCTAssertTrue(manager.selectedPids.isEmpty)
     }
 
     func testSelectUsesOnlyProvidedVisibleProcesses() async {
@@ -151,7 +233,37 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(manager.message, "Selection changed; 1 no longer matched. Nothing was stopped.")
     }
 
-    func testOverlappingOperationsAreSerializedInsteadOfDropped() async {
+    func testBatchStopReportsStoppedRejectedAndStaleTargetsIndividually() async {
+        let stopped = process(pid: 40, name: "Stopped")
+        let rejected = process(pid: 41, name: "Rejected")
+        let stale = process(pid: 42, name: "Stale")
+        let inventory = FakeProcessInventory(
+            results: [
+                .success([stopped, rejected]),
+                .success([rejected])
+            ]
+        )
+        let signaler = FakeProcessSignaler(
+            alivePids: [40, 41],
+            exitsOnTerminate: true,
+            rejectedPids: [41]
+        )
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        await manager.batchTerminate([stopped.identity, rejected.identity, stale.identity])
+
+        XCTAssertEqual(
+            manager.batchActionReport?.targets.map(\.state),
+            [.stopped, .signalRejected, .stale]
+        )
+        XCTAssertEqual(
+            manager.batchActionReport?.targets.map(\.name),
+            ["Stopped", "Rejected", "Stale"]
+        )
+        XCTAssertEqual(manager.message, "Stop requested; 1 still running, 1 no longer matched.")
+    }
+
+    func testEquivalentOverlappingRefreshesAreCoalesced() async {
         let inventory = BlockingProcessInventory()
         let manager = ProcessManager(
             processInventory: inventory,
@@ -173,7 +285,67 @@ final class ProcessManagerTests: XCTestCase {
         await second.value
 
         let finalCount = await inventory.currentLoadCount()
-        XCTAssertEqual(finalCount, 2)
+        XCTAssertEqual(finalCount, 1)
+        XCTAssertEqual(manager.operationState, .idle)
+    }
+
+    func testCancellingQueuedRefreshRemovesItWithoutPublishingObsoleteWork() async {
+        let inventory = BlockingProcessInventory()
+        let manager = ProcessManager(
+            processInventory: inventory,
+            processSignaler: FakeProcessSignaler(),
+            settleAfterProcessChange: {}
+        )
+        manager.enableNotifications = false
+
+        let activeRefresh = Task {
+            await manager.refreshWatchedStatus(showMessage: false)
+        }
+        await inventory.waitForFirstCall()
+        let queuedRefresh = Task {
+            await manager.loadProcessList(showMessage: false)
+        }
+        await Task.yield()
+
+        queuedRefresh.cancel()
+        await inventory.finishFirstCall()
+        await activeRefresh.value
+        await queuedRefresh.value
+
+        let finalLoadCount = await inventory.currentLoadCount()
+        XCTAssertEqual(finalLoadCount, 1)
+        XCTAssertFalse(manager.hasLoadedProcessList)
+        XCTAssertEqual(manager.operationState, .idle)
+    }
+
+    func testQueuedMutationRunsBeforeDifferentQueuedRefresh() async {
+        let initial = process(pid: 42, name: "Target")
+        let inventory = OrderedBlockingProcessInventory(
+            results: [
+                .success([]),
+                .success([initial]),
+                .success([]),
+                .success([])
+            ]
+        )
+        let signaler = FakeProcessSignaler(alivePids: [42], exitsOnTerminate: true)
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        let activeRefresh = Task { await manager.refreshWatchedStatus(showMessage: false) }
+        await inventory.waitForFirstCall()
+        let queuedListRefresh = Task { await manager.loadProcessList(showMessage: false) }
+        let queuedMutation = Task { await manager.terminate(initial) }
+        await Task.yield()
+
+        await inventory.finishFirstCall()
+        await activeRefresh.value
+        _ = await queuedMutation.value
+        await queuedListRefresh.value
+
+        XCTAssertEqual(signaler.sent.map(\.signal), [SIGTERM])
+        let fetchOrder = await inventory.fetchOrder()
+        XCTAssertEqual(fetchOrder, [false, false, false, false])
+        XCTAssertEqual(manager.operationState, .idle)
     }
 
     func testOpenLifecycleOrdersDependenciesBeforeAppAndVerification() async {
@@ -237,6 +409,23 @@ final class ProcessManagerTests: XCTestCase {
 
         XCTAssertEqual(lifecycle.calls.first, "agents.unload")
         XCTAssertTrue(lifecycle.calls.contains("terminate:ExampleHelper"))
+    }
+
+    func testManagedStopReturnsTypedFailureWhenTargetStillRuns() async {
+        let running = process(pid: 42, name: "Example")
+        let preset = lifecyclePreset()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(
+                results: [.success([running]), .success([running])]
+            ),
+            lifecycle: FakeLifecycleService()
+        )
+        manager.watchedAppsProvider = { [preset] }
+
+        let result = await manager.quitAllKillable(preset)
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertEqual(result.message, "Example may still run.")
     }
 
     func testExpandedMetricConsumersEnableCollectionAndRefreshLoadedList() async {
@@ -403,6 +592,48 @@ private actor BlockingProcessInventory: ProcessInventoryProviding {
     }
 }
 
+private actor OrderedBlockingProcessInventory: ProcessInventoryProviding {
+    private var results: [Result<[AppProcess], ProcessInventoryError>]
+    private var firstCallContinuation: CheckedContinuation<Void, Never>?
+    private var firstCallWaiters: [CheckedContinuation<Void, Never>] = []
+    private var requests: [Bool] = []
+
+    init(results: [Result<[AppProcess], ProcessInventoryError>]) {
+        self.results = results
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        requests.append(fetchExtendedStats)
+        if requests.count == 1 {
+            firstCallWaiters.forEach { $0.resume() }
+            firstCallWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                firstCallContinuation = continuation
+            }
+        }
+        guard !results.isEmpty else {
+            return .failure(.commandFailed("No fake result configured."))
+        }
+        return results.removeFirst()
+    }
+
+    func waitForFirstCall() async {
+        guard requests.isEmpty else { return }
+        await withCheckedContinuation { continuation in
+            firstCallWaiters.append(continuation)
+        }
+    }
+
+    func finishFirstCall() {
+        firstCallContinuation?.resume()
+        firstCallContinuation = nil
+    }
+
+    func fetchOrder() -> [Bool] {
+        requests
+    }
+}
+
 private final class FakeProcessInventory: ProcessInventoryProviding, @unchecked Sendable {
     private var results: [Result<[AppProcess], ProcessInventoryError>]
     private(set) var fetchExtendedRequests: [Bool] = []
@@ -431,16 +662,31 @@ private final class FakeProcessSignaler: ProcessSignaling {
 
     private var alivePids: Set<Int32>
     private let exitsOnKill: Bool
+    private let exitsOnTerminate: Bool
+    private let rejectedPids: Set<Int32>
     private(set) var sent: [SentSignal] = []
 
-    init(alivePids: Set<Int32> = [], exitsOnKill: Bool = false) {
+    init(
+        alivePids: Set<Int32> = [],
+        exitsOnKill: Bool = false,
+        exitsOnTerminate: Bool = false,
+        rejectedPids: Set<Int32> = []
+    ) {
         self.alivePids = alivePids
         self.exitsOnKill = exitsOnKill
+        self.exitsOnTerminate = exitsOnTerminate
+        self.rejectedPids = rejectedPids
     }
 
     func send(_ signal: Int32, to pid: Int32) -> Bool {
         sent.append(SentSignal(signal: signal, pid: pid))
+        if rejectedPids.contains(pid) {
+            return false
+        }
         if signal == SIGKILL, exitsOnKill {
+            alivePids.remove(pid)
+        }
+        if signal == SIGTERM, exitsOnTerminate {
             alivePids.remove(pid)
         }
         return true

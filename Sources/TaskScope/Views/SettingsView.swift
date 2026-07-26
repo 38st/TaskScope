@@ -473,16 +473,10 @@ struct SettingsView: View {
             importError = "Could not read presets from file."
             return
         }
-        let existingIds = Set(watchedApps.presets.map { $0.id })
-        var rejected = 0
-        for preset in decoded where !existingIds.contains(preset.id) {
-            if !watchedApps.add(preset) {
-                rejected += 1
-            }
-        }
-        importError = rejected == 0
+        let result = watchedApps.importPresets(decoded)
+        importError = result.rejectedCount == 0
             ? nil
-            : "\(rejected) imported preset\(rejected == 1 ? " was" : "s were") rejected by validation."
+            : "\(result.rejectedCount) imported preset\(result.rejectedCount == 1 ? " was" : "s were") rejected by validation."
     }
 }
 

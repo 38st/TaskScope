@@ -43,8 +43,14 @@ struct AboutView: View {
     }
 
     private var appInfo: (version: String, build: String)? {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        guard
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
+            !version.isEmpty,
+            let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String,
+            !build.isEmpty
+        else {
+            return nil
+        }
         return (version, build)
     }
 }

@@ -80,6 +80,20 @@ final class WatchedAppsStoreTests: XCTestCase {
         XCTAssertFalse(store.add(invalidPort))
     }
 
+    func testImportRejectsRepeatedIDsWithinTheSamePayload() {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        store.presets = []
+        let first = validPreset(name: "First")
+        var repeatedID = validPreset(name: "Second")
+        repeatedID.id = first.id
+
+        let result = store.importPresets([first, repeatedID])
+
+        XCTAssertEqual(result, .init(importedCount: 1, rejectedCount: 1))
+        XCTAssertEqual(store.presets.map(\.displayName), ["First"])
+        XCTAssertEqual(Set(store.presets.map(\.id)).count, store.presets.count)
+    }
+
     private func validPreset(name: String) -> WatchedAppPreset {
         WatchedAppPreset(
             displayName: name,

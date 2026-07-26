@@ -48,7 +48,10 @@ enum ShellCommandRunner {
         private var continuation: CheckedContinuation<ShellCommandResult, Never>?
         private var pendingResult: ShellCommandResult?
         private var completed = false
+        private var processStarted = false
+        private var terminalOverride: (message: String, exitCode: Int32)?
         private var timeoutTask: Task<Void, Never>?
+        private var killFallbackTask: Task<Void, Never>?
 
         init(command: String, timeout: TimeInterval) {
             self.command = command
@@ -98,6 +101,7 @@ enum ShellCommandRunner {
 
             do {
                 try process.run()
+                processStarted = true
                 stateLock.unlock()
 
                 let newTimeoutTask = Task { [weak self] in
@@ -128,39 +132,63 @@ enum ShellCommandRunner {
         }
 
         func cancel() {
-            stopProcess()
-            finish(
-                ShellCommandResult(
-                    command: command,
-                    stdout: outputCapture.string,
-                    stderr: "Command cancelled.",
-                    exitCode: -2
-                )
-            )
+            requestStop(message: "Command cancelled.", exitCode: -2)
         }
 
         private func timeOut() {
-            stopProcess()
-            finish(
-                ShellCommandResult(
-                    command: command,
-                    stdout: outputCapture.string,
-                    stderr: "Command timed out after \(timeout) seconds.",
-                    exitCode: -3
-                )
+            requestStop(
+                message: "Command timed out after \(timeout) seconds.",
+                exitCode: -3
             )
         }
 
-        private func stopProcess() {
-            guard process.isRunning else { return }
-            process.terminate()
-            let pid = process.processIdentifier
-            Task.detached {
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                if Darwin.kill(pid, 0) == 0 {
-                    Darwin.kill(pid, SIGKILL)
-                }
+        private func requestStop(message: String, exitCode: Int32) {
+            stateLock.lock()
+            guard !completed else {
+                stateLock.unlock()
+                return
             }
+            if terminalOverride == nil {
+                terminalOverride = (message, exitCode)
+            }
+            let didStart = processStarted
+            stateLock.unlock()
+
+            guard didStart else {
+                finish(
+                    ShellCommandResult(
+                        command: command,
+                        stdout: outputCapture.string,
+                        stderr: message,
+                        exitCode: exitCode
+                    )
+                )
+                return
+            }
+
+            if process.isRunning {
+                process.terminate()
+            }
+
+            let fallback = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                guard !Task.isCancelled else { return }
+                self?.forceKillIfRunning()
+            }
+            stateLock.lock()
+            if completed {
+                stateLock.unlock()
+                fallback.cancel()
+            } else {
+                killFallbackTask?.cancel()
+                killFallbackTask = fallback
+                stateLock.unlock()
+            }
+        }
+
+        private func forceKillIfRunning() {
+            guard process.isRunning else { return }
+            Darwin.kill(process.processIdentifier, SIGKILL)
         }
 
         private func finishAfterTermination(exitCode: Int32) {
@@ -169,12 +197,25 @@ enum ShellCommandRunner {
             outputCapture.append(standardOutput.fileHandleForReading.readDataToEndOfFile())
             errorCapture.append(standardError.fileHandleForReading.readDataToEndOfFile())
 
+            stateLock.lock()
+            let terminalOverride = self.terminalOverride
+            stateLock.unlock()
+            let capturedError = errorCapture.string.trimmingCharacters(in: .whitespacesAndNewlines)
+            let reportedError: String
+            if let terminalOverride {
+                reportedError = capturedError.isEmpty
+                    ? terminalOverride.message
+                    : "\(capturedError)\n\(terminalOverride.message)"
+            } else {
+                reportedError = capturedError
+            }
+
             finish(
                 ShellCommandResult(
                     command: command,
                     stdout: outputCapture.string.trimmingCharacters(in: .whitespacesAndNewlines),
-                    stderr: errorCapture.string.trimmingCharacters(in: .whitespacesAndNewlines),
-                    exitCode: exitCode
+                    stderr: reportedError,
+                    exitCode: terminalOverride?.exitCode ?? exitCode
                 )
             )
         }
@@ -191,9 +232,12 @@ enum ShellCommandRunner {
             self.continuation = nil
             let timeoutTask = self.timeoutTask
             self.timeoutTask = nil
+            let killFallbackTask = self.killFallbackTask
+            self.killFallbackTask = nil
             stateLock.unlock()
 
             timeoutTask?.cancel()
+            killFallbackTask?.cancel()
             standardOutput.fileHandleForReading.readabilityHandler = nil
             standardError.fileHandleForReading.readabilityHandler = nil
             process.terminationHandler = nil
