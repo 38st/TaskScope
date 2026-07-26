@@ -31,6 +31,42 @@ enum TaskScopePresentationStyle {
     case expandedWindow
 }
 
+@MainActor
+final class ProcessConfirmationState: ObservableObject {
+    @Published var pendingTermination: AppProcess?
+    @Published var isBatchPresented = false
+    private(set) var batchTargets: [ProcessIdentity] = []
+
+    func requestTermination(_ process: AppProcess) {
+        pendingTermination = process
+    }
+
+    func clearTermination() {
+        pendingTermination = nil
+    }
+
+    func requestBatch(_ targets: [ProcessIdentity]) {
+        batchTargets = targets
+        isBatchPresented = !targets.isEmpty
+    }
+
+    func clearBatch() {
+        isBatchPresented = false
+        batchTargets = []
+    }
+
+    var batchMessage: String {
+        let names = batchTargets.prefix(3).map { identity in
+            let component = URL(fileURLWithPath: identity.command).lastPathComponent
+            return component.isEmpty ? identity.command : component
+        }
+        let suffix = batchTargets.count > names.count
+            ? " and \(batchTargets.count - names.count) more"
+            : ""
+        return "Stop \(batchTargets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
+    }
+}
+
 struct TaskScopePopoverView: View {
     @ObservedObject var processManager: ProcessManager
     @ObservedObject var loginItemManager: LoginItemManager
@@ -41,11 +77,9 @@ struct TaskScopePopoverView: View {
     @ObservedObject var history: ProcessHistory
     var presentationStyle: TaskScopePresentationStyle = .menuBarCompact
     var openFullWindow: (() -> Void)?
-    private let activityMonitor: any ActivityMonitorCoordinating = ActivityMonitorCoordinator()
+    private let activityMonitor: any ActivityMonitorCoordinating
+    @StateObject private var confirmationState: ProcessConfirmationState
 
-    @State private var pendingTermination: AppProcess?
-    @State private var pendingBatch: Bool = false
-    @State private var pendingBatchTargets: [ProcessIdentity] = []
     @State private var detailProcess: AppProcess?
     @State private var detailData: ProcessDetail?
     @State private var detailFailed: Bool = false
@@ -62,6 +96,35 @@ struct TaskScopePopoverView: View {
     @State private var quickAutoStopProcess: AppProcess?
     @State private var quickPresetDraft: QuickWatchedPresetDraft?
     @State private var registeredExtendedMetrics = false
+
+    @MainActor
+    init(
+        processManager: ProcessManager,
+        loginItemManager: LoginItemManager,
+        settings: SettingsStore,
+        watchedApps: WatchedAppsStore,
+        savedSelections: SavedSelectionsStore,
+        autoStopRules: AutoStopRulesStore,
+        history: ProcessHistory,
+        presentationStyle: TaskScopePresentationStyle = .menuBarCompact,
+        openFullWindow: (() -> Void)? = nil,
+        confirmationState: ProcessConfirmationState? = nil,
+        activityMonitor: (any ActivityMonitorCoordinating)? = nil
+    ) {
+        self.processManager = processManager
+        self.loginItemManager = loginItemManager
+        self.settings = settings
+        self.watchedApps = watchedApps
+        self.savedSelections = savedSelections
+        self.autoStopRules = autoStopRules
+        self.history = history
+        self.presentationStyle = presentationStyle
+        self.openFullWindow = openFullWindow
+        self.activityMonitor = activityMonitor ?? ActivityMonitorCoordinator()
+        _confirmationState = StateObject(
+            wrappedValue: confirmationState ?? ProcessConfirmationState()
+        )
+    }
 
     private var isExpandedWindow: Bool {
         presentationStyle == .expandedWindow
@@ -121,53 +184,50 @@ struct TaskScopePopoverView: View {
         .confirmationDialog(
             "Stop Process?",
             isPresented: Binding(
-                get: { pendingTermination != nil },
+                get: { confirmationState.pendingTermination != nil },
                 set: { isPresented in
                     if !isPresented {
-                        pendingTermination = nil
+                        confirmationState.clearTermination()
                     }
                 }
             ),
-            presenting: pendingTermination
+            presenting: confirmationState.pendingTermination
         ) { process in
             Button("Stop \(process.name)", role: .destructive) {
                 Task { await processManager.terminate(process) }
-                pendingTermination = nil
+                confirmationState.clearTermination()
             }
 
             Button("Force Stop \(process.name)", role: .destructive) {
                 Task { await processManager.terminate(process, forceKill: true) }
-                pendingTermination = nil
+                confirmationState.clearTermination()
             }
 
             Button("Cancel", role: .cancel) {
-                pendingTermination = nil
+                confirmationState.clearTermination()
             }
         } message: { process in
             Text("Send a normal quit signal to PID \(process.pid). Force Stop sends an immediate kill signal if the process does not respond.")
         }
         .confirmationDialog(
             "Stop Selected Processes?",
-            isPresented: $pendingBatch
+            isPresented: $confirmationState.isBatchPresented
         ) {
             Button("Stop Selected", role: .destructive) {
-                let targets = pendingBatchTargets
+                let targets = confirmationState.batchTargets
                 Task { await processManager.batchTerminate(targets) }
-                pendingBatch = false
-                pendingBatchTargets = []
+                confirmationState.clearBatch()
             }
             Button("Force Stop Selected", role: .destructive) {
-                let targets = pendingBatchTargets
+                let targets = confirmationState.batchTargets
                 Task { await processManager.batchTerminate(targets, forceKill: true) }
-                pendingBatch = false
-                pendingBatchTargets = []
+                confirmationState.clearBatch()
             }
             Button("Cancel", role: .cancel) {
-                pendingBatch = false
-                pendingBatchTargets = []
+                confirmationState.clearBatch()
             }
         } message: {
-            Text(pendingBatchConfirmationMessage)
+            Text(confirmationState.batchMessage)
         }
         .sheet(item: $detailProcess) { process in
             ProcessDetailSheet(
@@ -433,8 +493,7 @@ struct TaskScopePopoverView: View {
 
                 if !processManager.selectedPids.isEmpty {
                     Button {
-                        pendingBatchTargets = processManager.selectionSnapshot()
-                        pendingBatch = !pendingBatchTargets.isEmpty
+                        confirmationState.requestBatch(processManager.selectionSnapshot())
                     } label: {
                         Label("\(processManager.selectedPids.count)", systemImage: "stop.fill")
                     }
@@ -518,7 +577,7 @@ struct TaskScopePopoverView: View {
                                         settings: settings,
                                         processManager: processManager,
                                         keyboardSelectedPid: $keyboardSelectedPid,
-                                        pendingTermination: $pendingTermination,
+                                        pendingTermination: pendingTerminationBinding,
                                         detailProcess: $detailProcess,
                                         detailData: $detailData,
                                         detailFailed: $detailFailed,
@@ -556,7 +615,7 @@ struct TaskScopePopoverView: View {
                     .onKeyPress(.return) {
                         if let pid = keyboardSelectedPid,
                            let proc = keyboardNavigationProcesses.first(where: { $0.pid == pid }) {
-                            pendingTermination = proc
+                            confirmationState.requestTermination(proc)
                         }
                         return .handled
                     }
@@ -745,15 +804,17 @@ struct TaskScopePopoverView: View {
         renderedSelectionProcesses.map(\.identity)
     }
 
-    private var pendingBatchConfirmationMessage: String {
-        let names = pendingBatchTargets.prefix(3).map { identity in
-            let component = URL(fileURLWithPath: identity.command).lastPathComponent
-            return component.isEmpty ? identity.command : component
-        }
-        let suffix = pendingBatchTargets.count > names.count
-            ? " and \(pendingBatchTargets.count - names.count) more"
-            : ""
-        return "Stop \(pendingBatchTargets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
+    private var pendingTerminationBinding: Binding<AppProcess?> {
+        Binding(
+            get: { confirmationState.pendingTermination },
+            set: { process in
+                if let process {
+                    confirmationState.requestTermination(process)
+                } else {
+                    confirmationState.clearTermination()
+                }
+            }
+        )
     }
 
     private var autoStopPromptTitle: String {
@@ -811,7 +872,7 @@ struct TaskScopePopoverView: View {
             isHighlightedCPU: process.cpu >= settings.cpuHighlightThreshold,
             isHighlightedMEM: process.memoryMB >= settings.memHighlightThresholdMB,
             showsExpandedMetrics: isExpandedWindow,
-            stopAction: { pendingTermination = process },
+            stopAction: { confirmationState.requestTermination(process) },
             toggleSelection: { processManager.toggleSelection(process.pid) },
             detailAction: {
                 detailData = nil
@@ -841,7 +902,7 @@ struct TaskScopePopoverView: View {
             }
         }
         Divider()
-        Button("Stop") { pendingTermination = process }
+        Button("Stop") { confirmationState.requestTermination(process) }
         Button("Force Stop") {
             Task { await processManager.terminate(process, forceKill: true) }
         }

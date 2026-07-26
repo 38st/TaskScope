@@ -10,11 +10,20 @@ let package = Package(
     products: [
         .executable(name: "TaskScope", targets: ["TaskScope"])
     ],
+    dependencies: [
+        .package(
+            url: "https://github.com/nalexn/ViewInspector.git",
+            exact: "0.10.3"
+        )
+    ],
     targets: [
         .executableTarget(name: "TaskScope"),
         .testTarget(
             name: "TaskScopeTests",
-            dependencies: ["TaskScope"]
+            dependencies: [
+                "TaskScope",
+                .product(name: "ViewInspector", package: "ViewInspector")
+            ]
         )
     ]
 )

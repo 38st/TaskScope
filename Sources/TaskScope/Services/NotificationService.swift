@@ -50,6 +50,9 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
 
     override private init() {
         super.init()
+        guard Bundle.main.bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
+            return
+        }
         UNUserNotificationCenter.current().delegate = self
         Task { await refreshAuthorizationStatus() }
     }
