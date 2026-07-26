@@ -1,18 +1,67 @@
 import AppKit
 import SwiftUI
 
-enum TaskScopeLaunchContext: Equatable {
-    case interactive
-    case background
+struct TaskScopeLaunchSignal: Equatable, Sendable {
+    var arguments: [String]
+    var launchedAsLoginItem: Bool
+    var receivedOpenURL: Bool
+}
 
-    static func detect(arguments: [String], launchedAsLoginItem: Bool) -> TaskScopeLaunchContext {
-        if launchedAsLoginItem
-            || arguments.contains("--background")
-            || arguments.contains("--automation") {
-            return .background
+enum TaskScopeLaunchContext: Equatable {
+    case pending
+    case interactive
+    case loginItem
+    case automation
+    case urlAutomation
+
+    static func detect(_ signal: TaskScopeLaunchSignal) -> TaskScopeLaunchContext {
+        if signal.launchedAsLoginItem {
+            return .loginItem
+        }
+        if signal.arguments.contains("--background")
+            || signal.arguments.contains("--automation") {
+            return .automation
+        }
+        if signal.receivedOpenURL {
+            return .urlAutomation
         }
         return .interactive
     }
+
+    static func resolve(
+        current: TaskScopeLaunchContext,
+        signal: TaskScopeLaunchSignal,
+        finalizeInteractiveLaunch: Bool
+    ) -> TaskScopeLaunchContext {
+        let detected = detect(signal)
+        if detected.suppressesAutomaticWindowPresentation {
+            return detected
+        }
+        if current != .pending, current.suppressesAutomaticWindowPresentation {
+            return current
+        }
+        return finalizeInteractiveLaunch ? .interactive : .pending
+    }
+
+    static func receivingURL(
+        current: TaskScopeLaunchContext,
+        phase: TaskScopeLaunchPhase
+    ) -> TaskScopeLaunchContext {
+        phase == .starting ? .urlAutomation : current
+    }
+
+    var suppressesAutomaticWindowPresentation: Bool {
+        self != .interactive
+    }
+
+    var allowsExplicitCommands: Bool {
+        true
+    }
+}
+
+enum TaskScopeLaunchPhase: Equatable, Sendable {
+    case starting
+    case running
 }
 
 @MainActor
@@ -20,23 +69,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var launchContext: TaskScopeLaunchContext
     @Published private(set) var windowPresentationAllowed: Bool
     private let previouslyFrontmostApplication: NSRunningApplication?
-    private var explicitBackgroundLaunch: Bool
+    private var launchPhase = TaskScopeLaunchPhase.starting
+    private var interactiveLaunchTask: Task<Void, Never>?
 
     override init() {
-        let detectedContext = TaskScopeLaunchContext.detect(
-            arguments: ProcessInfo.processInfo.arguments,
-            launchedAsLoginItem: false
-        )
-        explicitBackgroundLaunch = detectedContext == .background
-        launchContext = .background
+        launchContext = .pending
         windowPresentationAllowed = false
         previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
         super.init()
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        detectExplicitBackgroundLaunch()
-        if explicitBackgroundLaunch {
+        resolveLaunchContext(finalizeInteractiveLaunch: false)
+        URLSchemeHandler.shared.register { [weak self] _ in
+            self?.prepareForIncomingURLCommand()
+        }
+        if launchContext.suppressesAutomaticWindowPresentation {
             NSApp.setActivationPolicy(.accessory)
         } else {
             NSApp.setActivationPolicy(.regular)
@@ -50,46 +98,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        detectExplicitBackgroundLaunch()
+        resolveLaunchContext(finalizeInteractiveLaunch: true)
 
         HotkeyManager.shared.register()
-        URLSchemeHandler.shared.register()
-        if explicitBackgroundLaunch {
+        if launchContext.suppressesAutomaticWindowPresentation {
             finalizeBackgroundLaunch()
-        } else if NSApp.isActive {
-            promoteInteractiveLaunch()
+            launchPhase = .running
         } else {
-            Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                guard let self, !self.windowPresentationAllowed else { return }
-                if NSApp.isActive {
-                    self.promoteInteractiveLaunch()
-                } else {
-                    self.finalizeBackgroundLaunch()
-                }
-            }
+            scheduleInteractiveLaunch()
         }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        guard !explicitBackgroundLaunch, !windowPresentationAllowed else { return }
+        guard launchPhase == .running,
+              launchContext == .interactive,
+              !windowPresentationAllowed else {
+            return
+        }
         promoteInteractiveLaunch()
     }
 
-    private func detectExplicitBackgroundLaunch() {
-        let loginDescriptor = NSAppleEventManager.shared()
-            .currentAppleEvent?
+    private func prepareForIncomingURLCommand() {
+        let resolved = TaskScopeLaunchContext.receivingURL(
+            current: launchContext,
+            phase: launchPhase
+        )
+        guard resolved == .urlAutomation, resolved != launchContext else { return }
+
+        interactiveLaunchTask?.cancel()
+        interactiveLaunchTask = nil
+        launchContext = resolved
+        finalizeBackgroundLaunch()
+        launchPhase = .running
+    }
+
+    private func scheduleInteractiveLaunch() {
+        interactiveLaunchTask?.cancel()
+        interactiveLaunchTask = Task { @MainActor [weak self] in
+            // Launch Services delivers a cold-open URL after did-finish. Keep
+            // restored/default windows suppressed until that launch event has
+            // had a chance to reach the handler registered during will-finish.
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled, self.launchPhase == .starting else {
+                return
+            }
+
+            self.launchPhase = .running
+            self.interactiveLaunchTask = nil
+            self.promoteInteractiveLaunch()
+        }
+    }
+
+    private func resolveLaunchContext(finalizeInteractiveLaunch: Bool) {
+        let event = NSAppleEventManager.shared().currentAppleEvent
+        let loginDescriptor = event?
             .paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))
-        explicitBackgroundLaunch = TaskScopeLaunchContext.detect(
-            arguments: ProcessInfo.processInfo.arguments,
-            launchedAsLoginItem: loginDescriptor?.booleanValue ?? false
-        ) == .background
+        launchContext = TaskScopeLaunchContext.resolve(
+            current: launchContext,
+            signal: TaskScopeLaunchSignal(
+                arguments: ProcessInfo.processInfo.arguments,
+                launchedAsLoginItem: loginDescriptor?.booleanValue ?? false,
+                receivedOpenURL: event?.eventClass == AEEventClass(kInternetEventClass)
+                    && event?.eventID == AEEventID(kAEGetURL)
+            ),
+            finalizeInteractiveLaunch: finalizeInteractiveLaunch
+        )
     }
 
     @objc
     private func windowDidBecomeVisible(_ notification: Notification) {
-        guard launchContext == .background,
-              !windowPresentationAllowed,
+        guard !windowPresentationAllowed,
               let window = notification.object as? NSWindow,
               automaticWindowTitles.contains(window.title) else {
             return
@@ -108,7 +186,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func finalizeBackgroundLaunch() {
-        launchContext = .background
         NSApp.setActivationPolicy(.accessory)
         suppressAutomaticWindowPresentation()
     }
@@ -127,7 +204,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func suppressAutomaticWindowPresentation() {
-        guard launchContext == .background, !windowPresentationAllowed else { return }
+        guard launchContext.suppressesAutomaticWindowPresentation,
+              !windowPresentationAllowed else {
+            return
+        }
         hideAutomaticWindows()
         NSApp.deactivate()
         if let previous = previouslyFrontmostApplication,
@@ -137,6 +217,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func permitWindowPresentation() {
+        interactiveLaunchTask?.cancel()
+        interactiveLaunchTask = nil
+        launchPhase = .running
         windowPresentationAllowed = true
         NSApp.setActivationPolicy(.regular)
     }

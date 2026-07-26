@@ -4,19 +4,148 @@ import XCTest
 final class LaunchContextTests: XCTestCase {
     func testLoginAndAutomationLaunchesAreBackground() {
         XCTAssertEqual(
-            TaskScopeLaunchContext.detect(arguments: ["TaskScope"], launchedAsLoginItem: true),
-            .background
+            TaskScopeLaunchContext.detect(
+                TaskScopeLaunchSignal(
+                    arguments: ["TaskScope"],
+                    launchedAsLoginItem: true,
+                    receivedOpenURL: false
+                )
+            ),
+            .loginItem
         )
         XCTAssertEqual(
-            TaskScopeLaunchContext.detect(arguments: ["TaskScope", "--automation"], launchedAsLoginItem: false),
-            .background
+            TaskScopeLaunchContext.detect(
+                TaskScopeLaunchSignal(
+                    arguments: ["TaskScope", "--automation"],
+                    launchedAsLoginItem: false,
+                    receivedOpenURL: false
+                )
+            ),
+            .automation
         )
     }
 
     func testNormalLaunchIsInteractive() {
         XCTAssertEqual(
-            TaskScopeLaunchContext.detect(arguments: ["TaskScope"], launchedAsLoginItem: false),
+            TaskScopeLaunchContext.detect(
+                TaskScopeLaunchSignal(
+                    arguments: ["TaskScope"],
+                    launchedAsLoginItem: false,
+                    receivedOpenURL: false
+                )
+            ),
             .interactive
+        )
+    }
+
+    func testColdURLLaunchIsBackgroundButStillAcceptsItsExplicitCommand() {
+        let context = TaskScopeLaunchContext.detect(
+            TaskScopeLaunchSignal(
+                arguments: ["TaskScope"],
+                launchedAsLoginItem: false,
+                receivedOpenURL: true
+            )
+        )
+
+        XCTAssertEqual(context, .urlAutomation)
+        XCTAssertTrue(context.suppressesAutomaticWindowPresentation)
+        XCTAssertTrue(context.allowsExplicitCommands)
+    }
+
+    func testInteractiveLaunchAloneAllowsAutomaticWindowPresentation() {
+        XCTAssertFalse(TaskScopeLaunchContext.interactive.suppressesAutomaticWindowPresentation)
+        XCTAssertTrue(TaskScopeLaunchContext.loginItem.suppressesAutomaticWindowPresentation)
+        XCTAssertTrue(TaskScopeLaunchContext.automation.suppressesAutomaticWindowPresentation)
+        XCTAssertTrue(TaskScopeLaunchContext.urlAutomation.suppressesAutomaticWindowPresentation)
+    }
+
+    func testBackgroundArgumentsTakePriorityOverURLSignal() {
+        XCTAssertEqual(
+            TaskScopeLaunchContext.detect(
+                TaskScopeLaunchSignal(
+                    arguments: ["TaskScope", "--background"],
+                    launchedAsLoginItem: false,
+                    receivedOpenURL: true
+                )
+            ),
+            .automation
+        )
+    }
+
+    func testLaunchResolutionWaitsUntilFinalCallbackBeforePromotingInteractiveLaunch() {
+        let interactiveSignal = TaskScopeLaunchSignal(
+            arguments: ["TaskScope"],
+            launchedAsLoginItem: false,
+            receivedOpenURL: false
+        )
+
+        XCTAssertEqual(
+            TaskScopeLaunchContext.resolve(
+                current: .pending,
+                signal: interactiveSignal,
+                finalizeInteractiveLaunch: false
+            ),
+            .pending
+        )
+        XCTAssertEqual(
+            TaskScopeLaunchContext.resolve(
+                current: .pending,
+                signal: interactiveSignal,
+                finalizeInteractiveLaunch: true
+            ),
+            .interactive
+        )
+    }
+
+    func testLaunchResolutionNeverPromotesURLContextWhenEventIsNoLongerCurrent() {
+        let urlSignal = TaskScopeLaunchSignal(
+            arguments: ["TaskScope"],
+            launchedAsLoginItem: false,
+            receivedOpenURL: true
+        )
+        let noCurrentEvent = TaskScopeLaunchSignal(
+            arguments: ["TaskScope"],
+            launchedAsLoginItem: false,
+            receivedOpenURL: false
+        )
+        let detectedURL = TaskScopeLaunchContext.resolve(
+            current: .pending,
+            signal: urlSignal,
+            finalizeInteractiveLaunch: false
+        )
+
+        XCTAssertEqual(detectedURL, .urlAutomation)
+        XCTAssertEqual(
+            TaskScopeLaunchContext.resolve(
+                current: detectedURL,
+                signal: noCurrentEvent,
+                finalizeInteractiveLaunch: true
+            ),
+            .urlAutomation
+        )
+    }
+
+    func testIncomingURLOnlyConvertsStartupLaunchToBackground() {
+        XCTAssertEqual(
+            TaskScopeLaunchContext.receivingURL(
+                current: .interactive,
+                phase: .starting
+            ),
+            .urlAutomation
+        )
+        XCTAssertEqual(
+            TaskScopeLaunchContext.receivingURL(
+                current: .interactive,
+                phase: .running
+            ),
+            .interactive
+        )
+        XCTAssertEqual(
+            TaskScopeLaunchContext.receivingURL(
+                current: .loginItem,
+                phase: .running
+            ),
+            .loginItem
         )
     }
 }

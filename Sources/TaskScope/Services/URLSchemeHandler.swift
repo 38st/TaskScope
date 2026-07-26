@@ -51,10 +51,23 @@ enum TaskScopeURLParser {
 final class URLSchemeHandler {
     static let shared = URLSchemeHandler()
     private let logger = Logger(subsystem: "TaskScope", category: "URLScheme")
+    private let submitCommand: @MainActor (TaskScopeCommand) async -> TaskScopeCommandResult
+    private var willHandleCommand: (@MainActor (TaskScopeCommand) -> Void)?
 
-    private init() {}
+    init(
+        submitCommand: @escaping @MainActor (TaskScopeCommand) async -> TaskScopeCommandResult = {
+            await AppCommandBus.shared.submit($0)
+        },
+        willHandleCommand: @escaping @MainActor (TaskScopeCommand) -> Void = { _ in }
+    ) {
+        self.submitCommand = submitCommand
+        self.willHandleCommand = willHandleCommand
+    }
 
-    func register() {
+    func register(
+        willHandleCommand: @escaping @MainActor (TaskScopeCommand) -> Void = { _ in }
+    ) {
+        self.willHandleCommand = willHandleCommand
         NSAppleEventManager.shared().setEventHandler(
             self,
             andSelector: #selector(handleURLEvent(_:replyEvent:)),
@@ -73,16 +86,24 @@ final class URLSchemeHandler {
             return
         }
 
+        Task {
+            await handle(url)
+        }
+    }
+
+    @discardableResult
+    func handle(_ url: URL) async -> TaskScopeCommandResult? {
         switch TaskScopeURLParser.command(from: url) {
         case .success(let command):
-            Task {
-                let result = await AppCommandBus.shared.submit(command)
-                if !result.succeeded {
-                    logger.error("\(result.message, privacy: .public)")
-                }
+            willHandleCommand?(command)
+            let result = await submitCommand(command)
+            if !result.succeeded {
+                logger.error("\(result.message, privacy: .public)")
             }
+            return result
         case .failure(let error):
             logger.error("\(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 }

@@ -73,6 +73,26 @@ final class AppCommandCoordinatorTests: XCTestCase {
         XCTAssertEqual(quit.status, .completed)
         XCTAssertTrue(didQuit)
     }
+
+    func testURLHandlerNotifiesLaunchPolicyBeforeDispatchingCommand() async throws {
+        var events: [String] = []
+        let handler = URLSchemeHandler(
+            submitCommand: { command in
+                events.append("dispatch:\(command)")
+                return TaskScopeCommandResult(status: .completed, message: "done")
+            },
+            willHandleCommand: { command in
+                events.append("prepare:\(command)")
+            }
+        )
+
+        let result = await handler.handle(
+            try XCTUnwrap(URL(string: "taskscope://refresh"))
+        )
+
+        XCTAssertEqual(result, TaskScopeCommandResult(status: .completed, message: "done"))
+        XCTAssertEqual(events, ["prepare:refresh", "dispatch:refresh"])
+    }
 }
 
 private struct EmptyInventory: ProcessInventoryProviding {
