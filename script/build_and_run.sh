@@ -147,17 +147,13 @@ verify_bundle() {
   verify_plist_value "$plist" "LSMinimumSystemVersion" "$MIN_SYSTEM_VERSION"
   verify_plist_value "$plist" "CFBundleURLTypes:0:CFBundleURLSchemes:0" "taskscope"
 
-  local apple_events_description
-  apple_events_description="$(/usr/libexec/PlistBuddy -c "Print :NSAppleEventsUsageDescription" "$plist" 2>/dev/null || true)"
-  [[ -n "$apple_events_description" ]] || {
-    echo "Bundle verification failed: NSAppleEventsUsageDescription is missing." >&2
-    return 1
-  }
-
-  if /usr/libexec/PlistBuddy -c "Print :NSServerUsageDescription" "$plist" >/dev/null 2>&1; then
-    echo "Bundle verification failed: obsolete NSServerUsageDescription is present." >&2
-    return 1
-  fi
+  local obsolete_privacy_key
+  for obsolete_privacy_key in NSAppleEventsUsageDescription NSServerUsageDescription; do
+    if /usr/libexec/PlistBuddy -c "Print :$obsolete_privacy_key" "$plist" >/dev/null 2>&1; then
+      echo "Bundle verification failed: obsolete $obsolete_privacy_key is present." >&2
+      return 1
+    fi
+  done
 
   [[ -s "$app_intents_metadata/version.json" ]] || {
     echo "Bundle verification failed: App Intents version metadata is missing." >&2
@@ -381,8 +377,6 @@ swift "$ROOT_DIR/script/render_icon.swift" "$STAGING_ICON"
 /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string $BUNDLE_ID" "$STAGING_PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$STAGING_PLIST"
 /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string taskscope" "$STAGING_PLIST"
-
-/usr/libexec/PlistBuddy -c "Add :NSAppleEventsUsageDescription string TaskScope may coordinate with Activity Monitor when locating a process." "$STAGING_PLIST"
 
 APP_INTENTS_PROCESSOR="$(xcrun --find appintentsmetadataprocessor)"
 SDK_ROOT="$(xcrun --sdk macosx --show-sdk-path)"

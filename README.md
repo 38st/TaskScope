@@ -105,7 +105,7 @@ Open and Stop use a watched-app entity chosen from the presets stored in TaskSco
 
 ## Permissions and behavior notes
 
-- Activity Monitor integration asks macOS for Accessibility permission the first time exact PID selection is requested. If permission is denied, Activity Monitor still opens and TaskScope reports the System Settings path needed to recover.
+- Activity Monitor integration asks macOS for Accessibility permission the first time exact PID selection is requested. If permission is denied, Activity Monitor still opens and TaskScope reports the System Settings path needed to recover. Accessibility consent is managed by System Settings and has no Info.plist usage-description key.
 - Notifications are off on a new install and are requested only after explicit opt-in.
 - Some process details and extended network/disk counters may be unavailable under macOS privacy or tool limitations; TaskScope displays an unavailable value rather than a fabricated zero.
 - Watched-app lifecycle jobs must name existing `.plist` paths and a valid `.app` bundle. Protected daemon operations can require administrator approval.

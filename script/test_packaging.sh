@@ -36,6 +36,15 @@ if [[ -e "$SWIFT_MARKER" ]]; then
 fi
 
 "$BUILD_SCRIPT" --stage >/dev/null
+
+STAGED_PLIST="$ROOT_DIR/dist/TaskScope.app/Contents/Info.plist"
+for stale_key in NSAppleEventsUsageDescription NSServerUsageDescription; do
+  if /usr/libexec/PlistBuddy -c "Print :$stale_key" "$STAGED_PLIST" >/dev/null 2>&1; then
+    echo "Staged bundle contains obsolete privacy key $stale_key." >&2
+    exit 1
+  fi
+done
+
 "$BUILD_SCRIPT" --verify >/dev/null
 
 DEST_DIR="$TEST_DIR/Applications" "$INSTALL_SCRIPT" --no-open >/dev/null 2>&1 && {
