@@ -10,7 +10,7 @@ TaskScope includes a GlobalProtect preset. It can open the GlobalProtect app, ma
 - Xcode Command Line Tools with Swift tools 5.9 or newer
 - A writable install destination; `/Applications` may require administrator-managed permissions
 
-SwiftPM builds the executable for the current Mac architecture. The packaging scripts create a locally ad-hoc-signed app; they do not produce a Developer ID-signed, notarized, universal distribution.
+SwiftPM builds the executable for the current Mac architecture. The packaging scripts use `TASKSCOPE_CODE_SIGN_IDENTITY` when provided, otherwise the first available Apple Development identity, and fall back to ad-hoc signing when no development identity exists. A real development signature is required for macOS to execute TaskScope’s App Intents; ad-hoc builds still support metadata validation but Shortcuts rejects them at runtime. These scripts do not produce a Developer ID-signed, notarized, universal distribution.
 
 ## Build, verify, and run
 
@@ -105,7 +105,7 @@ Open and Stop use a watched-app entity chosen from the presets stored in TaskSco
 
 ## Permissions and behavior notes
 
-- Activity Monitor integration asks macOS for Apple Events automation permission the first time selection is requested. If permission is denied, Activity Monitor still opens and TaskScope reports how to recover.
+- Activity Monitor integration asks macOS for Accessibility permission the first time exact PID selection is requested. If permission is denied, Activity Monitor still opens and TaskScope reports the System Settings path needed to recover.
 - Notifications are off on a new install and are requested only after explicit opt-in.
 - Some process details and extended network/disk counters may be unavailable under macOS privacy or tool limitations; TaskScope displays an unavailable value rather than a fabricated zero.
 - Watched-app lifecycle jobs must name existing `.plist` paths and a valid `.app` bundle. Protected daemon operations can require administrator approval.
@@ -114,4 +114,4 @@ Open and Stop use a watched-app entity chosen from the presets stored in TaskSco
 
 ## Local packaging limitation
 
-`script/build_and_run.sh` and `script/install.sh` are development and personal-install workflows. The staged app uses the local bundle identifier `com.local.TaskScope`, is ad-hoc signed, and is not notarized. External distribution requires an owned bundle identifier, Developer ID signing, hardened runtime/notarization, and an architecture/release strategy outside these scripts.
+`script/build_and_run.sh` and `script/install.sh` are development and personal-install workflows. The staged app uses the local bundle identifier `com.local.TaskScope`, prefers a local Apple Development signature so App Intents can execute, falls back to ad-hoc signing, and is not notarized. Set `TASKSCOPE_CODE_SIGN_IDENTITY` to choose a specific identity. External distribution requires an owned bundle identifier, Developer ID signing, hardened runtime/notarization, and an architecture/release strategy outside these scripts.
