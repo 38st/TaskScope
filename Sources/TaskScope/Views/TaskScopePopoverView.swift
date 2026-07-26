@@ -55,8 +55,6 @@ struct TaskScopePopoverView: View {
     @State private var expandedTreePids: Set<Int32> = []
     @State private var saveSelectionName: String = ""
     @State private var showSaveSelectionSheet: Bool = false
-    @State private var autoStopTarget: AutoStopRule?
-    @State private var autoStopProcess: AppProcess?
     @State private var quickAutoStopProcess: AppProcess?
     @State private var quickPresetDraft: QuickWatchedPresetDraft?
 
@@ -136,7 +134,6 @@ struct TaskScopePopoverView: View {
                 keyboardSelectedPid = nil
             }
             history.record(processes: newProcesses)
-            evaluateAutoStopRules(newProcesses)
         }
         .onReceive(NotificationCenter.default.publisher(for: .taskScopeRefreshRequested)) { _ in
             Task { await processManager.refreshWatchedStatus(showMessage: true) }
@@ -259,24 +256,25 @@ struct TaskScopePopoverView: View {
             )
         }
         .alert(
-            "Auto-Stop: \(autoStopProcess?.name ?? "")",
+            "Auto-Stop: \(autoStopRules.currentPrompt?.process.name ?? "")",
             isPresented: Binding(
-                get: { autoStopTarget != nil },
-                set: { if !$0 { autoStopTarget = nil; autoStopProcess = nil } }
+                get: { autoStopRules.currentPrompt != nil },
+                set: { isPresented in
+                    if !isPresented, autoStopRules.currentPrompt != nil {
+                        autoStopRules.dismissCurrentPrompt()
+                    }
+                }
             ),
-            presenting: autoStopProcess
-        ) { process in
+            presenting: autoStopRules.currentPrompt
+        ) { _ in
             Button("Stop Now", role: .destructive) {
-                Task { await processManager.terminate(process) }
-                autoStopTarget = nil
-                autoStopProcess = nil
+                Task { await autoStopRules.stopCurrentPrompt() }
             }
             Button("Dismiss", role: .cancel) {
-                autoStopTarget = nil
-                autoStopProcess = nil
+                autoStopRules.dismissCurrentPrompt()
             }
-        } message: { process in
-            Text("\(process.name) has been running longer than the auto-stop rule (\(autoStopTarget?.runtimeMinutes ?? 0) min). Stop it now?")
+        } message: { prompt in
+            Text("\(prompt.process.name) has run for \(prompt.process.elapsedTime), beyond the \(prompt.rule.runtimeMinutes)-minute rule. Stop it now?")
         }
     }
 
@@ -749,20 +747,6 @@ struct TaskScopePopoverView: View {
         proxy.scrollTo(target.pid, anchor: .center)
     }
 
-    private func evaluateAutoStopRules(_ processes: [AppProcess]) {
-        autoStopRules.evaluate(runningProcesses: processes) { rule, process in
-            switch rule.action {
-            case .prompt:
-                autoStopTarget = rule
-                autoStopProcess = process
-            case .kill:
-                Task { await processManager.terminate(process) }
-            case .silent:
-                break
-            }
-        }
-    }
-
     private func selectedProcessesForPreset() -> [AppProcess] {
         processManager.processes.filter { processManager.selectedPids.contains($0.pid) }
     }
@@ -775,15 +759,16 @@ struct TaskScopePopoverView: View {
         let trimmedName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return }
 
-        if let index = autoStopRules.rules.firstIndex(where: {
+        if let existing = autoStopRules.rules.first(where: {
             $0.processName.caseInsensitiveCompare(trimmedName) == .orderedSame
         }) {
-            autoStopRules.rules[index] = AutoStopRule(
-                id: autoStopRules.rules[index].id,
+            _ = autoStopRules.update(AutoStopRule(
+                id: existing.id,
                 processName: trimmedName,
                 runtimeMinutes: runtimeMinutes,
-                action: action
-            )
+                action: action,
+                isEnabled: existing.isEnabled
+            ))
             processManager.setMessage("Updated auto-stop rule for \(trimmedName).")
         } else {
             autoStopRules.add(

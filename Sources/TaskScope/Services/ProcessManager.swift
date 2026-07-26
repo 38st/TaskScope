@@ -313,18 +313,21 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    func terminate(_ process: AppProcess, forceKill: Bool = false) async {
+    @discardableResult
+    func terminate(_ process: AppProcess, forceKill: Bool = false) async -> ProcessActionResult {
         guard process.pid != currentPID else {
             message = "Use Quit to close TaskScope."
-            return
+            return .rejected
         }
 
+        var result: ProcessActionResult = .rejected
         await runAction {
             let verificationResult = await processInventory.load(fetchExtendedStats: false)
             guard case .success(let currentProcesses) = verificationResult,
                   currentProcesses.contains(where: { $0.identity == process.identity }) else {
                 message = "\(process.name) is no longer the same running process."
                 reconcileSelection(with: currentProcesses(from: verificationResult))
+                result = .stale
                 return
             }
 
@@ -334,16 +337,21 @@ final class ProcessManager: ObservableObject {
 
             if !accepted {
                 message = "Could not send \(forceKill ? "force stop" : "stop") to \(process.name)."
+                result = .rejected
             } else if !processSignaler.isAlive(process.pid) {
                 message = forceKill ? "\(process.name) force stopped." : "\(process.name) stopped."
+                result = .stopped
             } else if forceKill {
                 message = "\(process.name) is still running after Force Stop."
+                result = .requestedStillRunning
             } else {
                 message = "Stop requested for \(process.name); it is still running."
+                result = .requestedStillRunning
             }
 
             await refreshAfterMutation()
         }
+        return result
     }
 
     func detail(for process: AppProcess) async -> ProcessDetail? {

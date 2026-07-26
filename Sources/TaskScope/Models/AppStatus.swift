@@ -113,12 +113,46 @@ struct AppProcess: Identifiable, Equatable {
     var identity: ProcessIdentity {
         ProcessIdentity(pid: pid, startTime: startTime, command: command)
     }
+
+    /// Runtime reported by `ps etime`, whose shape is `[[dd-]hh:]mm:ss`.
+    var runtimeSeconds: TimeInterval? {
+        let dayAndClock = elapsedTime.split(separator: "-", maxSplits: 1)
+        let dayCount: Int
+        let clock: Substring
+        if dayAndClock.count == 2 {
+            guard let parsedDays = Int(dayAndClock[0]) else { return nil }
+            dayCount = parsedDays
+            clock = dayAndClock[1]
+        } else {
+            dayCount = 0
+            clock = dayAndClock[0]
+        }
+
+        let components = clock.split(separator: ":").compactMap { Int($0) }
+        guard components.count == 2 || components.count == 3 else { return nil }
+        let hours = components.count == 3 ? components[0] : 0
+        let minutes = components[components.count - 2]
+        let seconds = components[components.count - 1]
+        guard minutes < 60, seconds < 60 else { return nil }
+        return TimeInterval((((dayCount * 24) + hours) * 60 + minutes) * 60 + seconds)
+    }
 }
 
 struct ProcessIdentity: Hashable, Codable {
     var pid: Int32
     var startTime: String
     var command: String
+}
+
+enum ProcessActionResult: Equatable {
+    case stopped
+    case requestedStillRunning
+    case stale
+    case rejected
+
+    var succeeded: Bool {
+        self == .stopped
+    }
 }
 
 struct ProcessDetail: Equatable {

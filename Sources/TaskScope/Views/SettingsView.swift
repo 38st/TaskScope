@@ -21,6 +21,7 @@ struct SettingsView: View {
     @State private var newRuleName = ""
     @State private var newRuleMinutes = 5
     @State private var newRuleAction: AutoStopRule.Action = .prompt
+    @State private var editingRule: AutoStopRule?
     @State private var exportError: String?
     @State private var importError: String?
     @State private var showImporter = false
@@ -40,6 +41,17 @@ struct SettingsView: View {
             case .failure(let err):
                 importError = err.localizedDescription
             }
+        }
+        .sheet(item: $editingRule) { rule in
+            AutoStopRuleEditorSheet(
+                rule: rule,
+                onSave: { updated in
+                    if autoStopRules.update(updated) {
+                        editingRule = nil
+                    }
+                },
+                onCancel: { editingRule = nil }
+            )
         }
     }
 
@@ -210,18 +222,70 @@ struct SettingsView: View {
     private var autoStopTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             List {
-                ForEach(autoStopRules.rules) { rule in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(rule.processName).fontWeight(.medium)
-                            Text("After \(rule.runtimeMinutes) min — \(rule.action.label)")
-                                .font(.caption).foregroundStyle(.secondary)
+                Section("Rules") {
+                    ForEach(autoStopRules.rules) { rule in
+                        HStack {
+                            Toggle("", isOn: Binding(
+                                get: { rule.isEnabled },
+                                set: { autoStopRules.setEnabled($0, for: rule) }
+                            ))
+                            .labelsHidden()
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(rule.processName).fontWeight(.medium)
+                                Text("After \(rule.runtimeMinutes) min — \(rule.action.label)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Edit") {
+                                editingRule = rule
+                            }
+                            .buttonStyle(.borderless)
                         }
-                        Spacer()
+                        .padding(.vertical, 4)
+                        .contextMenu {
+                            Button("Edit") { editingRule = rule }
+                            Button("Duplicate") { autoStopRules.duplicate(rule) }
+                            Divider()
+                            Button("Delete", role: .destructive) { autoStopRules.remove(rule) }
+                        }
                     }
-                    .padding(.vertical, 4)
+                    .onDelete { autoStopRules.remove(at: $0) }
                 }
-                .onDelete { autoStopRules.remove(at: $0) }
+
+                Section {
+                    if autoStopRules.events.isEmpty {
+                        Text("No auto-stop events yet.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(autoStopRules.events.prefix(50)) { event in
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack {
+                                    Text(event.processName).fontWeight(.medium)
+                                    Spacer()
+                                    Text(event.outcome.label)
+                                        .foregroundStyle(event.outcome == .failed ? .red : .secondary)
+                                }
+                                Text("\(event.timestamp.formatted(date: .abbreviated, time: .standard)) · PID \(event.pid)")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(event.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 2)
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("Recent Events")
+                        Spacer()
+                        if !autoStopRules.events.isEmpty {
+                            Button("Clear") { autoStopRules.clearEvents() }
+                                .buttonStyle(.borderless)
+                        }
+                    }
+                }
             }
 
             Divider()
@@ -240,12 +304,28 @@ struct SettingsView: View {
                     ForEach(AutoStopRule.Action.allCases) { Text($0.label).tag($0) }
                 }
                 Button("Add Rule") {
-                    autoStopRules.add(AutoStopRule(processName: newRuleName, runtimeMinutes: newRuleMinutes, action: newRuleAction))
-                    newRuleName = ""
-                    newRuleMinutes = 5
+                    if autoStopRules.add(AutoStopRule(
+                        processName: newRuleName,
+                        runtimeMinutes: newRuleMinutes,
+                        action: newRuleAction
+                    )) {
+                        newRuleName = ""
+                        newRuleMinutes = 5
+                    }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(newRuleName.isEmpty)
+                .disabled(newRuleName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                if let error = autoStopRules.validationError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                if let error = autoStopRules.engineError {
+                    Text("Auto-stop observation unavailable: \(error)")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
             }
             .padding(.horizontal)
         }
@@ -281,6 +361,55 @@ struct SettingsView: View {
             watchedApps.add(preset)
         }
         importError = nil
+    }
+}
+
+private struct AutoStopRuleEditorSheet: View {
+    @State private var draft: AutoStopRule
+    let onSave: (AutoStopRule) -> Void
+    let onCancel: () -> Void
+
+    init(
+        rule: AutoStopRule,
+        onSave: @escaping (AutoStopRule) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        _draft = State(initialValue: rule)
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit Auto-Stop Rule")
+                .font(.title2)
+                .fontWeight(.semibold)
+
+            TextField("Process name", text: $draft.processName)
+                .textFieldStyle(.roundedBorder)
+
+            Stepper(value: $draft.runtimeMinutes, in: 1...1440) {
+                Text("Runtime: \(draft.runtimeMinutes) minute\(draft.runtimeMinutes == 1 ? "" : "s")")
+            }
+
+            Picker("Action", selection: $draft.action) {
+                ForEach(AutoStopRule.Action.allCases) { action in
+                    Text(action.label).tag(action)
+                }
+            }
+
+            Toggle("Enabled", isOn: $draft.isEnabled)
+
+            HStack {
+                Spacer()
+                Button("Cancel", action: onCancel)
+                Button("Save") { onSave(draft) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(draft.processName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
     }
 }
 

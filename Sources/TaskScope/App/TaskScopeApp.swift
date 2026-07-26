@@ -149,6 +149,9 @@ struct TaskScopeApp: App {
         processManager.sortKey = settings.sortKey
         processManager.enableNotifications = settings.enableNotifications
         configurePolling()
+        autoStopRules.start(cadence: 10) { process in
+            await processManager.terminate(process)
+        }
         await processManager.refreshWatchedStatus(showMessage: false)
 
         if settings.enableNotifications {
