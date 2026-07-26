@@ -28,8 +28,9 @@ enum ProcessLifecycleController {
     }
 
     static func terminateProcess(named name: String, forceIfStillRunning: Bool) async {
+        let literalName = ShellCommandRunner.extendedRegexLiteral(name)
         _ = await ShellCommandRunner.run(
-            "/usr/bin/pkill -TERM -x \(ShellCommandRunner.shellQuoted(name)) 2>/dev/null || true"
+            "/usr/bin/pkill -TERM -x \(ShellCommandRunner.shellQuoted(literalName)) 2>/dev/null || true"
         )
 
         guard forceIfStillRunning else { return }
@@ -37,14 +38,15 @@ enum ProcessLifecycleController {
         await settleAfterProcessChange()
         if await isProcessNamedRunning(name) {
             _ = await ShellCommandRunner.run(
-                "/usr/bin/pkill -KILL -x \(ShellCommandRunner.shellQuoted(name)) 2>/dev/null || true"
+                "/usr/bin/pkill -KILL -x \(ShellCommandRunner.shellQuoted(literalName)) 2>/dev/null || true"
             )
         }
     }
 
     static func isProcessNamedRunning(_ name: String) async -> Bool {
+        let literalName = ShellCommandRunner.extendedRegexLiteral(name)
         let result = await ShellCommandRunner.run(
-            "/usr/bin/pgrep -x \(ShellCommandRunner.shellQuoted(name)) >/dev/null 2>&1"
+            "/usr/bin/pgrep -x \(ShellCommandRunner.shellQuoted(literalName)) >/dev/null 2>&1"
         )
         return result.exitCode == 0
     }
@@ -141,7 +143,7 @@ enum ProcessLifecycleController {
             "/bin/launchctl print system/\(ShellCommandRunner.shellQuoted(job.label)) >/dev/null 2>&1"
         )
         let processRunning = await ShellCommandRunner.run(
-            "/usr/bin/pgrep -x \(ShellCommandRunner.shellQuoted(job.processName)) >/dev/null 2>&1"
+            "/usr/bin/pgrep -x \(ShellCommandRunner.shellQuoted(ShellCommandRunner.extendedRegexLiteral(job.processName))) >/dev/null 2>&1"
         )
         return daemonLoaded.exitCode == 0 && processRunning.exitCode == 0
     }

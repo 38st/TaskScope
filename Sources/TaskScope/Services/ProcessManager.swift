@@ -2,6 +2,23 @@ import Darwin
 import Foundation
 import Combine
 
+protocol ProcessSignaling {
+    func send(_ signal: Int32, to pid: Int32) -> Bool
+    func isAlive(_ pid: Int32) -> Bool
+}
+
+struct DarwinProcessSignaler: ProcessSignaling {
+    func send(_ signal: Int32, to pid: Int32) -> Bool {
+        Darwin.kill(pid, signal) == 0
+    }
+
+    func isAlive(_ pid: Int32) -> Bool {
+        errno = 0
+        let result = Darwin.kill(pid, 0)
+        return result == 0 || errno == EPERM
+    }
+}
+
 @MainActor
 final class ProcessManager: ObservableObject {
     @Published private(set) var status: ProcessStatus = .idle
@@ -20,6 +37,7 @@ final class ProcessManager: ObservableObject {
     }
 
     @Published private(set) var selectedPids: Set<Int32> = []
+    @Published private(set) var processLoadError: String?
 
     var enableNotifications: Bool = true
 
@@ -28,6 +46,25 @@ final class ProcessManager: ObservableObject {
     private var pollProcessList = false
 
     private let currentPID = ProcessInfo.processInfo.processIdentifier
+    private let processInventory: any ProcessInventoryProviding
+    private let processSignaler: any ProcessSignaling
+    private let settleAfterProcessChange: () async -> Void
+    private var fullProcessInventory: [AppProcess] = []
+    private var selectedIdentities: [Int32: ProcessIdentity] = [:]
+    private var operationIsRunning = false
+    private var operationWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(
+        processInventory: any ProcessInventoryProviding = SystemProcessInventory(),
+        processSignaler: any ProcessSignaling = DarwinProcessSignaler(),
+        settleAfterProcessChange: @escaping () async -> Void = {
+            await ProcessLifecycleController.settleAfterProcessChange()
+        }
+    ) {
+        self.processInventory = processInventory
+        self.processSignaler = processSignaler
+        self.settleAfterProcessChange = settleAfterProcessChange
+    }
 
     deinit {
         pollingTask?.cancel()
@@ -63,84 +100,126 @@ final class ProcessManager: ObservableObject {
     }
 
     func toggleSelection(_ pid: Int32) {
-        guard pid != currentPID else { return }
+        guard pid != currentPID,
+              let process = fullProcessInventory.first(where: { $0.pid == pid }) else {
+            return
+        }
 
         if selectedPids.contains(pid) {
             selectedPids.remove(pid)
+            selectedIdentities.removeValue(forKey: pid)
         } else {
             selectedPids.insert(pid)
+            selectedIdentities[pid] = process.identity
         }
     }
 
     func clearSelection() {
         selectedPids.removeAll()
+        selectedIdentities.removeAll()
     }
 
-    func selectAll() {
-        selectedPids = Set(processes.map { $0.pid }.filter { $0 != currentPID })
+    func select(_ visibleProcesses: [AppProcess]) {
+        let selectable = visibleProcesses.filter { $0.pid != currentPID }
+        selectedPids = Set(selectable.map(\.pid))
+        selectedIdentities = Dictionary(
+            uniqueKeysWithValues: selectable.map { ($0.pid, $0.identity) }
+        )
     }
 
-    func batchTerminate(forceKill: Bool = false) async {
-        let pids = selectedPids
-        guard !pids.isEmpty else {
+    func selectionSnapshot() -> [ProcessIdentity] {
+        fullProcessInventory.compactMap { selectedIdentities[$0.pid] }
+    }
+
+    func batchTerminate(_ requestedIdentities: [ProcessIdentity], forceKill: Bool = false) async {
+        guard !requestedIdentities.isEmpty else {
             message = "Nothing selected."
             return
         }
+
         await runAction {
+            let currentResult = await processInventory.load(fetchExtendedStats: false)
+            guard case .success(let currentProcesses) = currentResult else {
+                message = "Could not verify selected processes."
+                return
+            }
+
+            let currentByIdentity = Dictionary(
+                uniqueKeysWithValues: currentProcesses.map { ($0.identity, $0) }
+            )
+            let verified = requestedIdentities.compactMap { currentByIdentity[$0] }
+            let staleCount = requestedIdentities.count - verified.count
+            guard !verified.isEmpty else {
+                clearSelection()
+                message = "Selection changed; \(staleCount) no longer matched. Nothing was stopped."
+                await refreshAfterMutation()
+                return
+            }
+
             let signal: Int32 = forceKill ? SIGKILL : SIGTERM
-            for pid in pids where pid != currentPID {
-                Darwin.kill(pid, signal)
-            }
-            await ProcessLifecycleController.settleAfterProcessChange()
-
-            if !forceKill {
-                for pid in pids where pid != currentPID && isProcessAlive(pid) {
-                    Darwin.kill(pid, SIGKILL)
+            var accepted = 0
+            for process in verified where process.pid != currentPID {
+                if processSignaler.send(signal, to: process.pid) {
+                    accepted += 1
                 }
-                await ProcessLifecycleController.settleAfterProcessChange()
             }
+            await settleAfterProcessChange()
 
-            let stopped = pids.filter { !isProcessAlive($0) }.count
-            selectedPids.removeAll()
-            message = "Stopped \(stopped) of \(pids.count) selected."
+            let stopped = verified.filter { !processSignaler.isAlive($0.pid) }.count
+            clearSelection()
+            if forceKill {
+                message = "Force stopped \(stopped) of \(requestedIdentities.count) selected."
+            } else if accepted == 0 {
+                message = "Could not send stop to the selected processes."
+            } else if stopped == verified.count, staleCount == 0 {
+                message = "Stopped \(stopped) of \(requestedIdentities.count) selected."
+            } else {
+                let stillRunning = verified.count - stopped
+                message = "Stop requested; \(stillRunning) still running, \(staleCount) no longer matched."
+            }
             await refreshAfterMutation()
         }
     }
 
     func refreshWatchedStatus(showMessage: Bool = true) async {
         await runAction {
-            let watched = await currentSnapshots()
-            apply(watched)
-
-            if showMessage {
-                message = watched.aggregateDetail
+            switch await currentSnapshots() {
+            case .success(let watched):
+                apply(watched)
+                processLoadError = nil
+                if showMessage {
+                    message = watched.aggregateDetail
+                }
+            case .failure(let error):
+                processLoadError = error.localizedDescription
+                if showMessage {
+                    message = "Could not refresh watched status: \(error.localizedDescription)"
+                }
             }
         }
     }
 
     func refreshWatchedStatusUnchecked(showMessage: Bool = false) async {
-        let watched = await currentSnapshots()
-        apply(watched)
-        if showMessage {
-            message = watched.aggregateDetail
-        }
+        await refreshWatchedStatus(showMessage: showMessage)
     }
 
     func loadProcessList(showMessage: Bool = true) async {
         await runAction {
-            async let snapshotsTask = currentSnapshots()
-            async let runningTask = currentProcessList()
-
-            let watched = await snapshotsTask
-            let running = await runningTask
-
-            apply(watched)
-            processes = running
-            hasLoadedProcessList = true
-            resortProcesses()
-
-            if showMessage {
-                message = "Loaded \(running.count) processes."
+            switch await processInventory.load(fetchExtendedStats: fetchExtendedStats) {
+            case .success(let inventory):
+                fullProcessInventory = inventory
+                apply(snapshots(from: inventory))
+                publishDisplayProcesses()
+                hasLoadedProcessList = true
+                processLoadError = nil
+                if showMessage {
+                    message = "Loaded \(processes.count) of \(inventory.count) processes."
+                }
+            case .failure(let error):
+                processLoadError = error.localizedDescription
+                if showMessage {
+                    message = "Could not load processes: \(error.localizedDescription)"
+                }
             }
         }
     }
@@ -241,27 +320,26 @@ final class ProcessManager: ObservableObject {
         }
 
         await runAction {
+            let verificationResult = await processInventory.load(fetchExtendedStats: false)
+            guard case .success(let currentProcesses) = verificationResult,
+                  currentProcesses.contains(where: { $0.identity == process.identity }) else {
+                message = "\(process.name) is no longer the same running process."
+                reconcileSelection(with: currentProcesses(from: verificationResult))
+                return
+            }
+
             let signal: Int32 = forceKill ? SIGKILL : SIGTERM
-            let result = Darwin.kill(process.pid, signal)
-            await ProcessLifecycleController.settleAfterProcessChange()
+            let accepted = processSignaler.send(signal, to: process.pid)
+            await settleAfterProcessChange()
 
-            if isProcessAlive(process.pid) {
-                if forceKill {
-                    message = "Could not stop \(process.name)."
-                } else {
-                    Darwin.kill(process.pid, SIGKILL)
-                    await ProcessLifecycleController.settleAfterProcessChange()
-
-                    if isProcessAlive(process.pid) {
-                        message = "Could not stop \(process.name)."
-                    } else {
-                        message = "\(process.name) force stopped."
-                    }
-                }
-            } else if result == 0 {
-                message = "\(process.name) stopped."
+            if !accepted {
+                message = "Could not send \(forceKill ? "force stop" : "stop") to \(process.name)."
+            } else if !processSignaler.isAlive(process.pid) {
+                message = forceKill ? "\(process.name) force stopped." : "\(process.name) stopped."
+            } else if forceKill {
+                message = "\(process.name) is still running after Force Stop."
             } else {
-                message = "Could not stop \(process.name)."
+                message = "Stop requested for \(process.name); it is still running."
             }
 
             await refreshAfterMutation()
@@ -307,89 +385,72 @@ final class ProcessManager: ObservableObject {
     }
 
     private func refreshAfterMutation() async {
-        if hasLoadedProcessList {
-            async let snapshotsTask = currentSnapshots()
-            async let runningTask = currentProcessList()
-
-            let watched = await snapshotsTask
-            let running = await runningTask
-
-            apply(watched)
-            processes = running
-            resortProcesses()
-        } else {
-            let watched = await currentSnapshots()
-            apply(watched)
+        switch await processInventory.load(fetchExtendedStats: hasLoadedProcessList && fetchExtendedStats) {
+        case .success(let inventory):
+            apply(snapshots(from: inventory))
+            processLoadError = nil
+            if hasLoadedProcessList {
+                fullProcessInventory = inventory
+                publishDisplayProcesses()
+            }
+        case .failure(let error):
+            processLoadError = error.localizedDescription
         }
     }
 
-    private func isProcessAlive(_ pid: Int32) -> Bool {
-        errno = 0
-        let result = Darwin.kill(pid, 0)
-        return result == 0 || errno == EPERM
+    private func currentProcesses(
+        from result: Result<[AppProcess], ProcessInventoryError>
+    ) -> [AppProcess] {
+        guard case .success(let processes) = result else { return [] }
+        return processes
     }
 
     private func snapshot(for preset: WatchedAppPreset) -> WatchedAppSnapshot {
         snapshots.first(where: { $0.preset.id == preset.id }) ?? WatchedAppSnapshot(preset: preset, runningNames: [])
     }
 
-    private func currentSnapshots() async -> [WatchedAppSnapshot] {
-        let presets = watchedAppsProvider?() ?? []
-        let results = await withTaskGroup(of: (WatchedAppPreset, Set<String>).self) { group in
-            for preset in presets {
-                group.addTask { [self] in
-                    let running = await self.checkRunningNames(for: preset)
-                    return (preset, running)
-                }
-            }
-            var collected: [(WatchedAppPreset, Set<String>)] = []
-            for await result in group {
-                collected.append(result)
-            }
-            return collected
+    private func currentSnapshots() async -> Result<[WatchedAppSnapshot], ProcessInventoryError> {
+        switch await processInventory.load(fetchExtendedStats: false) {
+        case .success(let inventory):
+            return .success(snapshots(from: inventory))
+        case .failure(let error):
+            return .failure(error)
         }
-        return results.map { WatchedAppSnapshot(preset: $0, runningNames: $1) }
     }
 
     private func currentSnapshot(for preset: WatchedAppPreset) async -> WatchedAppSnapshot {
-        let running = await checkRunningNames(for: preset)
-        return WatchedAppSnapshot(preset: preset, runningNames: running)
+        switch await processInventory.load(fetchExtendedStats: false) {
+        case .success(let inventory):
+            return snapshot(for: preset, inventory: inventory)
+        case .failure:
+            return snapshot(for: preset)
+        }
     }
 
-    private func checkRunningNames(for preset: WatchedAppPreset) async -> Set<String> {
-        let nameResults = await withTaskGroup(of: (String, Bool).self) { group in
-            for name in preset.allProcessNames {
-                group.addTask {
-                    let result = await ShellCommandRunner.run(
-                        "/usr/bin/pgrep -x -l \(ShellCommandRunner.shellQuoted(name))"
-                    )
-                    let isRunning = result.exitCode == 0 && result.stdout.split(separator: "\n").contains { line in
-                        line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).count == 2
-                    }
-                    return (name, isRunning)
-                }
-            }
-            var collected: [(String, Bool)] = []
-            for await result in group {
-                collected.append(result)
-            }
-            return collected
-        }
-        return Set(nameResults.filter { $0.1 }.map { $0.0 })
+    private func snapshots(from inventory: [AppProcess]) -> [WatchedAppSnapshot] {
+        let presets = watchedAppsProvider?() ?? []
+        return presets.map { snapshot(for: $0, inventory: inventory) }
+    }
+
+    private func snapshot(
+        for preset: WatchedAppPreset,
+        inventory: [AppProcess]
+    ) -> WatchedAppSnapshot {
+        let runningProcessNames = Set(inventory.map(\.name))
+        let runningNames = Set(preset.allProcessNames.filter { runningProcessNames.contains($0) })
+        return WatchedAppSnapshot(preset: preset, runningNames: runningNames)
+    }
+
+    func applyCurrentDisplayLimit() {
+        guard hasLoadedProcessList else { return }
+        publishDisplayProcesses()
     }
 
     @Published var fetchExtendedStats: Bool = false
 
-    private func currentProcessList() async -> [AppProcess] {
-        let limit = processListLimitProvider?() ?? 80
-        return await ProcessListReader.currentProcessList(
-            limit: limit,
-            fetchExtendedStats: fetchExtendedStats
-        )
-    }
-
-    private func resortProcesses() {
-        processes.sort { lhs, rhs in
+    private func publishDisplayProcesses() {
+        var sorted = fullProcessInventory
+        sorted.sort { lhs, rhs in
             switch sortKey {
             case .cpu:
                 if lhs.cpu == rhs.cpu {
@@ -402,11 +463,26 @@ final class ProcessManager: ObservableObject {
                 }
                 return lhs.memoryMB > rhs.memoryMB
             case .name:
-                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+                let comparison = lhs.name.localizedStandardCompare(rhs.name)
+                return comparison == .orderedSame ? lhs.pid < rhs.pid : comparison == .orderedAscending
             case .pid:
                 return lhs.pid < rhs.pid
             }
         }
+        let limit = processListLimitProvider?() ?? 80
+        processes = Array(sorted.prefix(max(0, limit)))
+        reconcileSelection(with: fullProcessInventory)
+    }
+
+    private func resortProcesses() {
+        guard hasLoadedProcessList else { return }
+        publishDisplayProcesses()
+    }
+
+    private func reconcileSelection(with inventory: [AppProcess]) {
+        let currentIdentities = Set(inventory.map(\.identity))
+        selectedIdentities = selectedIdentities.filter { currentIdentities.contains($0.value) }
+        selectedPids = Set(selectedIdentities.keys)
     }
 
     private func apply(_ watched: [WatchedAppSnapshot]) {
@@ -420,16 +496,35 @@ final class ProcessManager: ObservableObject {
     }
 
     private func runAction(_ operation: () async -> Void) async {
-        guard !isWorking else {
-            return
-        }
+        await acquireOperationSlot()
 
         isWorking = true
         defer {
             isWorking = false
+            releaseOperationSlot()
         }
 
         await operation()
+    }
+
+    private func acquireOperationSlot() async {
+        if !operationIsRunning {
+            operationIsRunning = true
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            operationWaiters.append(continuation)
+        }
+    }
+
+    private func releaseOperationSlot() {
+        if operationWaiters.isEmpty {
+            operationIsRunning = false
+        } else {
+            let next = operationWaiters.removeFirst()
+            next.resume()
+        }
     }
 
     var watchedAppsProvider: (() -> [WatchedAppPreset])?

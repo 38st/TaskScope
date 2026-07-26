@@ -45,12 +45,14 @@ struct TaskScopePopoverView: View {
 
     @State private var pendingTermination: AppProcess?
     @State private var pendingBatch: Bool = false
+    @State private var pendingBatchTargets: [ProcessIdentity] = []
     @State private var detailProcess: AppProcess?
     @State private var detailData: ProcessDetail?
     @State private var detailFailed: Bool = false
     @State private var keyboardSelectedPid: Int32?
     @State private var filterMode: ProcessFilterMode = .all
     @State private var treeMode: Bool = false
+    @State private var expandedTreePids: Set<Int32> = []
     @State private var saveSelectionName: String = ""
     @State private var showSaveSelectionSheet: Bool = false
     @State private var autoStopTarget: AutoStopRule?
@@ -113,6 +115,9 @@ struct TaskScopePopoverView: View {
                 includeProcessList: settings.autoRefreshProcessList
             )
         }
+        .onChange(of: settings.processListLimit) { _, _ in
+            processManager.applyCurrentDisplayLimit()
+        }
         .onChange(of: settings.enableNotifications) { _, newValue in
             processManager.enableNotifications = newValue
             if newValue {
@@ -169,18 +174,23 @@ struct TaskScopePopoverView: View {
             isPresented: $pendingBatch
         ) {
             Button("Stop Selected", role: .destructive) {
-                Task { await processManager.batchTerminate() }
+                let targets = pendingBatchTargets
+                Task { await processManager.batchTerminate(targets) }
                 pendingBatch = false
+                pendingBatchTargets = []
             }
             Button("Force Stop Selected", role: .destructive) {
-                Task { await processManager.batchTerminate(forceKill: true) }
+                let targets = pendingBatchTargets
+                Task { await processManager.batchTerminate(targets, forceKill: true) }
                 pendingBatch = false
+                pendingBatchTargets = []
             }
             Button("Cancel", role: .cancel) {
                 pendingBatch = false
+                pendingBatchTargets = []
             }
         } message: {
-            Text("Stop \(processManager.selectedPids.count) selected processes.")
+            Text(pendingBatchConfirmationMessage)
         }
         .sheet(item: $detailProcess) { process in
             ProcessDetailSheet(
@@ -381,7 +391,8 @@ struct TaskScopePopoverView: View {
 
                 if !processManager.selectedPids.isEmpty {
                     Button {
-                        pendingBatch = true
+                        pendingBatchTargets = processManager.selectionSnapshot()
+                        pendingBatch = !pendingBatchTargets.isEmpty
                     } label: {
                         Label("\(processManager.selectedPids.count)", systemImage: "stop.fill")
                     }
@@ -444,6 +455,7 @@ struct TaskScopePopoverView: View {
                                         detailProcess: $detailProcess,
                                         detailData: $detailData,
                                         detailFailed: $detailFailed,
+                                        expandedPids: $expandedTreePids,
                                         showsExpandedMetrics: isExpandedWindow,
                                         openInActivityMonitor: { openInActivityMonitor(pid: $0) }
                                     )
@@ -464,16 +476,16 @@ struct TaskScopePopoverView: View {
                         }
                     }
                     .onKeyPress(.upArrow) {
-                        moveKeyboard(by: -1, in: filteredProcesses, proxy: proxy)
+                        moveKeyboard(by: -1, in: keyboardNavigationProcesses, proxy: proxy)
                         return .handled
                     }
                     .onKeyPress(.downArrow) {
-                        moveKeyboard(by: 1, in: filteredProcesses, proxy: proxy)
+                        moveKeyboard(by: 1, in: keyboardNavigationProcesses, proxy: proxy)
                         return .handled
                     }
                     .onKeyPress(.return) {
                         if let pid = keyboardSelectedPid,
-                           let proc = filteredProcesses.first(where: { $0.pid == pid }) {
+                           let proc = keyboardNavigationProcesses.first(where: { $0.pid == pid }) {
                             pendingTermination = proc
                         }
                         return .handled
@@ -485,7 +497,7 @@ struct TaskScopePopoverView: View {
                     }
                     .onKeyPress { keyPress in
                         if keyPress.key == KeyEquivalent("a") && keyPress.modifiers == .command {
-                            processManager.selectAll()
+                            processManager.select(keyboardNavigationProcesses)
                             return .handled
                         }
                         if keyPress.key == KeyEquivalent("a") && keyPress.modifiers == [.command, .shift] {
@@ -636,6 +648,35 @@ struct TaskScopePopoverView: View {
 
     private var treeRoots: [ProcessTreeNode] {
         ProcessTreeBuilder.build(from: filteredProcesses, ppidMap: processManager.ppidMap)
+    }
+
+    private var keyboardNavigationProcesses: [AppProcess] {
+        guard treeMode else { return filteredProcesses }
+        return visibleTreeProcesses
+    }
+
+    private var visibleTreeProcesses: [AppProcess] {
+        func flatten(_ nodes: [ProcessTreeNode]) -> [AppProcess] {
+            nodes.flatMap { node in
+                var visible = [node.process]
+                if expandedTreePids.contains(node.process.pid) {
+                    visible.append(contentsOf: flatten(node.children))
+                }
+                return visible
+            }
+        }
+        return flatten(treeRoots)
+    }
+
+    private var pendingBatchConfirmationMessage: String {
+        let names = pendingBatchTargets.prefix(3).map { identity in
+            let component = URL(fileURLWithPath: identity.command).lastPathComponent
+            return component.isEmpty ? identity.command : component
+        }
+        let suffix = pendingBatchTargets.count > names.count
+            ? " and \(pendingBatchTargets.count - names.count) more"
+            : ""
+        return "Stop \(pendingBatchTargets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
     }
 
     @ViewBuilder

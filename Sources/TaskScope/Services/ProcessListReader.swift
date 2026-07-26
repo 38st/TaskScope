@@ -1,17 +1,46 @@
 import Foundation
 
+enum ProcessInventoryError: Error, Equatable, LocalizedError {
+    case commandFailed(String)
+    case parseFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .commandFailed(let detail):
+            return detail.isEmpty ? "The process list command failed." : detail
+        case .parseFailed:
+            return "The process list could not be parsed."
+        }
+    }
+}
+
+protocol ProcessInventoryProviding {
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError>
+}
+
+struct SystemProcessInventory: ProcessInventoryProviding {
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        await ProcessListReader.currentProcessList(fetchExtendedStats: fetchExtendedStats)
+    }
+}
+
 enum ProcessListReader {
-    static func currentProcessList(limit: Int, fetchExtendedStats: Bool) async -> [AppProcess] {
-        let command = "/bin/ps -arcwwwxo pid=,ppid=,pcpu=,rss=,etime=,comm= | /usr/bin/head -n \(limit)"
+    static func currentProcessList(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        let command = "/bin/ps -acwwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
         let result = await ShellCommandRunner.run(command)
 
         guard result.succeeded else {
-            return []
+            let detail = result.stderr.isEmpty ? "ps exited with status \(result.exitCode)." : result.stderr
+            return .failure(.commandFailed(detail))
         }
 
         var parsed = result.stdout
             .split(separator: "\n")
             .compactMap(parseProcessLine)
+
+        guard result.stdout.isEmpty || !parsed.isEmpty else {
+            return .failure(.parseFailed)
+        }
 
         if fetchExtendedStats {
             let netStats = await currentNetworkStats()
@@ -24,21 +53,47 @@ enum ProcessListReader {
             }
         }
 
-        return parsed
+        return .success(parsed)
     }
 
     static func parseProcessLine(_ line: Substring) -> AppProcess? {
-        let parts = line.split(
+        let extendedParts = line.split(
+            separator: " ",
+            maxSplits: 10,
+            omittingEmptySubsequences: true
+        )
+
+        if extendedParts.count == 11,
+           let pid = Int32(extendedParts[0]),
+           let ppid = Int32(extendedParts[1]),
+           let cpu = Double(extendedParts[2]),
+           let rssKB = Double(extendedParts[3]) {
+            return AppProcess(
+                pid: pid,
+                parentPID: ppid,
+                cpu: cpu,
+                memoryMB: rssKB / 1024.0,
+                command: String(extendedParts[10]),
+                elapsedTime: String(extendedParts[9]),
+                startTime: extendedParts[4...8].joined(separator: " "),
+                netInKB: 0,
+                netOutKB: 0,
+                diskReadBlocks: 0,
+                diskWriteBlocks: 0
+            )
+        }
+
+        let legacyParts = line.split(
             separator: " ",
             maxSplits: 5,
             omittingEmptySubsequences: true
         )
 
-        guard parts.count == 6,
-              let pid = Int32(parts[0]),
-              let ppid = Int32(parts[1]),
-              let cpu = Double(parts[2]),
-              let rssKB = Double(parts[3]) else {
+        guard legacyParts.count == 6,
+              let pid = Int32(legacyParts[0]),
+              let ppid = Int32(legacyParts[1]),
+              let cpu = Double(legacyParts[2]),
+              let rssKB = Double(legacyParts[3]) else {
             return nil
         }
 
@@ -47,8 +102,8 @@ enum ProcessListReader {
             parentPID: ppid,
             cpu: cpu,
             memoryMB: rssKB / 1024.0,
-            command: String(parts[5]),
-            elapsedTime: String(parts[4]),
+            command: String(legacyParts[5]),
+            elapsedTime: String(legacyParts[4]),
             netInKB: 0,
             netOutKB: 0,
             diskReadBlocks: 0,
@@ -58,7 +113,7 @@ enum ProcessListReader {
 
     private static func currentNetworkStats() async -> [Int32: (Double, Double)] {
         let result = await ShellCommandRunner.run(
-            "/usr/bin/nettop -P -L 1 -n -x -J bytes_in,bytes_out 2>/dev/null || true"
+            "/usr/bin/nettop -P -L 1 -n -x -J bytes_in,bytes_out"
         )
         guard result.succeeded else { return [:] }
         var stats: [Int32: (Double, Double)] = [:]
@@ -77,7 +132,7 @@ enum ProcessListReader {
 
     private static func currentDiskStats() async -> [Int32: (Double, Double)] {
         let result = await ShellCommandRunner.run(
-            "/bin/ps -axo pid=,inblock=,oublock= 2>/dev/null || true"
+            "/bin/ps -axo pid=,inblock=,oublock="
         )
         guard result.succeeded else { return [:] }
         var stats: [Int32: (Double, Double)] = [:]

@@ -10,19 +10,22 @@ struct ProcessTreeRow: View {
     @Binding var detailProcess: AppProcess?
     @Binding var detailData: ProcessDetail?
     @Binding var detailFailed: Bool
+    @Binding var expandedPids: Set<Int32>
     var showsExpandedMetrics: Bool
     var openInActivityMonitor: (Int32) -> Void
-
-    @State private var expanded: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 6) {
                 if !node.children.isEmpty {
                     Button {
-                        expanded.toggle()
+                        if isExpanded {
+                            expandedPids.remove(node.process.pid)
+                        } else {
+                            expandedPids.insert(node.process.pid)
+                        }
                     } label: {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -67,6 +70,7 @@ struct ProcessTreeRow: View {
             .onTapGesture {
                 keyboardSelectedPid = node.process.pid
             }
+            .id(node.process.pid)
             .contextMenu {
                 Button("Stop") { pendingTermination = node.process }
                 Button("Force Stop") {
@@ -88,7 +92,7 @@ struct ProcessTreeRow: View {
                 }
             }
 
-            if expanded {
+            if isExpanded {
                 ForEach(node.children) { child in
                     ProcessTreeRow(
                         node: child,
@@ -100,11 +104,16 @@ struct ProcessTreeRow: View {
                         detailProcess: $detailProcess,
                         detailData: $detailData,
                         detailFailed: $detailFailed,
+                        expandedPids: $expandedPids,
                         showsExpandedMetrics: showsExpandedMetrics,
                         openInActivityMonitor: openInActivityMonitor
                     )
                 }
             }
         }
+    }
+
+    private var isExpanded: Bool {
+        expandedPids.contains(node.process.pid)
     }
 }

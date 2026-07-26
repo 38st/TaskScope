@@ -17,7 +17,8 @@ struct StopWatchedAppIntent: AppIntent {
             return .result()
         }
 
-        _ = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(preset.mainProcessName)) 2>/dev/null || true")
+        let literalName = ShellCommandRunner.extendedRegexLiteral(preset.mainProcessName)
+        _ = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(literalName)) 2>/dev/null || true")
         return .result()
     }
 }

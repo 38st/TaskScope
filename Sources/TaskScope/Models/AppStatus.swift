@@ -64,10 +64,37 @@ struct AppProcess: Identifiable, Equatable {
     var memoryMB: Double
     var command: String
     var elapsedTime: String
+    var startTime: String
     var netInKB: Double
     var netOutKB: Double
     var diskReadBlocks: Double
     var diskWriteBlocks: Double
+
+    init(
+        pid: Int32,
+        parentPID: Int32,
+        cpu: Double,
+        memoryMB: Double,
+        command: String,
+        elapsedTime: String,
+        startTime: String = "",
+        netInKB: Double,
+        netOutKB: Double,
+        diskReadBlocks: Double,
+        diskWriteBlocks: Double
+    ) {
+        self.pid = pid
+        self.parentPID = parentPID
+        self.cpu = cpu
+        self.memoryMB = memoryMB
+        self.command = command
+        self.elapsedTime = elapsedTime
+        self.startTime = startTime
+        self.netInKB = netInKB
+        self.netOutKB = netOutKB
+        self.diskReadBlocks = diskReadBlocks
+        self.diskWriteBlocks = diskWriteBlocks
+    }
 
     var id: Int32 {
         pid
@@ -82,6 +109,16 @@ struct AppProcess: Identifiable, Equatable {
     var displayCommand: String {
         command.replacingOccurrences(of: NSHomeDirectory(), with: "~")
     }
+
+    var identity: ProcessIdentity {
+        ProcessIdentity(pid: pid, startTime: startTime, command: command)
+    }
+}
+
+struct ProcessIdentity: Hashable, Codable {
+    var pid: Int32
+    var startTime: String
+    var command: String
 }
 
 struct ProcessDetail: Equatable {
