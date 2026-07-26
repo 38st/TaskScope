@@ -1,5 +1,4 @@
 import AppIntents
-import AppKit
 import Foundation
 
 @available(macOS 13.0, *)
@@ -10,16 +9,11 @@ struct StopWatchedAppIntent: AppIntent {
     @Parameter(title: "App Name")
     var appName: String
 
-    static var openAppWhenRun: Bool { false }
+    static var openAppWhenRun: Bool { true }
 
-    func perform() async throws -> some IntentResult {
-        guard let preset = WatchedAppsDefaults.persistedPresets().first(where: { $0.matchesLookupName(appName) }) else {
-            return .result()
-        }
-
-        let literalName = ShellCommandRunner.extendedRegexLiteral(preset.mainProcessName)
-        _ = await ShellCommandRunner.run("/usr/bin/pkill -x \(ShellCommandRunner.shellQuoted(literalName)) 2>/dev/null || true")
-        return .result()
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = await AppCommandBus.shared.submit(.stopPreset(appName))
+        return .result(dialog: IntentDialog(stringLiteral: result.message))
     }
 }
 
@@ -31,16 +25,11 @@ struct OpenWatchedAppIntent: AppIntent {
     @Parameter(title: "App Name")
     var appName: String
 
-    static var openAppWhenRun: Bool { false }
+    static var openAppWhenRun: Bool { true }
 
-    func perform() async throws -> some IntentResult {
-        guard let preset = WatchedAppsDefaults.persistedPresets().first(where: { $0.matchesLookupName(appName) }),
-              FileManager.default.fileExists(atPath: preset.appPath) else {
-            return .result()
-        }
-
-        NSWorkspace.shared.open(URL(fileURLWithPath: preset.appPath))
-        return .result()
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = await AppCommandBus.shared.submit(.openPreset(appName))
+        return .result(dialog: IntentDialog(stringLiteral: result.message))
     }
 }
 
@@ -49,13 +38,11 @@ struct RefreshTaskScopeIntent: AppIntent {
     static var title: LocalizedStringResource = "Refresh TaskScope"
     static var description = IntentDescription("Request TaskScope to refresh its watched status.")
 
-    static var openAppWhenRun: Bool { false }
+    static var openAppWhenRun: Bool { true }
 
-    func perform() async throws -> some IntentResult {
-        await MainActor.run {
-            NotificationCenter.default.post(name: .taskScopeRefreshRequested, object: nil)
-        }
-        return .result()
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let result = await AppCommandBus.shared.submit(.refresh)
+        return .result(dialog: IntentDialog(stringLiteral: result.message))
     }
 }
 
@@ -73,6 +60,12 @@ struct TaskScopeShortcuts: AppShortcutsProvider {
             phrases: ["Stop watched app in \(.applicationName)"],
             shortTitle: "Stop Watched App",
             systemImageName: "stop.circle"
+        )
+        AppShortcut(
+            intent: OpenWatchedAppIntent(),
+            phrases: ["Open watched app in \(.applicationName)"],
+            shortTitle: "Open Watched App",
+            systemImageName: "arrow.up.forward.app"
         )
     }
 }

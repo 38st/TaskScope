@@ -3,6 +3,7 @@ import Foundation
 enum ProcessStatus: Equatable {
     case idle
     case helpersOnly
+    case protectedOnly
     case watchedRunning
 
     var title: String {
@@ -11,6 +12,8 @@ enum ProcessStatus: Equatable {
             "Quiet"
         case .helpersOnly:
             "Helpers"
+        case .protectedOnly:
+            "Services"
         case .watchedRunning:
             "Active"
         }
@@ -22,6 +25,8 @@ enum ProcessStatus: Equatable {
             "No watched apps running"
         case .helpersOnly:
             "Background helpers running"
+        case .protectedOnly:
+            "Protected services running"
         case .watchedRunning:
             "Watched app running"
         }
@@ -33,6 +38,8 @@ enum ProcessStatus: Equatable {
             "waveform.path.ecg"
         case .helpersOnly:
             "exclamationmark.triangle.fill"
+        case .protectedOnly:
+            "lock.shield.fill"
         case .watchedRunning:
             "waveform.path.ecg.rectangle.fill"
         }

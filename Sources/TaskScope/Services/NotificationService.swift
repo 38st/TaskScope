@@ -1,51 +1,123 @@
+import AppKit
+import Combine
 import Foundation
 import UserNotifications
 
+struct ProcessNotificationBaseline {
+    private(set) var runningNames: Set<String>?
+
+    mutating func rebaseline(_ names: Set<String>) {
+        runningNames = names
+    }
+
+    mutating func transitions(
+        to names: Set<String>,
+        canNotify: Bool
+    ) -> (started: Set<String>, stopped: Set<String>) {
+        guard canNotify, let previous = runningNames else {
+            runningNames = names
+            return ([], [])
+        }
+        runningNames = names
+        return (names.subtracting(previous), previous.subtracting(names))
+    }
+}
+
 @MainActor
-final class NotificationService {
+final class NotificationService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
+    enum AuthorizationState: Equatable {
+        case unknown
+        case notDetermined
+        case denied
+        case authorized
+        case provisional
+
+        var label: String {
+            switch self {
+            case .unknown: "Unknown"
+            case .notDetermined: "Not requested"
+            case .denied: "Denied"
+            case .authorized: "Allowed"
+            case .provisional: "Provisional"
+            }
+        }
+    }
+
     static let shared = NotificationService()
 
-    private var authorized = false
-    private var primed = false
+    @Published private(set) var authorizationState: AuthorizationState = .unknown
+    private var baseline = ProcessNotificationBaseline()
+
+    override private init() {
+        super.init()
+        UNUserNotificationCenter.current().delegate = self
+        Task { await refreshAuthorizationStatus() }
+    }
 
     func requestAuthorization() async {
         let center = UNUserNotificationCenter.current()
-        let granted = (try? await center.requestAuthorization(options: [.alert])) ?? false
-        authorized = granted
+        _ = try? await center.requestAuthorization(options: [.alert])
+        await refreshAuthorizationStatus()
+    }
+
+    func refreshAuthorizationStatus() async {
+        let settings = await UNUserNotificationCenter.current().notificationSettings()
+        switch settings.authorizationStatus {
+        case .notDetermined:
+            authorizationState = .notDetermined
+        case .denied:
+            authorizationState = .denied
+        case .authorized:
+            authorizationState = .authorized
+        case .provisional:
+            authorizationState = .provisional
+        case .ephemeral:
+            authorizationState = .provisional
+        @unknown default:
+            authorizationState = .unknown
+        }
     }
 
     func prime(initialRunningNames: Set<String>) {
-        lastRunningNames = initialRunningNames
-        primed = true
+        baseline.rebaseline(initialRunningNames)
     }
 
     func diffAndNotify(currentRunningNames: Set<String>) {
-        guard primed, authorized else {
-            lastRunningNames = currentRunningNames
-            primed = true
-            return
-        }
+        let transitions = baseline.transitions(
+            to: currentRunningNames,
+            canNotify: canDeliver
+        )
 
-        let started = currentRunningNames.subtracting(lastRunningNames)
-        let stopped = lastRunningNames.subtracting(currentRunningNames)
-
-        for name in started {
+        for name in transitions.started {
             notify(title: "Process Started", body: "\(name) is now running.")
         }
-        for name in stopped {
+        for name in transitions.stopped {
             notify(title: "Process Stopped", body: "\(name) is no longer running.")
         }
-
-        lastRunningNames = currentRunningNames
     }
 
-    private var lastRunningNames: Set<String> = []
+    func openSystemSettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        ) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification
+    ) async -> UNNotificationPresentationOptions {
+        [.banner]
+    }
+
+    private var canDeliver: Bool {
+        authorizationState == .authorized || authorizationState == .provisional
+    }
 
     private func notify(title: String, body: String) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.sound = .default
         let request = UNNotificationRequest(
             identifier: UUID().uuidString,
             content: content,

@@ -6,6 +6,7 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var watchedApps: WatchedAppsStore
     @ObservedObject var autoStopRules: AutoStopRulesStore
+    @ObservedObject private var notificationService = NotificationService.shared
 
     @State private var newDisplayName = ""
     @State private var newMainProcess = ""
@@ -95,6 +96,15 @@ struct SettingsView: View {
 
             Section("Notifications") {
                 Toggle("Notify on watched process changes", isOn: $settings.enableNotifications)
+                LabeledContent("System permission", value: notificationService.authorizationState.label)
+                if notificationService.authorizationState == .denied {
+                    Button("Open Notification Settings") {
+                        notificationService.openSystemSettings()
+                    }
+                }
+                Text("TaskScope shows foreground banners without sound.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

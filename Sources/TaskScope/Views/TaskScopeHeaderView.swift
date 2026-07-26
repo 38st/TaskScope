@@ -92,6 +92,8 @@ struct TaskScopeHeaderView: View {
             .green
         case .helpersOnly:
             .yellow
+        case .protectedOnly:
+            .orange
         case .watchedRunning:
             .red
         }

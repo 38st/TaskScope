@@ -48,6 +48,7 @@ final class ProcessManager: ObservableObject {
     private let currentPID = ProcessInfo.processInfo.processIdentifier
     private let processInventory: any ProcessInventoryProviding
     private let processSignaler: any ProcessSignaling
+    private let lifecycle: any ProcessLifecycleServicing
     private let settleAfterProcessChange: () async -> Void
     private var fullProcessInventory: [AppProcess] = []
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
@@ -57,12 +58,14 @@ final class ProcessManager: ObservableObject {
     init(
         processInventory: any ProcessInventoryProviding = SystemProcessInventory(),
         processSignaler: any ProcessSignaling = DarwinProcessSignaler(),
+        lifecycle: any ProcessLifecycleServicing = SystemProcessLifecycleService(),
         settleAfterProcessChange: @escaping () async -> Void = {
             await ProcessLifecycleController.settleAfterProcessChange()
         }
     ) {
         self.processInventory = processInventory
         self.processSignaler = processSignaler
+        self.lifecycle = lifecycle
         self.settleAfterProcessChange = settleAfterProcessChange
     }
 
@@ -199,10 +202,6 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    func refreshWatchedStatusUnchecked(showMessage: Bool = false) async {
-        await refreshWatchedStatus(showMessage: showMessage)
-    }
-
     func loadProcessList(showMessage: Bool = true) async {
         await runAction {
             switch await processInventory.load(fetchExtendedStats: fetchExtendedStats) {
@@ -226,27 +225,53 @@ final class ProcessManager: ObservableObject {
 
     func openApp(_ preset: WatchedAppPreset) async {
         await runAction {
-            let beforeOpen = await currentSnapshot(for: preset)
-            let didOpen = beforeOpen.isMainRunning ? true : await ProcessLifecycleController.openAppBundle(at: preset.appPath)
-            if !beforeOpen.isMainRunning {
-                _ = await ProcessLifecycleController.bootstrapUserLaunchAgents(for: preset)
-                await ProcessLifecycleController.waitForProcessNamed(preset.mainProcessName, timeoutSeconds: 3)
+            guard lifecycle.appBundleExists(at: preset.appPath) else {
+                message = "Could not open \(preset.displayName): app bundle is missing at \(preset.appPath)."
+                return
             }
-            let daemonResult = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: preset)
+
+            let daemonResult = await lifecycle.ensureSystemLaunchDaemons(for: preset)
+            guard daemonResult.succeeded else {
+                message = "Could not open \(preset.displayName): \(daemonResult.failureSummary ?? "required service failed")."
+                return
+            }
+
+            let agentResult = await lifecycle.bootstrapUserLaunchAgents(for: preset)
+            guard agentResult.succeeded else {
+                message = "Could not open \(preset.displayName): \(agentResult.failureSummary ?? "required user job failed")."
+                return
+            }
+
+            let beforeOpen = await currentSnapshot(for: preset)
+            let didOpen: Bool
+            if beforeOpen.isMainRunning {
+                didOpen = true
+            } else {
+                didOpen = await lifecycle.openAppBundle(at: preset.appPath)
+            }
+            guard didOpen else {
+                message = "Could not open \(preset.displayName)."
+                return
+            }
+
+            let verified: Bool
+            if beforeOpen.isMainRunning {
+                verified = true
+            } else {
+                verified = await lifecycle.waitForProcessNamed(
+                    preset.mainProcessName,
+                    timeoutSeconds: 5
+                )
+            }
             await refreshAfterMutation()
 
-            let now = snapshot(for: preset)
-            let daemonDetail = daemonResult.messageSuffix
-            if now.isMainRunning {
-                if daemonResult.didChangeState {
-                    message = "Opening \(preset.displayName)\(daemonDetail)."
-                } else {
-                    message = "Opening \(preset.displayName)."
-                }
-            } else if daemonResult == .failed {
-                message = "\(preset.displayName) service needs admin approval."
+            if verified || snapshot(for: preset).isMainRunning {
+                let restored = daemonResult.didChangeState || agentResult.didChangeState
+                message = restored
+                    ? "Opened \(preset.displayName) after restoring required services."
+                    : "Opened \(preset.displayName)."
             } else {
-                message = didOpen ? "Opening \(preset.displayName)." : "Could not open \(preset.displayName)."
+                message = "\(preset.displayName) was launched, but its main process could not be verified."
             }
         }
     }
@@ -254,15 +279,19 @@ final class ProcessManager: ObservableObject {
     func quitMainApp(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = before.isMainRunning ? await ProcessLifecycleController.unloadUserLaunchAgents(for: preset) : false
-            await ProcessLifecycleController.terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
-            await ProcessLifecycleController.settleAfterProcessChange()
+            let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
+            await lifecycle.terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
+            await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
-            if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
+            if !agentResult.succeeded {
+                message = "Quit \(preset.displayName), but relaunch jobs failed: \(agentResult.failureSummary ?? "unknown failure")."
+            } else if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
                 message = "No \(preset.displayName) app found."
             } else if !snapshot(for: preset).isMainRunning {
-                message = unloadedAgents ? "\(preset.displayName) quit and launch agents unloaded." : "\(preset.displayName) quit."
+                message = agentResult.didChangeState
+                    ? "\(preset.displayName) quit and launch agents unloaded."
+                    : "\(preset.displayName) quit."
             } else {
                 message = "\(preset.displayName) may still run."
             }
@@ -272,18 +301,22 @@ final class ProcessManager: ObservableObject {
     func quitHelpers(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = before.hasHelpers ? await ProcessLifecycleController.unloadUserLaunchAgents(for: preset) : false
+            let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             for name in preset.helperProcessNames {
-                await ProcessLifecycleController.terminateProcess(named: name, forceIfStillRunning: true)
+                await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
             }
-            await ProcessLifecycleController.settleAfterProcessChange()
+            await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowHelpers = snapshot(for: preset).helpersRunning
-            if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
+            if !agentResult.succeeded {
+                message = "Helper stop was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+            } else if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
                 message = "No user helpers found."
             } else if nowHelpers.isEmpty {
-                message = unloadedAgents ? "User helpers quit and launch agents unloaded." : "User helpers quit."
+                message = agentResult.didChangeState
+                    ? "User helpers quit and launch agents unloaded."
+                    : "User helpers quit."
             } else {
                 message = "User helpers may still run."
             }
@@ -293,22 +326,26 @@ final class ProcessManager: ObservableObject {
     func quitAllKillable(_ preset: WatchedAppPreset) async {
         await runAction {
             let before = await currentSnapshot(for: preset)
-            let unloadedAgents = before.hasAny ? await ProcessLifecycleController.unloadUserLaunchAgents(for: preset) : false
+            let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             for name in preset.killableNames {
-                await ProcessLifecycleController.terminateProcess(named: name, forceIfStillRunning: true)
+                await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
             }
-            await ProcessLifecycleController.settleAfterProcessChange()
+            await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowSnap = snapshot(for: preset)
-            if !before.hasAny && !nowSnap.hasAny {
+            if !agentResult.succeeded {
+                message = "Close was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+            } else if !before.hasAny && !nowSnap.hasAny {
                 message = "No watched processes found."
             } else if nowSnap.isMainRunning {
                 message = "\(preset.displayName) may still run."
             } else if !nowSnap.helpersRunning.isEmpty {
                 message = "User helpers may still run."
             } else {
-                message = unloadedAgents ? "\(preset.displayName) closed and launch agents unloaded." : "\(preset.displayName) and helpers quit."
+                message = agentResult.didChangeState
+                    ? "\(preset.displayName) closed and launch agents unloaded."
+                    : "\(preset.displayName) and helpers quit."
             }
         }
     }

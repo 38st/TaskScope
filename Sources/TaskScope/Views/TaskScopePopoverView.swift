@@ -38,10 +38,9 @@ struct TaskScopePopoverView: View {
     @ObservedObject var watchedApps: WatchedAppsStore
     @ObservedObject var savedSelections: SavedSelectionsStore
     @ObservedObject var autoStopRules: AutoStopRulesStore
+    @ObservedObject var history: ProcessHistory
     var presentationStyle: TaskScopePresentationStyle = .menuBarCompact
     var openFullWindow: (() -> Void)?
-
-    @StateObject private var history = ProcessHistory()
 
     @State private var pendingTermination: AppProcess?
     @State private var pendingBatch: Bool = false
@@ -83,60 +82,10 @@ struct TaskScopePopoverView: View {
             footer
         }
         .background(.regularMaterial)
-        .task {
-            loginItemManager.refresh()
-            processManager.watchedAppsProvider = { watchedApps.presets }
-            processManager.processListLimitProvider = { settings.processListLimit }
-            processManager.sortKey = settings.sortKey
-            processManager.enableNotifications = settings.enableNotifications
-            processManager.setPolling(
-                interval: settings.refreshIntervalSeconds,
-                includeProcessList: settings.autoRefreshProcessList
-            )
-            await processManager.refreshWatchedStatus(showMessage: false)
-
-            if settings.enableNotifications {
-                await NotificationService.shared.requestAuthorization()
-                let running = Set(processManager.snapshots.flatMap { $0.runningNames })
-                NotificationService.shared.prime(initialRunningNames: running)
-            }
-        }
-        .onChange(of: settings.refreshIntervalSeconds) { _, _ in
-            processManager.setPolling(
-                interval: settings.refreshIntervalSeconds,
-                includeProcessList: settings.autoRefreshProcessList
-            )
-        }
-        .onChange(of: settings.autoRefreshProcessList) { _, _ in
-            processManager.setPolling(
-                interval: settings.refreshIntervalSeconds,
-                includeProcessList: settings.autoRefreshProcessList
-            )
-        }
-        .onChange(of: settings.processListLimit) { _, _ in
-            processManager.applyCurrentDisplayLimit()
-        }
-        .onChange(of: settings.enableNotifications) { _, newValue in
-            processManager.enableNotifications = newValue
-            if newValue {
-                Task {
-                    await NotificationService.shared.requestAuthorization()
-                    let running = Set(processManager.snapshots.flatMap { $0.runningNames })
-                    NotificationService.shared.prime(initialRunningNames: running)
-                }
-            }
-        }
-        .onChange(of: watchedApps.presets) { _, _ in
-            Task { await processManager.refreshWatchedStatusUnchecked(showMessage: false) }
-        }
         .onChange(of: processManager.processes) { _, newProcesses in
             if let pid = keyboardSelectedPid, !newProcesses.contains(where: { $0.pid == pid }) {
                 keyboardSelectedPid = nil
             }
-            history.record(processes: newProcesses)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .taskScopeRefreshRequested)) { _ in
-            Task { await processManager.refreshWatchedStatus(showMessage: true) }
         }
         .confirmationDialog(
             "Stop Process?",
@@ -521,10 +470,22 @@ struct TaskScopePopoverView: View {
                 ForEach(processManager.snapshots) { snapshot in
                     PresetCard(
                         snapshot: snapshot,
-                        onOpen: { Task { await processManager.openApp(snapshot.preset) } },
+                        onOpen: {
+                            Task {
+                                _ = await AppCommandBus.shared.submit(
+                                    .openPreset(snapshot.preset.displayName)
+                                )
+                            }
+                        },
                         onQuitApp: { Task { await processManager.quitMainApp(snapshot.preset) } },
                         onQuitHelpers: { Task { await processManager.quitHelpers(snapshot.preset) } },
-                        onQuitAll: { Task { await processManager.quitAllKillable(snapshot.preset) } }
+                        onQuitAll: {
+                            Task {
+                                _ = await AppCommandBus.shared.submit(
+                                    .stopPreset(snapshot.preset.displayName)
+                                )
+                            }
+                        }
                     )
                 }
 
@@ -606,7 +567,7 @@ struct TaskScopePopoverView: View {
             case .processes:
                 await processManager.loadProcessList()
             case .presets:
-                await processManager.refreshWatchedStatus()
+                _ = await AppCommandBus.shared.submit(.refresh)
             }
         }
     }

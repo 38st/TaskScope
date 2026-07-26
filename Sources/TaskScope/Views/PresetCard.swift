@@ -51,12 +51,14 @@ struct PresetCard: View {
     private var color: Color {
         if snapshot.isMainRunning { .red }
         else if snapshot.hasHelpers { .yellow }
+        else if !snapshot.protectedRunning.isEmpty { .orange }
         else { .green }
     }
 
     private var label: String {
         if snapshot.isMainRunning { "Active" }
         else if snapshot.hasHelpers { "Helpers" }
+        else if !snapshot.protectedRunning.isEmpty { "Services" }
         else { "Quiet" }
     }
 }

@@ -176,17 +176,103 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(finalCount, 2)
     }
 
+    func testOpenLifecycleOrdersDependenciesBeforeAppAndVerification() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+        let preset = lifecyclePreset()
+
+        await manager.openApp(preset)
+
+        XCTAssertEqual(lifecycle.calls, [
+            "exists",
+            "daemon",
+            "agents.load",
+            "open",
+            "wait"
+        ])
+        XCTAssertEqual(manager.message, "Opened Example.")
+    }
+
+    func testMissingAppBundleCausesNoLifecycleMutation() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.appExists = false
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+
+        await manager.openApp(lifecyclePreset())
+
+        XCTAssertEqual(lifecycle.calls, ["exists"])
+        XCTAssertTrue(manager.message.contains("app bundle is missing"))
+    }
+
+    func testDaemonFailurePreventsAgentAndAppLaunch() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.daemonResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "daemon", state: .failed, detail: "approval cancelled")
+        ])
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+
+        await manager.openApp(lifecyclePreset())
+
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon"])
+        XCTAssertTrue(manager.message.contains("approval cancelled"))
+    }
+
+    func testManagedQuitUnloadsConfiguredAgentsEvenWhenHelpersAreAbsent() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+
+        await manager.quitHelpers(lifecyclePreset())
+
+        XCTAssertEqual(lifecycle.calls.first, "agents.unload")
+        XCTAssertTrue(lifecycle.calls.contains("terminate:ExampleHelper"))
+    }
+
     private func makeManager(
         inventory: any ProcessInventoryProviding,
-        signaler: FakeProcessSignaler = FakeProcessSignaler()
+        signaler: FakeProcessSignaler = FakeProcessSignaler(),
+        lifecycle: any ProcessLifecycleServicing = FakeLifecycleService()
     ) -> ProcessManager {
         let manager = ProcessManager(
             processInventory: inventory,
             processSignaler: signaler,
+            lifecycle: lifecycle,
             settleAfterProcessChange: {}
         )
         manager.enableNotifications = false
         return manager
+    }
+
+    private func lifecyclePreset() -> WatchedAppPreset {
+        WatchedAppPreset(
+            displayName: "Example",
+            mainProcessName: "Example",
+            helperProcessNames: ["ExampleHelper"],
+            protectedProcessNames: ["ExampleDaemon"],
+            appPath: "/Applications/Example.app",
+            userLaunchAgentJobs: [
+                UserLaunchAgentJob(label: "example.agent", plistPath: "/Library/LaunchAgents/example.plist")
+            ],
+            systemLaunchDaemonJobs: [
+                SystemLaunchDaemonJob(
+                    label: "example.daemon",
+                    plistPath: "/Library/LaunchDaemons/example.plist",
+                    processName: "ExampleDaemon",
+                    servicePort: 1234
+                )
+            ]
+        )
     }
 
     private func process(
@@ -209,6 +295,59 @@ final class ProcessManagerTests: XCTestCase {
             diskReadBlocks: 0,
             diskWriteBlocks: 0
         )
+    }
+}
+
+private final class FakeLifecycleService: ProcessLifecycleServicing {
+    var appExists = true
+    var daemonResult = LifecycleBatchResult.notNeeded
+    var agentLoadResult = LifecycleBatchResult.notNeeded
+    var agentUnloadResult = LifecycleBatchResult.notNeeded
+    var openResult = true
+    var waitResult = true
+    private(set) var calls: [String] = []
+
+    func appBundleExists(at path: String) -> Bool {
+        calls.append("exists")
+        return appExists
+    }
+
+    func settleAfterProcessChange() async {
+        calls.append("settle")
+    }
+
+    func terminateProcess(named name: String, forceIfStillRunning: Bool) async {
+        calls.append("terminate:\(name)")
+    }
+
+    func isProcessNamedRunning(_ name: String) async -> Bool {
+        calls.append("running:\(name)")
+        return false
+    }
+
+    func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        calls.append("agents.unload")
+        return agentUnloadResult
+    }
+
+    func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        calls.append("agents.load")
+        return agentLoadResult
+    }
+
+    func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        calls.append("daemon")
+        return daemonResult
+    }
+
+    func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool {
+        calls.append("wait")
+        return waitResult
+    }
+
+    func openAppBundle(at path: String) async -> Bool {
+        calls.append("open")
+        return openResult
     }
 }
 

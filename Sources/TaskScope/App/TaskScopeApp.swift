@@ -20,10 +20,12 @@ struct TaskScopeApp: App {
     @StateObject private var watchedApps = WatchedAppsStore()
     @StateObject private var savedSelections = SavedSelectionsStore()
     @StateObject private var autoStopRules = AutoStopRulesStore()
+    @StateObject private var processHistory = ProcessHistory()
 
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "TaskScope.onboarded.v1")
     @State private var didBootstrapRuntime = false
     @State private var didRequestOnboarding = false
+    @State private var commandCoordinator: AppCommandCoordinator?
 
     var body: some Scene {
         WindowGroup("TaskScope", id: "processes") {
@@ -34,6 +36,7 @@ struct TaskScopeApp: App {
                 watchedApps: watchedApps,
                 savedSelections: savedSelections,
                 autoStopRules: autoStopRules,
+                history: processHistory,
                 presentationStyle: .expandedWindow,
                 openFullWindow: nil
             )
@@ -55,6 +58,7 @@ struct TaskScopeApp: App {
                 watchedApps: watchedApps,
                 savedSelections: savedSelections,
                 autoStopRules: autoStopRules,
+                history: processHistory,
                 presentationStyle: .menuBarCompact,
                 openFullWindow: {
                     showTaskScopeWindow()
@@ -94,7 +98,8 @@ struct TaskScopeApp: App {
     @ViewBuilder
     private var menuBarLabel: some View {
         Group {
-            let runningCount = processManager.snapshots.reduce(0) { $0 + $1.runningNames.count }
+            // The badge represents active presets, not configured names or process instances.
+            let runningCount = processManager.snapshots.filter(\.hasAny).count
             if runningCount > 0 {
                 Label("TaskScope (\(runningCount))", systemImage: processManager.status.menuBarSystemImage)
                     .labelStyle(.iconOnly)
@@ -124,18 +129,25 @@ struct TaskScopeApp: App {
         .onChange(of: settings.sortKeyRaw) { _, _ in
             processManager.sortKey = settings.sortKey
         }
+        .onChange(of: settings.processListLimit) { _, _ in
+            processManager.applyCurrentDisplayLimit()
+        }
         .onChange(of: settings.enableNotifications) { _, newValue in
             processManager.enableNotifications = newValue
             if newValue {
                 Task {
                     await NotificationService.shared.requestAuthorization()
-                    let running = Set(processManager.snapshots.flatMap { $0.runningNames })
+                    let running = eligibleNotificationNames()
                     NotificationService.shared.prime(initialRunningNames: running)
                 }
             }
         }
         .onChange(of: watchedApps.presets) { _, _ in
-            Task { await processManager.refreshWatchedStatusUnchecked(showMessage: false) }
+            NotificationService.shared.prime(initialRunningNames: eligibleNotificationNames())
+            Task { await processManager.refreshWatchedStatus(showMessage: false) }
+        }
+        .onChange(of: processManager.processes) { _, processes in
+            processHistory.record(processes: processes)
         }
     }
 
@@ -148,6 +160,17 @@ struct TaskScopeApp: App {
         processManager.processListLimitProvider = { settings.processListLimit }
         processManager.sortKey = settings.sortKey
         processManager.enableNotifications = settings.enableNotifications
+        let coordinator = AppCommandCoordinator(
+            processManager: processManager,
+            presets: { watchedApps.presets }
+        )
+        commandCoordinator = coordinator
+        AppCommandBus.shared.install { command in
+            await coordinator.perform(command)
+        }
+        HotkeyManager.shared.onToggle = {
+            showTaskScopeWindow()
+        }
         configurePolling()
         autoStopRules.start(cadence: 10) { process in
             await processManager.terminate(process)
@@ -156,19 +179,25 @@ struct TaskScopeApp: App {
 
         if settings.enableNotifications {
             await NotificationService.shared.requestAuthorization()
-            let running = Set(processManager.snapshots.flatMap { $0.runningNames })
+            let running = eligibleNotificationNames()
             NotificationService.shared.prime(initialRunningNames: running)
         }
 
-        HotkeyManager.shared.onToggle = {
-            showTaskScopeWindow()
-        }
     }
 
     private func configurePolling() {
         processManager.setPolling(
             interval: settings.refreshIntervalSeconds,
             includeProcessList: settings.autoRefreshProcessList
+        )
+    }
+
+    private func eligibleNotificationNames() -> Set<String> {
+        let enabledPresetIDs = Set(watchedApps.presets.filter(\.notificationsEnabled).map(\.id))
+        return Set(
+            processManager.snapshots
+                .filter { enabledPresetIDs.contains($0.preset.id) }
+                .flatMap(\.runningNames)
         )
     }
 

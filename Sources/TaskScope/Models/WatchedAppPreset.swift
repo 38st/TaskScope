@@ -22,7 +22,6 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
     var userLaunchAgentJobs: [UserLaunchAgentJob] = []
     var systemLaunchDaemonJobs: [SystemLaunchDaemonJob] = []
     var notificationsEnabled: Bool = true
-    var priority: Int = 0
 
     var allProcessNames: [String] {
         [mainProcessName] + helperProcessNames + protectedProcessNames
@@ -55,8 +54,7 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
         appPath: String,
         userLaunchAgentJobs: [UserLaunchAgentJob] = [],
         systemLaunchDaemonJobs: [SystemLaunchDaemonJob] = [],
-        notificationsEnabled: Bool = true,
-        priority: Int = 0
+        notificationsEnabled: Bool = true
     ) {
         self.id = id
         self.displayName = displayName
@@ -67,7 +65,6 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
         self.userLaunchAgentJobs = userLaunchAgentJobs
         self.systemLaunchDaemonJobs = systemLaunchDaemonJobs
         self.notificationsEnabled = notificationsEnabled
-        self.priority = priority
     }
 
     init(from decoder: Decoder) throws {
@@ -81,7 +78,6 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable {
         userLaunchAgentJobs = try container.decodeIfPresent([UserLaunchAgentJob].self, forKey: .userLaunchAgentJobs) ?? []
         systemLaunchDaemonJobs = try container.decodeIfPresent([SystemLaunchDaemonJob].self, forKey: .systemLaunchDaemonJobs) ?? []
         notificationsEnabled = try container.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
-        priority = try container.decodeIfPresent(Int.self, forKey: .priority) ?? 0
     }
 
     static let globalProtect = WatchedAppPreset(
@@ -170,6 +166,9 @@ extension Array where Element == WatchedAppSnapshot {
         }
         if contains(where: { $0.hasHelpers }) {
             return .helpersOnly
+        }
+        if contains(where: { !$0.protectedRunning.isEmpty }) {
+            return .protectedOnly
         }
         return .idle
     }

@@ -20,7 +20,6 @@ final class WatchedAppPresetTests: XCTestCase {
         XCTAssertEqual(preset.userLaunchAgentJobs, [])
         XCTAssertEqual(preset.systemLaunchDaemonJobs, [])
         XCTAssertTrue(preset.notificationsEnabled)
-        XCTAssertEqual(preset.priority, 0)
     }
 
     func testMatchesLookupNameTrimsAndIgnoresCase() {
@@ -52,6 +51,10 @@ final class WatchedAppPresetTests: XCTestCase {
         XCTAssertEqual(
             [WatchedAppSnapshot(preset: preset, runningNames: [])].aggregateStatus,
             .idle
+        )
+        XCTAssertEqual(
+            [WatchedAppSnapshot(preset: preset, runningNames: ["PanGPS"])].aggregateStatus,
+            .protectedOnly
         )
     }
 }
