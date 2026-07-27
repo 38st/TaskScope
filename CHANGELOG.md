@@ -14,7 +14,7 @@ All notable changes to TaskScope are documented in this file. The project uses
 - Graceful and forced process termination with target revalidation.
 - Saved selections, auto-stop rules, notifications, and process history.
 - URL scheme and Shortcuts automation.
-- Source build, local installation, packaging verification, and CI workflows.
+- Source build, local installation, and packaging verification workflows.
 
 [Unreleased]: https://github.com/38st/TaskScope/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/38st/TaskScope/releases/tag/v1.0.0
