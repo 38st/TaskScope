@@ -12,7 +12,9 @@ Thanks for helping improve TaskScope.
 
 ## Development workflow
 
-TaskScope requires macOS 14 or newer and Swift tools 5.9 or newer.
+TaskScope requires macOS 14 or newer. Swift tools 5.9 or newer can build the
+app; Swift 6 or newer is required to compile the current UI test dependency
+and run the full test suite.
 
 1. Fork and clone the repository.
 2. Create a focused branch from `main`.

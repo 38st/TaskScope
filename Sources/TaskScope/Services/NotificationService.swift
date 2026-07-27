@@ -1,7 +1,7 @@
 import AppKit
 import Combine
 import Foundation
-import UserNotifications
+@preconcurrency import UserNotifications
 
 struct ProcessNotificationBaseline {
     private(set) var runningNames: Set<String>?

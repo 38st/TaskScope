@@ -35,6 +35,30 @@ jobs:
       - name: Build release
         run: swift build -c release
 
+      - name: Generate and validate app icon
+        run: |
+          icon_path="$RUNNER_TEMP/TaskScope.icns"
+          swift script/render_icon.swift "$icon_path"
+          test -s "$icon_path"
+          file "$icon_path" | grep -q "Mac OS X icon"
+
+      - name: Stage, verify, and transaction-test bundle
+        run: script/test_packaging.sh
+
+  strict-concurrency:
+    name: Swift 6 tests and strict concurrency
+    runs-on: macos-15
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Record toolchain
+        run: |
+          sw_vers
+          swift --version
+
       - name: Test with code coverage
         run: swift test --enable-code-coverage
 
@@ -58,30 +82,6 @@ jobs:
           name: taskscope-coverage
           path: taskscope-coverage.json
           retention-days: 7
-
-      - name: Generate and validate app icon
-        run: |
-          icon_path="$RUNNER_TEMP/TaskScope.icns"
-          swift script/render_icon.swift "$icon_path"
-          test -s "$icon_path"
-          file "$icon_path" | grep -q "Mac OS X icon"
-
-      - name: Stage, verify, and transaction-test bundle
-        run: script/test_packaging.sh
-
-  strict-concurrency:
-    name: Swift 6 strict concurrency
-    runs-on: macos-15
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Record toolchain
-        run: |
-          sw_vers
-          swift --version
 
       - name: Audit strict concurrency
         run: >-

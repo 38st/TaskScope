@@ -15,7 +15,9 @@ TaskScope includes a GlobalProtect preset. It can open the GlobalProtect app, ma
 ## Requirements
 
 - macOS 14 or newer
-- Xcode Command Line Tools with Swift tools 5.9 or newer
+- Xcode Command Line Tools with Swift tools 5.9 or newer for app builds
+- Swift 6 or newer to compile the current UI test dependency and run the full
+  test suite
 - A writable install destination; `/Applications` may require administrator-managed permissions
 
 SwiftPM builds the executable for the current Mac architecture. The packaging scripts use `TASKSCOPE_CODE_SIGN_IDENTITY` when provided, otherwise the first available Apple Development identity, and fall back to ad-hoc signing when no development identity exists. A real development signature is required for macOS to execute TaskScope’s App Intents; ad-hoc builds still support metadata validation but Shortcuts rejects them at runtime. These scripts do not produce a Developer ID-signed, notarized, universal distribution.
