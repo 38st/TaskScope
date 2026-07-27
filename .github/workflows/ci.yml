@@ -13,9 +13,9 @@ concurrency:
 
 jobs:
   macos:
-    name: macOS 14 build, test, and package
+    name: macOS 14 compatibility build
     runs-on: macos-14
-    timeout-minutes: 35
+    timeout-minutes: 20
 
     steps:
       - name: Check out source
@@ -35,20 +35,10 @@ jobs:
       - name: Build release
         run: swift build -c release
 
-      - name: Generate and validate app icon
-        run: |
-          icon_path="$RUNNER_TEMP/TaskScope.icns"
-          swift script/render_icon.swift "$icon_path"
-          test -s "$icon_path"
-          file "$icon_path" | grep -q "Mac OS X icon"
-
-      - name: Stage, verify, and transaction-test bundle
-        run: script/test_packaging.sh
-
   strict-concurrency:
-    name: Swift 6 tests and strict concurrency
+    name: Swift 6 tests, concurrency, and package
     runs-on: macos-15
-    timeout-minutes: 35
+    timeout-minutes: 40
 
     steps:
       - name: Check out source
@@ -90,3 +80,13 @@ jobs:
           -Xswiftc -warnings-as-errors
           -Xswiftc -warn-concurrency
           -Xswiftc -enable-actor-data-race-checks
+
+      - name: Generate and validate app icon
+        run: |
+          icon_path="$RUNNER_TEMP/TaskScope.icns"
+          swift script/render_icon.swift "$icon_path"
+          test -s "$icon_path"
+          file "$icon_path" | grep -q "Mac OS X icon"
+
+      - name: Stage, verify, and transaction-test bundle
+        run: script/test_packaging.sh
