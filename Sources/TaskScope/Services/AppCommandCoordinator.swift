@@ -32,15 +32,17 @@ final class AppCommandCoordinator {
     init(
         processManager: ProcessManager,
         presets: @escaping () -> [WatchedAppPreset],
-        terminateApplication: @escaping @MainActor () -> Void = AppCommandCoordinator.terminateApp
+        terminateApplication: (@MainActor () -> Void)? = nil
     ) {
         self.processManager = processManager
         self.presets = presets
-        self.terminateApplication = terminateApplication
-    }
-
-    private static func terminateApp() {
-        NSApp.terminate(nil)
+        if let terminateApplication {
+            self.terminateApplication = terminateApplication
+        } else {
+            self.terminateApplication = {
+                NSApp.terminate(nil)
+            }
+        }
     }
 
     func perform(_ command: TaskScopeCommand) async -> TaskScopeCommandResult {
