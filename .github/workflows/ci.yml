@@ -35,14 +35,6 @@ jobs:
       - name: Build release
         run: swift build -c release
 
-      - name: Audit strict concurrency
-        run: >-
-          swift test
-          --scratch-path .build/strict-concurrency
-          -Xswiftc -warnings-as-errors
-          -Xswiftc -warn-concurrency
-          -Xswiftc -enable-actor-data-race-checks
-
       - name: Test with code coverage
         run: swift test --enable-code-coverage
 
@@ -76,3 +68,25 @@ jobs:
 
       - name: Stage, verify, and transaction-test bundle
         run: script/test_packaging.sh
+
+  strict-concurrency:
+    name: Swift 6 strict concurrency
+    runs-on: macos-15
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Record toolchain
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Audit strict concurrency
+        run: >-
+          swift test
+          --scratch-path .build/strict-concurrency
+          -Xswiftc -warnings-as-errors
+          -Xswiftc -warn-concurrency
+          -Xswiftc -enable-actor-data-race-checks
