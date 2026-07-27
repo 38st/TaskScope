@@ -1,8 +1,16 @@
 # TaskScope
 
+[![CI](https://github.com/38st/TaskScope/actions/workflows/ci.yml/badge.svg)](https://github.com/38st/TaskScope/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black.svg)](https://support.apple.com/macos)
+
 TaskScope is a native macOS process monitor and task controller that lives in the Dock and menu bar. It combines a searchable process list with watched-app presets, lifecycle controls, saved selections, auto-stop rules, notifications, Shortcuts actions, and process-history charts.
 
 TaskScope includes a GlobalProtect preset. It can open the GlobalProtect app, manage its configured user launch agent, and request macOS administrator approval when the protected `PanGPS` service must be restored. It does not uninstall GlobalProtect, delete or rename launch files, or stop the protected system daemon during a normal close operation.
+
+> [!NOTE]
+> This repository currently provides source and local-development packaging.
+> It does not provide a notarized, universal public binary.
 
 ## Requirements
 
@@ -112,6 +120,34 @@ Open and Stop use a watched-app entity chosen from the presets stored in TaskSco
 - Auto Stop is intentionally destructive. Use Prompt or Log Only while validating a new rule.
 - GlobalProtect file locations, job labels, and managed-service behavior are controlled by the installed GlobalProtect version and your organization. If its protected service cannot be restored, use your company/IT installer or support process.
 
-## Local packaging limitation
+## Privacy and security
+
+TaskScope runs locally. It does not contain analytics, telemetry uploads, or
+network-service code. Persistent settings, watched-app presets, rules, saved
+selections, and auto-stop event history are stored locally with macOS
+preferences. Live process history is held in memory. Process details are read
+from the local Mac and are not transmitted by the app.
+
+TaskScope can signal processes and can request administrator approval for
+explicitly configured daemon restoration. Review imported presets before using
+their lifecycle actions. Please report suspected vulnerabilities privately
+according to [SECURITY.md](SECURITY.md), and remove sensitive process or
+organization data from public bug reports.
+
+## Distribution limitation
 
 `script/build_and_run.sh` and `script/install.sh` are development and personal-install workflows. The staged app uses the local bundle identifier `com.local.TaskScope`, prefers a local Apple Development signature so App Intents can execute, falls back to ad-hoc signing, and is not notarized. Set `TASKSCOPE_CODE_SIGN_IDENTITY` to choose a specific identity. External distribution requires an owned bundle identifier, Developer ID signing, hardened runtime/notarization, and an architecture/release strategy outside these scripts.
+
+## Contributing
+
+Bug reports and focused pull requests are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) before contributing and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) before participating.
+
+## License and trademarks
+
+TaskScope is available under the [MIT License](LICENSE).
+
+TaskScope is an independent project. GlobalProtect and Palo Alto Networks are
+trademarks of their respective owners; this project is not affiliated with or
+endorsed by Palo Alto Networks.

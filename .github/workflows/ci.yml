@@ -65,6 +65,7 @@ jobs:
         with:
           name: taskscope-coverage
           path: taskscope-coverage.json
+          retention-days: 7
 
       - name: Generate and validate app icon
         run: |

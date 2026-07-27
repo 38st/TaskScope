@@ -1,5 +1,33 @@
+# Swift Package Manager
 .build/
+.swiftpm/
+
+# Local packaging output
 dist/
-.DS_Store
-*.xcuserdata/
+*.dSYM/
+
+# Xcode
 DerivedData/
+*.xcuserstate
+*.xcworkspace/xcuserdata/
+*.xcuserdata/
+
+# macOS
+.DS_Store
+.AppleDouble
+
+# Editors
+.idea/
+.vscode/
+
+# Local tooling
+.codex/
+
+# Local configuration and signing material
+.env
+.env.*
+!.env.example
+*.cer
+*.mobileprovision
+*.p12
+*.pfx
