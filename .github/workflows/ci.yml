@@ -36,8 +36,8 @@ jobs:
         run: swift build -c release
 
   strict-concurrency:
-    name: Swift 6 tests, concurrency, and package
-    runs-on: macos-15
+    name: Xcode 26 tests, concurrency, and package
+    runs-on: macos-26
     timeout-minutes: 40
 
     steps:
