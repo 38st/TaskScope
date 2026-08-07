@@ -262,6 +262,14 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
                     .padding(.horizontal)
             }
+            if autoStopRules.hasUnreadableData {
+                // Writing stays disabled until this is pressed, so without it the
+                // user would be locked out of editing rules for good.
+                Button("Reset Auto-Stop Data After Backup", role: .destructive) {
+                    autoStopRules.resetAfterCorruption()
+                }
+                .padding(.horizontal)
+            }
             List {
                 Section("Rules") {
                     ForEach(autoStopRules.rules) { rule in
@@ -454,6 +462,14 @@ struct SettingsView: View {
     }
 
     private func exportPresets() {
+        // In corrupt mode the in-memory list is the empty array we fell back to, not
+        // the user's presets. Exporting it would write a valid-looking but empty
+        // backup — precisely when the banner is telling them to back up first.
+        guard !watchedApps.isReadOnlyAfterCorruption else {
+            exportError = "Preset data is unreadable, so there is nothing to export. "
+                + "Recover the backup noted above before resetting."
+            return
+        }
         guard let data = try? JSONEncoder().encode(watchedApps.presets) else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]

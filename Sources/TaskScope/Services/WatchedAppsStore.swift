@@ -28,6 +28,10 @@ final class WatchedAppsStore: ObservableObject {
         guard let data = userDefaults.data(forKey: key) else {
             presets = [.globalProtect]
             allowsPersistence = true
+            // Assigning in `init` does not fire `didSet`, so the seeded default was
+            // never written. Persist it now so the preset the App Intents catalog
+            // publishes is backed by stored bytes and keeps one identity.
+            persistIfAllowed()
             return
         }
 
@@ -43,8 +47,22 @@ final class WatchedAppsStore: ObservableObject {
         }
     }
 
+    /// True once a decode failure has disabled writing. Callers must treat a
+    /// mutation as unsuccessful in this state rather than reporting a save that
+    /// cannot reach disk.
+    var isReadOnlyAfterCorruption: Bool {
+        !allowsPersistence
+    }
+
+    private func rejectIfReadOnly() -> Bool {
+        guard !allowsPersistence else { return false }
+        validationError = "Preset data is unreadable; reset presets before making changes."
+        return true
+    }
+
     @discardableResult
     func add(_ preset: WatchedAppPreset) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
         guard let normalized = validateAndNormalize(preset),
               !isSemanticDuplicate(normalized) else {
             return false
@@ -68,6 +86,7 @@ final class WatchedAppsStore: ObservableObject {
 
     @discardableResult
     func update(_ preset: WatchedAppPreset) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
         guard let index = presets.firstIndex(where: { $0.id == preset.id }),
               let normalized = validateAndNormalize(preset),
               !isSemanticDuplicate(normalized, excluding: preset.id) else {
@@ -78,10 +97,16 @@ final class WatchedAppsStore: ObservableObject {
         return true
     }
 
+    /// Discards the unreadable payload and resumes writing. Anything the user
+    /// rebuilt during the corrupt session is kept — resetting used to replace it
+    /// with the default preset, destroying the recovery work.
     func resetAfterCorruption() {
-        presets = [.globalProtect]
+        if presets.isEmpty {
+            presets = [.globalProtect]
+        }
         allowsPersistence = true
         persistenceIssue = nil
+        validationError = nil
         persistIfAllowed()
     }
 

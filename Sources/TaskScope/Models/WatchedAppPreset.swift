@@ -80,7 +80,14 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
         notificationsEnabled = try container.decodeIfPresent(Bool.self, forKey: .notificationsEnabled) ?? true
     }
 
+    /// Fixed so the built-in preset keeps one identity across launches. It used to
+    /// take the `UUID()` default, which a `static let` mints fresh per process, and
+    /// the seeded default is never written to storage — so any Shortcut bound to
+    /// this preset resolved to nothing after a relaunch.
+    static let globalProtectID = UUID(uuidString: "1B0E5C1E-6B0A-4F2E-9E7B-2C3A5D8F41A7")!
+
     static let globalProtect = WatchedAppPreset(
+        id: globalProtectID,
         displayName: "GlobalProtect",
         mainProcessName: "GlobalProtect",
         helperProcessNames: ["PanGPA"],

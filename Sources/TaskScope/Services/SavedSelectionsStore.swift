@@ -102,6 +102,7 @@ final class SavedSelectionsStore: ObservableObject {
 
     private let userDefaults: UserDefaults
     private let key: String
+    private var allowsPersistence: Bool
 
     init(
         userDefaults: UserDefaults = .standard,
@@ -109,13 +110,21 @@ final class SavedSelectionsStore: ObservableObject {
     ) {
         self.userDefaults = userDefaults
         self.key = key
+        allowsPersistence = true
         if let data = userDefaults.data(forKey: key) {
             do {
                 selections = try JSONDecoder().decode([SavedSelection].self, from: data)
             } catch {
                 let backupKey = "\(key).corruptBackup"
-                userDefaults.set(data, forKey: backupKey)
+                // Preserve the first backup rather than clobbering it on a later
+                // corrupt read.
+                if userDefaults.data(forKey: backupKey) == nil {
+                    userDefaults.set(data, forKey: backupKey)
+                }
                 selections = []
+                // Writing now would replace the unreadable payload with the empty
+                // array we fell back to, destroying it at its primary key.
+                allowsPersistence = false
                 recoveryMessage = "Saved selections were unreadable and backed up as \(backupKey)."
             }
         } else {
@@ -123,8 +132,24 @@ final class SavedSelectionsStore: ObservableObject {
         }
     }
 
+    var isReadOnlyAfterCorruption: Bool {
+        !allowsPersistence
+    }
+
+    /// Discards the unreadable payload and resumes writing, keeping whatever the
+    /// user rebuilt during the corrupt session.
+    func resetAfterCorruption() {
+        allowsPersistence = true
+        recoveryMessage = nil
+        saveToDefaults()
+    }
+
     @discardableResult
     func save(name: String, processes: [AppProcess]) -> Bool {
+        guard allowsPersistence else {
+            validationError = "Saved selection data is unreadable; reset it before saving."
+            return false
+        }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             validationError = "Selection name is required."
@@ -226,7 +251,7 @@ final class SavedSelectionsStore: ObservableObject {
     }
 
     private func saveToDefaults() {
-        guard let data = try? JSONEncoder().encode(selections) else { return }
+        guard allowsPersistence, let data = try? JSONEncoder().encode(selections) else { return }
         userDefaults.set(data, forKey: key)
     }
 

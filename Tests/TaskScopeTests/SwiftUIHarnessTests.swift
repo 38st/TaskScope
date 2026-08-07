@@ -82,6 +82,65 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
     }
 
+    /// A row can be on screen purely because the search filter surfaced it, even
+    /// though it ranks below the display limit. The preset draft must be built from
+    /// the full inventory (`selectedProcessesSnapshot()`), not from the limited,
+    /// unfiltered display slice — the two sets are not nested.
+    func testSaveSelectionAsPresetDraftKeepsSearchSurfacedSelection() async throws {
+        let hotA = process(pid: 91, parentPID: 1, name: "HotA", cpu: 90)
+        let hotB = process(pid: 92, parentPID: 1, name: "HotB", cpu: 80)
+        let needle = process(pid: 93, parentPID: 1, name: "Needle", cpu: 1)
+        let fixture = await makeFixture(processes: [hotA, hotB, needle])
+        defer { fixture.stores.cleanup() }
+
+        // Production wires this provider from settings.processListLimit and
+        // republishes via applyCurrentDisplayLimit(). A limit of 2 keeps the fixture
+        // small; all that matters is that the inventory exceeds it.
+        fixture.manager.processListLimitProvider = { 2 }
+        fixture.manager.applyCurrentDisplayLimit()
+        fixture.stores.settings.searchText = "Needle"
+
+        // Filtering runs before the limit, so the search surfaces a row that the
+        // unfiltered display slice drops.
+        XCTAssertEqual(fixture.manager.processes.map(\.pid), [hotA.pid, hotB.pid])
+
+        let view = makePopover(
+            fixture: fixture,
+            confirmationState: ProcessConfirmationState()
+        )
+        let rows = try view.inspect().findAll(ProcessRow.self)
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(try rows[0].actualView().process.identity, needle.identity)
+
+        try rows[0].findAll(ViewType.Button.self)[0].tap()
+        XCTAssertEqual(fixture.manager.selectedPids, [needle.pid])
+
+        // What `selectedProcessesForPreset()` now calls. ViewInspector 0.10.3 has no
+        // `.contextMenu` support, so the accessor is exercised against the same
+        // ProcessManager instance the view holds.
+        let draftProcesses = fixture.manager.selectedProcessesSnapshot()
+        XCTAssertEqual(draftProcesses.map(\.pid), [needle.pid])
+
+        // The collection this used to read from would have dropped it entirely.
+        let displaySliceOnly = fixture.manager.processes.filter {
+            fixture.manager.selectedPids.contains($0.pid)
+        }
+        XCTAssertTrue(
+            displaySliceOnly.isEmpty,
+            "guards the regression: the display slice does not contain the selected row"
+        )
+
+        let sheet = QuickWatchedPresetSheet(
+            draft: QuickWatchedPresetDraft(processes: draftProcesses),
+            onSave: { _ in },
+            onCancel: {}
+        )
+        XCTAssertNoThrow(
+            try sheet.inspect().find(text: "Needle"),
+            "Preset sheet should summarise the selected process, not report it as empty"
+        )
+    }
+
     func testTreeDisclosureControlsRenderedChildVisibility() async throws {
         let parent = process(pid: 81, parentPID: 1, name: "Parent")
         let child = process(pid: 82, parentPID: parent.pid, name: "Child")
@@ -304,7 +363,7 @@ private final class UIRecordingSignaler: ProcessSignaling {
 private struct UILifecycle: ProcessLifecycleServicing {
     func appBundleExists(at path: String) -> Bool { true }
     func settleAfterProcessChange() async {}
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async {}
+    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome { .signalled }
     func isProcessNamedRunning(_ name: String) async -> Bool { false }
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }

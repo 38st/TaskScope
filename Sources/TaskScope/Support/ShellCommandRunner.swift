@@ -24,7 +24,11 @@ enum ShellCommandRunner {
         let escaped = value
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: " ")
+            // An AppleScript literal cannot span source lines, but collapsing
+            // newlines to spaces destroys shell syntax: `else` and `fi` are only
+            // keywords after a command terminator. Emit the `\n` escape so the
+            // string AppleScript hands to /bin/sh keeps its real line breaks.
+            .replacingOccurrences(of: "\n", with: "\\n")
         return "\"\(escaped)\""
     }
 

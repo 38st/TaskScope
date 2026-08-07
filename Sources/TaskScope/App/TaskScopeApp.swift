@@ -438,8 +438,15 @@ struct TaskScopeApp: App {
             }
         }
         .onChange(of: watchedApps.presets) { _, _ in
-            NotificationService.shared.prime(initialRunningNames: eligibleNotificationNames())
-            Task { await processManager.refreshWatchedStatus(showMessage: false) }
+            // Re-baseline from the refreshed snapshots, not the stale ones: the old
+            // snapshots predate this preset list, so priming from them would make a
+            // newly watched, already-running app look like it just started.
+            Task {
+                await processManager.refreshWatchedStatus(
+                    showMessage: false,
+                    rebaselineNotifications: true
+                )
+            }
         }
     }
 

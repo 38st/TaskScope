@@ -88,6 +88,42 @@ struct AutoStopEvent: Codable, Identifiable, Equatable {
             }
         }
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, timestamp, processName, pid, ruleID, outcome, detail
+    }
+
+    init(
+        id: UUID = UUID(),
+        timestamp: Date,
+        processName: String,
+        pid: Int32,
+        ruleID: UUID,
+        outcome: Outcome,
+        detail: String
+    ) {
+        self.id = id
+        self.timestamp = timestamp
+        self.processName = processName
+        self.pid = pid
+        self.ruleID = ruleID
+        self.outcome = outcome
+        self.detail = detail
+    }
+
+    /// Hand-written so a payload written by another build still decodes: the
+    /// synthesized decoder ignores property defaults and hard-fails on any key it
+    /// does not find, which would make one added field destroy the whole log.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        timestamp = try container.decodeIfPresent(Date.self, forKey: .timestamp) ?? Date(timeIntervalSince1970: 0)
+        processName = try container.decodeIfPresent(String.self, forKey: .processName) ?? ""
+        pid = try container.decodeIfPresent(Int32.self, forKey: .pid) ?? 0
+        ruleID = try container.decodeIfPresent(UUID.self, forKey: .ruleID) ?? UUID()
+        outcome = (try? container.decode(Outcome.self, forKey: .outcome)) ?? .logged
+        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
+    }
 }
 
 @MainActor
@@ -116,9 +152,12 @@ final class AutoStopRulesStore: ObservableObject {
     private let inventory: any ProcessInventoryProviding
     private let eventLimit: Int
     private var handledOccurrences: Set<AutoStopOccurrence> = []
+    private var reportedFailures: Set<AutoStopOccurrence> = []
     private var engineTask: Task<Void, Never>?
     private var actionHandler: ((AppProcess) async -> ProcessActionResult)?
     private var isNormalizing = false
+    private var allowsRulesPersistence: Bool
+    private var allowsEventsPersistence: Bool
 
     init(
         userDefaults: UserDefaults = .standard,
@@ -144,6 +183,11 @@ final class AutoStopRulesStore: ObservableObject {
             userDefaults: userDefaults,
             key: eventsKey
         )
+        // A decode failure must never lead to the unreadable payload being replaced
+        // by the empty array we fell back to, so persistence stays disabled for that
+        // key until the user explicitly resets it.
+        allowsRulesPersistence = loadedRules.message == nil
+        allowsEventsPersistence = loadedEvents.message == nil
         rules = loadedRules.value ?? []
         events = loadedEvents.value ?? []
         recoveryMessages = [loadedRules.message, loadedEvents.message].compactMap { $0 }
@@ -151,6 +195,20 @@ final class AutoStopRulesStore: ObservableObject {
 
     deinit {
         engineTask?.cancel()
+    }
+
+    var hasUnreadableData: Bool {
+        !allowsRulesPersistence || !allowsEventsPersistence
+    }
+
+    /// Discards the unreadable payloads and re-enables writing. Anything the user
+    /// rebuilt during the corrupt session is kept rather than thrown away.
+    func resetAfterCorruption() {
+        allowsRulesPersistence = true
+        allowsEventsPersistence = true
+        recoveryMessages = []
+        saveRules()
+        saveEvents()
     }
 
     @discardableResult
@@ -184,6 +242,10 @@ final class AutoStopRulesStore: ObservableObject {
         validationError = nil
         rules[index] = normalized
         handledOccurrences = handledOccurrences.filter { $0.ruleID != rule.id }
+        reportedFailures = reportedFailures.filter { $0.ruleID != rule.id }
+        // Editing or disabling a rule must retire its live prompts too, exactly as
+        // `remove(_:)` does; otherwise a disabled rule's alert stays actionable.
+        pendingPrompts.removeAll { $0.rule.id == rule.id }
         return true
     }
 
@@ -204,12 +266,14 @@ final class AutoStopRulesStore: ObservableObject {
         let removedIDs = Set(offsets.compactMap { rules.indices.contains($0) ? rules[$0].id : nil })
         rules.remove(atOffsets: offsets)
         handledOccurrences = handledOccurrences.filter { !removedIDs.contains($0.ruleID) }
+        reportedFailures = reportedFailures.filter { !removedIDs.contains($0.ruleID) }
         pendingPrompts.removeAll { removedIDs.contains($0.rule.id) }
     }
 
     func remove(_ rule: AutoStopRule) {
         rules.removeAll { $0.id == rule.id }
         handledOccurrences = handledOccurrences.filter { $0.ruleID != rule.id }
+        reportedFailures = reportedFailures.filter { $0.ruleID != rule.id }
         pendingPrompts.removeAll { $0.rule.id == rule.id }
     }
 
@@ -258,9 +322,20 @@ final class AutoStopRulesStore: ObservableObject {
         }
     }
 
-    func stopCurrentPrompt() async {
-        guard let prompt = currentPrompt else { return }
-        pendingPrompts.removeFirst()
+    /// Synchronously removes `prompt` from the queue and hands it back, or returns
+    /// nil if it is already gone.
+    ///
+    /// Alert buttons must claim before doing any async work. SwiftUI writes
+    /// `isPresented = false` as soon as a button is tapped, and that write-back runs
+    /// before any `Task { }` the button enqueued — so an action that re-resolved the
+    /// target afterwards would act on whatever prompt had become the queue head.
+    func claimPrompt(_ prompt: AutoStopPrompt) -> AutoStopPrompt? {
+        guard let index = pendingPrompts.firstIndex(where: { $0.id == prompt.id }) else { return nil }
+        return pendingPrompts.remove(at: index)
+    }
+
+    /// Completes a stop for a prompt already claimed via `claimPrompt`.
+    func finishStop(_ prompt: AutoStopPrompt) async {
         let result = await actionHandler?(prompt.process) ?? .rejected
         record(
             prompt,
@@ -269,10 +344,22 @@ final class AutoStopRulesStore: ObservableObject {
         )
     }
 
+    /// Dismisses one specific prompt. Idempotent: dismissing a prompt that a button
+    /// already claimed is a no-op, so SwiftUI's automatic write-back cannot consume
+    /// a second, never-displayed prompt.
+    func dismissPrompt(_ prompt: AutoStopPrompt) {
+        guard let claimed = claimPrompt(prompt) else { return }
+        record(claimed, outcome: .dismissed, detail: "Dismissed; this process occurrence will not prompt again.")
+    }
+
+    func stopCurrentPrompt() async {
+        guard let prompt = currentPrompt, let claimed = claimPrompt(prompt) else { return }
+        await finishStop(claimed)
+    }
+
     func dismissCurrentPrompt() {
         guard let prompt = currentPrompt else { return }
-        pendingPrompts.removeFirst()
-        record(prompt, outcome: .dismissed, detail: "Dismissed; this process occurrence will not prompt again.")
+        dismissPrompt(prompt)
     }
 
     func clearEvents() {
@@ -301,11 +388,17 @@ final class AutoStopRulesStore: ObservableObject {
         pruneEndedOccurrences(runningProcesses)
     }
 
+    /// A rule captured before an `await` may have been deleted or disabled while the
+    /// action was in flight; `rules` is the only authority once we resume.
+    private func isStillActive(_ rule: AutoStopRule) -> Bool {
+        rules.contains { $0.id == rule.id && $0.isEnabled }
+    }
+
     private func evaluate(_ processes: [AppProcess]) async {
         let activeRules = rules.filter(\.isEnabled)
         for process in processes {
             guard let runtime = process.runtimeSeconds else { continue }
-            for rule in activeRules where matches(rule, process: process) {
+            for rule in activeRules where matches(rule, process: process) && isStillActive(rule) {
                 let occurrence = AutoStopOccurrence(ruleID: rule.id, processIdentity: process.identity)
                 guard runtime >= TimeInterval(rule.runtimeMinutes * 60),
                       !handledOccurrences.contains(occurrence) else {
@@ -319,11 +412,27 @@ final class AutoStopRulesStore: ObservableObject {
                     pendingPrompts.append(prompt)
                 case .kill:
                     let result = await actionHandler?(process) ?? .rejected
-                    record(
-                        prompt,
-                        outcome: result.succeeded ? .stopped : .failed,
-                        detail: result.succeeded ? "Stopped automatically." : "Automatic stop did not complete."
-                    )
+                    // The handler suspends, so the rule may have been deleted or
+                    // disabled while it ran. Drop the outcome rather than acting
+                    // under a rule the user has already retired.
+                    guard isStillActive(rule) else {
+                        handledOccurrences.remove(occurrence)
+                        continue
+                    }
+                    if result.succeeded {
+                        reportedFailures.remove(occurrence)
+                        record(prompt, outcome: .stopped, detail: "Stopped automatically.")
+                    } else {
+                        // Nothing was signalled — most often because the process
+                        // list could not be read. Un-handle so the next tick
+                        // retries instead of abandoning a still-running process,
+                        // but log the failure only once per occurrence so a
+                        // persistent fault cannot flood the event log.
+                        handledOccurrences.remove(occurrence)
+                        if reportedFailures.insert(occurrence).inserted {
+                            record(prompt, outcome: .failed, detail: "Automatic stop did not complete.")
+                        }
+                    }
                 case .silent:
                     record(prompt, outcome: .logged, detail: "Runtime threshold reached.")
                 }
@@ -335,6 +444,7 @@ final class AutoStopRulesStore: ObservableObject {
     private func pruneEndedOccurrences(_ processes: [AppProcess]) {
         let runningIdentities = Set(processes.map(\.identity))
         let ended = handledOccurrences.filter { !runningIdentities.contains($0.processIdentity) }
+        reportedFailures = reportedFailures.filter { runningIdentities.contains($0.processIdentity) }
         guard !ended.isEmpty else { return }
         handledOccurrences.subtract(ended)
         for prompt in pendingPrompts where ended.contains(prompt.id) {
@@ -405,12 +515,12 @@ final class AutoStopRulesStore: ObservableObject {
     }
 
     private func saveRules() {
-        guard let data = try? JSONEncoder().encode(rules) else { return }
+        guard allowsRulesPersistence, let data = try? JSONEncoder().encode(rules) else { return }
         userDefaults.set(data, forKey: key)
     }
 
     private func saveEvents() {
-        guard let data = try? JSONEncoder().encode(events) else { return }
+        guard allowsEventsPersistence, let data = try? JSONEncoder().encode(events) else { return }
         userDefaults.set(data, forKey: eventsKey)
     }
 
@@ -424,7 +534,11 @@ final class AutoStopRulesStore: ObservableObject {
             return (try JSONDecoder().decode(type, from: data), nil)
         } catch {
             let backupKey = "\(key).corruptBackup"
-            userDefaults.set(data, forKey: backupKey)
+            // Never clobber an earlier backup: a second unreadable read would
+            // otherwise destroy the only surviving copy of the original data.
+            if userDefaults.data(forKey: backupKey) == nil {
+                userDefaults.set(data, forKey: backupKey)
+            }
             return (nil, "Unreadable data was backed up as \(backupKey).")
         }
     }

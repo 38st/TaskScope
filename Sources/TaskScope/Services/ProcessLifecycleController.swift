@@ -34,6 +34,16 @@ enum LifecycleJobState: String, Equatable, Sendable {
     case verified
 }
 
+enum ProcessTerminationOutcome: Equatable, Sendable {
+    /// SIGTERM (and any escalation) was sent to every match.
+    case signalled
+    /// The inventory read succeeded and nothing matched the name.
+    case noMatchingProcesses
+    /// The process list could not be read, so nothing was signalled and nothing
+    /// is known about whether the target is running.
+    case inventoryUnavailable
+}
+
 struct LifecycleJobResult: Equatable, Sendable {
     var label: String
     var state: LifecycleJobState
@@ -73,7 +83,8 @@ struct LifecycleReport: Identifiable, Equatable, Sendable {
 protocol ProcessLifecycleServicing: Sendable {
     func appBundleExists(at path: String) -> Bool
     func settleAfterProcessChange() async
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async
+    @discardableResult
+    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome
     func isProcessNamedRunning(_ name: String) async -> Bool
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
@@ -91,7 +102,7 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
         await ProcessLifecycleController.settleAfterProcessChange()
     }
 
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async {
+    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome {
         await ProcessLifecycleController.terminateProcess(
             named: name,
             forceIfStillRunning: forceIfStillRunning
@@ -136,27 +147,32 @@ enum ProcessLifecycleController {
         await runtime.sleep(300_000_000)
     }
 
+    @discardableResult
     static func terminateProcess(
         named name: String,
         forceIfStillRunning: Bool,
         runtime: ProcessLifecycleRuntime = .live
-    ) async {
+    ) async -> ProcessTerminationOutcome {
+        // A read failure must be reported, not swallowed: callers previously could
+        // not tell "no matching processes" from "could not read the process list",
+        // and reported a stop that never happened as success.
         guard case .success(let initialInventory) =
             await runtime.loadProcessInventory() else {
-            return
+            return .inventoryUnavailable
         }
 
         let targets = matchingProcesses(named: name, in: initialInventory)
+        guard !targets.isEmpty else { return .noMatchingProcesses }
         for process in targets {
             _ = Darwin.kill(process.pid, SIGTERM)
         }
 
-        guard forceIfStillRunning else { return }
+        guard forceIfStillRunning else { return .signalled }
 
         await settleAfterProcessChange(runtime: runtime)
         guard case .success(let refreshedInventory) =
             await runtime.loadProcessInventory() else {
-            return
+            return .signalled
         }
 
         let originalIdentities = Set(targets.map(\.identity))
@@ -164,6 +180,7 @@ enum ProcessLifecycleController {
             where originalIdentities.contains(process.identity) {
             _ = Darwin.kill(process.pid, SIGKILL)
         }
+        return .signalled
     }
 
     static func isProcessNamedRunning(
@@ -198,12 +215,16 @@ enum ProcessLifecycleController {
             let plistExists = runtime.fileExists(job.plistPath)
             switch await inspectLaunchJob(target, runtime: runtime) {
             case .notLoaded:
+                // An absent plist is not a failure when the goal is to *stop* the
+                // job: there is nothing loaded and nothing to unload, so the stop
+                // succeeded. `.missing` is reserved for the bootstrap paths, where
+                // an absent plist genuinely prevents the requested action.
                 results.append(LifecycleJobResult(
                     label: job.label,
-                    state: plistExists ? .alreadyUnloaded : .missing,
+                    state: .alreadyUnloaded,
                     detail: plistExists
                         ? "Already unloaded."
-                        : "Missing plist at \(job.plistPath); job is not loaded."
+                        : "No plist at \(job.plistPath); job is not loaded."
                 ))
                 continue
             case .failed(let detail):
@@ -224,13 +245,13 @@ enum ProcessLifecycleController {
             results.append(LifecycleJobResult(
                 label: job.label,
                 state: result.succeeded && didUnload
-                    ? (plistExists ? .changed : .missing)
+                    ? .changed
                     : .failed,
                 detail: result.succeeded && didUnload
                     ? (
                         plistExists
                             ? "Unloaded and verified."
-                            : "Missing plist at \(job.plistPath); loaded job was still unloaded and verified."
+                            : "No plist at \(job.plistPath); loaded job was still unloaded and verified."
                     )
                     : lifecycleInspectionFailure(
                         after,

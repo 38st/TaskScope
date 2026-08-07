@@ -69,7 +69,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
     }
 
-    func testLoadedAgentWithMissingPlistIsStillUnloadedAndReportedMissing() async {
+    func testLoadedAgentWithMissingPlistIsUnloadedAndCountsAsSuccess() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: [],
             commandResults: [
@@ -85,7 +85,11 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
 
         XCTAssertEqual(batch.jobs.count, 1)
-        XCTAssertEqual(batch.jobs[0].state, .missing)
+        // The job was loaded, was booted out, and the unload was verified. An absent
+        // plist is not a reason to call that stop a failure.
+        XCTAssertEqual(batch.jobs[0].state, .changed)
+        XCTAssertTrue(batch.jobs[0].succeeded)
+        XCTAssertTrue(batch.succeeded)
         XCTAssertTrue(batch.jobs[0].detail.contains("still unloaded and verified"))
         XCTAssertTrue(harness.commands.contains { $0.contains("launchctl bootout") })
         XCTAssertEqual(harness.sleepDurations, [300_000_000])

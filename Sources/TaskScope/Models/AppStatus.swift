@@ -175,6 +175,9 @@ enum ProcessTargetActionState: Equatable {
     case requestedStillRunning
     case stale
     case signalRejected
+    /// The process list could not be read, so this target was never checked and
+    /// never signalled. Distinct from `.stale`, which asserts the target is gone.
+    case unverified
 
     var label: String {
         switch self {
@@ -186,6 +189,8 @@ enum ProcessTargetActionState: Equatable {
             "No longer matched"
         case .signalRejected:
             "Signal rejected"
+        case .unverified:
+            "Could not verify"
         }
     }
 }

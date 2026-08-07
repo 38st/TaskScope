@@ -345,21 +345,15 @@ struct TaskScopePopoverView: View {
         }
         .alert(
             autoStopPromptTitle,
-            isPresented: Binding(
-                get: { autoStopRules.currentPrompt != nil },
-                set: { isPresented in
-                    if !isPresented, autoStopRules.currentPrompt != nil {
-                        autoStopRules.dismissCurrentPrompt()
-                    }
-                }
-            ),
+            isPresented: autoStopPromptBinding(for: autoStopRules.currentPrompt),
             presenting: autoStopRules.currentPrompt
-        ) { _ in
+        ) { prompt in
             Button("Stop Now", role: .destructive) {
-                Task { await autoStopRules.stopCurrentPrompt() }
+                guard let claimed = autoStopRules.claimPrompt(prompt) else { return }
+                Task { await autoStopRules.finishStop(claimed) }
             }
             Button("Dismiss", role: .cancel) {
-                autoStopRules.dismissCurrentPrompt()
+                autoStopRules.dismissPrompt(prompt)
             }
         } message: { prompt in
             Text("\(prompt.process.name) has run for \(prompt.process.elapsedTime), beyond the \(prompt.rule.runtimeMinutes)-minute rule. Stop it now?")
@@ -453,6 +447,13 @@ struct TaskScopePopoverView: View {
                 Menu {
                     if let recoveryMessage = savedSelections.recoveryMessage {
                         Text(recoveryMessage)
+                        if savedSelections.isReadOnlyAfterCorruption {
+                            // Saving stays disabled until this is pressed, so without
+                            // it the user could never save a selection again.
+                            Button("Reset Saved Selections After Backup") {
+                                savedSelections.resetAfterCorruption()
+                            }
+                        }
                         Divider()
                     }
                     if savedSelections.selections.isEmpty {
@@ -932,8 +933,29 @@ struct TaskScopePopoverView: View {
         proxy.scrollTo(target.pid, anchor: .center)
     }
 
+    /// Binds presentation to one specific prompt, captured when the alert was built.
+    ///
+    /// The write-back must dismiss *that* prompt, never `currentPrompt`: a button
+    /// action claims its prompt synchronously and the queue head has already moved
+    /// on by the time SwiftUI sets `isPresented = false`, so resolving the head here
+    /// would consume a second prompt the user never saw. Dismissal is idempotent, so
+    /// for a button tap this is a no-op and for Esc / click-away it does the work.
+    private func autoStopPromptBinding(for prompt: AutoStopPrompt?) -> Binding<Bool> {
+        Binding(
+            get: { prompt != nil },
+            set: { isPresented in
+                if !isPresented, let prompt {
+                    autoStopRules.dismissPrompt(prompt)
+                }
+            }
+        )
+    }
+
     private func selectedProcessesForPreset() -> [AppProcess] {
-        processManager.processes.filter { processManager.selectedPids.contains($0.pid) }
+        // Must come from the full inventory, not the display slice: a row surfaced
+        // by the search filter can rank below the display limit, so filtering
+        // `processManager.processes` would silently drop it from the draft.
+        processManager.selectedProcessesSnapshot()
     }
 
     private func saveQuickAutoStopRule(

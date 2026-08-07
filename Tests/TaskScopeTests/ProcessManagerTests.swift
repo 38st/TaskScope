@@ -446,6 +446,33 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertFalse(manager.fetchExtendedStats)
     }
 
+    /// `beginExtendedMetrics` is async, so a consumer's release can be delivered
+    /// before its own acquire. That must not latch collection on permanently — the
+    /// old `max(0, …)` clamp swallowed the early release, letting the late acquire
+    /// enable collection with no consumer left able to disable it.
+    func testReleaseDeliveredBeforeItsAcquireDoesNotLatchCollectionOn() async {
+        let target = process(pid: 42, name: "Example")
+        let inventory = FakeProcessInventory(results: [.success([target])])
+        let manager = makeManager(inventory: inventory)
+
+        await manager.loadProcessList()
+        XCTAssertFalse(manager.fetchExtendedStats)
+
+        manager.endExtendedMetrics()
+        await manager.beginExtendedMetrics()
+
+        XCTAssertFalse(
+            manager.fetchExtendedStats,
+            "a single consumer that came and went must leave collection disabled"
+        )
+
+        // A later, correctly ordered session must still work in both directions.
+        await manager.beginExtendedMetrics()
+        XCTAssertTrue(manager.fetchExtendedStats)
+        manager.endExtendedMetrics()
+        XCTAssertFalse(manager.fetchExtendedStats)
+    }
+
     private func makeManager(
         inventory: any ProcessInventoryProviding,
         signaler: FakeProcessSignaler = FakeProcessSignaler(),
@@ -512,6 +539,7 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     var agentUnloadResult = LifecycleBatchResult.notNeeded
     var openResult = true
     var waitResult = true
+    var terminationOutcome = ProcessTerminationOutcome.signalled
     private(set) var calls: [String] = []
 
     func appBundleExists(at path: String) -> Bool {
@@ -523,8 +551,9 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
         calls.append("settle")
     }
 
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async {
+    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome {
         calls.append("terminate:\(name)")
+        return terminationOutcome
     }
 
     func isProcessNamedRunning(_ name: String) async -> Bool {

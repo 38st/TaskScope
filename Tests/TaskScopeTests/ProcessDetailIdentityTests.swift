@@ -1,0 +1,119 @@
+import Darwin
+import Foundation
+import XCTest
+@testable import TaskScope
+
+/// Proof for claim P3: `ProcessManager.detail(for:)` re-reads a row by PID only and
+/// never compares the fresh read against the row's captured `ProcessIdentity`.
+///
+/// `detail(for:)` calls the static `ShellCommandRunner.run` directly
+/// (ProcessManager.swift:579) and `ProcessManager.init` exposes no command-runner
+/// seam, so the `ps` output cannot be faked. This test therefore uses a *real*
+/// child process, following the convention already established by
+/// `ProcessSignalIntegrationTests`.
+@MainActor
+final class ProcessDetailIdentityProofTests: XCTestCase {
+    func testDetailRejectsStaleRowWhoseIdentityNoLongerOwnsThePID() async throws {
+        // A real process that genuinely owns the PID under test. It plays the role
+        // of the *new* occupant after PID reuse.
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "while :; do sleep 0.05; done"]
+        try child.run()
+        let recycledPID = child.processIdentifier
+        defer {
+            if child.isRunning {
+                _ = Darwin.kill(recycledPID, SIGKILL)
+                child.waitUntilExit()
+            }
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+
+        // The row the user is still looking at, captured while `recycledPID` belonged
+        // to Xcode. `AppProcess.startTime` is `ps lstart` (ProcessListReader.swift:29,
+        // :78) — the same field, from the same program, in the same format that
+        // `detail(for:)` re-reads (ProcessManager.swift:580, :594). The two are
+        // directly comparable strings.
+        let staleRow = AppProcess(
+            pid: recycledPID,
+            parentPID: 1,
+            cpu: 12.5,
+            memoryMB: 1_024,
+            command: "Xcode",
+            elapsedTime: "01:00",
+            startTime: "Sat Jul 26 11:20:17 2026",
+            netInKB: nil,
+            netOutKB: nil,
+            diskReadBlocks: nil,
+            diskWriteBlocks: nil
+        )
+
+        let manager = ProcessManager(
+            processInventory: EmptyProcessInventory(),
+            processSignaler: InertProcessSignaler(),
+            settleAfterProcessChange: {}
+        )
+        manager.enableNotifications = false
+
+        // Positive control: the very same PID, read with the identity the live
+        // process actually has, must still resolve. This proves the nil below comes
+        // from the identity check and not from `ps` failing or the parser breaking.
+        let liveDetail = await manager.detail(for: matchingRow(for: recycledPID))
+        XCTAssertNotNil(
+            liveDetail,
+            "Precondition: /bin/ps must resolve live PID \(recycledPID) for a matching identity."
+        )
+        XCTAssertEqual(liveDetail?.command, "/bin/sh")
+
+        // The recycled-PID case: `terminate(_:forceKill:)` rejects exactly this
+        // state with `.stale`, and `detail(for:)` now applies the same rule instead
+        // of pairing a stale Name with a fresh Command/User/Started in the sheet.
+        let detail = await manager.detail(for: staleRow)
+        XCTAssertNil(
+            detail,
+            """
+            detail(for:) accepted a row whose identity no longer owns PID \(recycledPID); \
+            ProcessDetailSheet would have shown Name "\(staleRow.name)" beside \
+            Command "\(detail?.command ?? "-")" from a different process.
+            """
+        )
+    }
+
+    /// Builds a row whose identity matches whatever currently owns `pid`, by reading
+    /// the same `ps lstart` field the inventory uses.
+    private func matchingRow(for pid: Int32) async -> AppProcess {
+        let read = await ShellCommandRunner.run("/bin/ps -o lstart= -p \(pid)")
+        // `ps` pads a single-digit day ("Aug  6"). Both `ProcessListReader` and
+        // `detail(for:)` normalise by splitting on whitespace and rejoining with one
+        // space, so the identity must be built the same way to be comparable.
+        let lstart = read.stdout
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .map(String.init)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return AppProcess(
+            pid: pid,
+            parentPID: 1,
+            cpu: 0,
+            memoryMB: 0,
+            command: "sh",
+            elapsedTime: "00:01",
+            startTime: lstart,
+            netInKB: nil,
+            netOutKB: nil,
+            diskReadBlocks: nil,
+            diskWriteBlocks: nil
+        )
+    }
+}
+
+private struct EmptyProcessInventory: ProcessInventoryProviding {
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        .success([])
+    }
+}
+
+private struct InertProcessSignaler: ProcessSignaling {
+    func send(_ signal: Int32, to pid: Int32) -> Bool { false }
+    func isAlive(_ pid: Int32) -> Bool { false }
+}

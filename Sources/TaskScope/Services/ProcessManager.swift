@@ -201,6 +201,9 @@ final class ProcessManager: ObservableObject {
         await runAction(kind: .mutation) {
             let currentResult = await processInventory.load(fetchExtendedStats: false)
             guard case .success(let currentProcesses) = currentResult else {
+                if case .failure(let error) = currentResult {
+                    processLoadError = error.localizedDescription
+                }
                 message = "Could not verify selected processes."
                 batchActionReport = ProcessBatchActionReport(
                     title: forceKill ? "Force Stop Results" : "Stop Results",
@@ -208,7 +211,8 @@ final class ProcessManager: ObservableObject {
                         ProcessTargetActionResult(
                             identity: $0,
                             name: $0.command.isEmpty ? "PID \($0.pid)" : URL(fileURLWithPath: $0.command).lastPathComponent,
-                            state: .stale
+                            // Nothing was checked, so we cannot claim these are gone.
+                            state: .unverified
                         )
                     }
                 )
@@ -292,11 +296,22 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    func refreshWatchedStatus(showMessage: Bool = true) async {
+    /// - Parameter rebaselineNotifications: refresh without emitting start/stop
+    ///   notifications, then re-baseline from the freshly computed snapshots. Used
+    ///   when the preset list changes: the old baseline has no entry for a preset
+    ///   that did not exist yet, so an already-running app would otherwise be
+    ///   reported as having just started.
+    func refreshWatchedStatus(
+        showMessage: Bool = true,
+        rebaselineNotifications: Bool = false
+    ) async {
         await runAction(kind: .read(.watchedStatus)) {
             switch await currentSnapshots() {
             case .success(let watched):
-                apply(watched)
+                apply(watched, suppressNotifications: rebaselineNotifications)
+                if rebaselineNotifications {
+                    primeNotificationBaseline(notifiableRunningNames(in: watched))
+                }
                 processLoadError = nil
                 if showMessage {
                     message = watched.aggregateDetail
@@ -426,11 +441,17 @@ final class ProcessManager: ObservableObject {
                     title: "\(preset.displayName) Relaunch Jobs",
                     jobs: agentResult.jobs
                 )
-            await lifecycle.terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
+            let termination = await lifecycle.terminateProcess(
+                named: preset.mainProcessName,
+                forceIfStillRunning: true
+            )
             await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
-            if !agentResult.succeeded {
+            if termination == .inventoryUnavailable {
+                message = "Could not read the process list; \(preset.displayName) was not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if !agentResult.succeeded {
                 message = "Quit \(preset.displayName), but relaunch jobs failed: \(agentResult.failureSummary ?? "unknown failure")."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
@@ -464,14 +485,19 @@ final class ProcessManager: ObservableObject {
                     title: "\(preset.displayName) Relaunch Jobs",
                     jobs: agentResult.jobs
                 )
+            var terminationBlocked = false
             for name in preset.helperProcessNames {
-                await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
+                let outcome = await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
+                terminationBlocked = terminationBlocked || outcome == .inventoryUnavailable
             }
             await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowHelpers = snapshot(for: preset).helpersRunning
-            if !agentResult.succeeded {
+            if terminationBlocked {
+                message = "Could not read the process list; user helpers were not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if !agentResult.succeeded {
                 message = "Helper stop was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
@@ -505,14 +531,19 @@ final class ProcessManager: ObservableObject {
                     title: "\(preset.displayName) Relaunch Jobs",
                     jobs: agentResult.jobs
                 )
+            var terminationBlocked = false
             for name in preset.killableNames {
-                await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
+                let outcome = await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
+                terminationBlocked = terminationBlocked || outcome == .inventoryUnavailable
             }
             await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowSnap = snapshot(for: preset)
-            if !agentResult.succeeded {
+            if terminationBlocked {
+                message = "Could not read the process list; \(preset.displayName) was not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if !agentResult.succeeded {
                 message = "Close was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.hasAny && !nowSnap.hasAny {
@@ -544,10 +575,20 @@ final class ProcessManager: ObservableObject {
         var result: ProcessActionResult = .rejected
         await runAction(kind: .mutation) {
             let verificationResult = await processInventory.load(fetchExtendedStats: false)
-            guard case .success(let currentProcesses) = verificationResult,
-                  currentProcesses.contains(where: { $0.identity == process.identity }) else {
+            // An unreadable process list says nothing about this target. Treating it
+            // as an identity change both lied to the user and wiped the whole
+            // selection by reconciling against an empty inventory.
+            guard case .success(let currentProcesses) = verificationResult else {
+                if case .failure(let error) = verificationResult {
+                    processLoadError = error.localizedDescription
+                }
+                message = "Could not verify \(process.name); nothing was stopped."
+                result = .rejected
+                return
+            }
+            guard currentProcesses.contains(where: { $0.identity == process.identity }) else {
                 message = "\(process.name) is no longer the same running process."
-                reconcileSelection(with: currentProcesses(from: verificationResult))
+                reconcileSelection(with: currentProcesses)
                 result = .stale
                 return
             }
@@ -593,6 +634,12 @@ final class ProcessManager: ObservableObject {
         let user = tokens[2]
         let startTime = tokens[3..<8].joined(separator: " ")
         let command = tokens[8...].joined(separator: " ")
+
+        // The PID resolving is not enough: if the row's process exited and the PID
+        // was recycled, this read belongs to a different process. `startTime` comes
+        // from `ps lstart` on both sides, so it is directly comparable. (`command`
+        // is not: the inventory uses `ps -c` and gets a short name.)
+        guard startTime == process.identity.startTime else { return nil }
 
         return ProcessDetail(
             pid: pid,
@@ -687,8 +734,14 @@ final class ProcessManager: ObservableObject {
     }
 
     func endExtendedMetrics() {
-        extendedMetricsConsumers = max(0, extendedMetricsConsumers - 1)
-        if extendedMetricsConsumers == 0 {
+        // Deliberately not clamped at zero. `beginExtendedMetrics` is async, so a
+        // consumer's release can land before its own acquire; clamping swallowed the
+        // early release and the late acquire then latched collection on with no
+        // consumer left to turn it off — an un-stoppable nettop/ps fork per poll for
+        // the life of the process. Letting the count go negative lets the late
+        // acquire cancel out instead, which fails closed rather than open.
+        extendedMetricsConsumers -= 1
+        if extendedMetricsConsumers <= 0 {
             fetchExtendedStats = false
         }
     }
@@ -731,13 +784,25 @@ final class ProcessManager: ObservableObject {
         selectedPids = Set(selectedIdentities.keys)
     }
 
-    private func apply(_ watched: [WatchedAppSnapshot]) {
+    func notifiableRunningNames(in watched: [WatchedAppSnapshot]) -> Set<String> {
+        Set(watched.filter { $0.preset.notificationsEnabled }.flatMap { $0.runningNames })
+    }
+
+    /// Seams over the notification singleton so the baseline/diff ordering is
+    /// testable; both default to `NotificationService.shared`.
+    var notifyTransitions: (Set<String>) -> Void = {
+        NotificationService.shared.diffAndNotify(currentRunningNames: $0)
+    }
+    var primeNotificationBaseline: (Set<String>) -> Void = {
+        NotificationService.shared.prime(initialRunningNames: $0)
+    }
+
+    private func apply(_ watched: [WatchedAppSnapshot], suppressNotifications: Bool = false) {
         snapshots = watched
         status = watched.aggregateStatus
 
-        if enableNotifications {
-            let running = Set(watched.filter { $0.preset.notificationsEnabled }.flatMap { $0.runningNames })
-            NotificationService.shared.diffAndNotify(currentRunningNames: running)
+        if enableNotifications, !suppressNotifications {
+            notifyTransitions(notifiableRunningNames(in: watched))
         }
     }
 
