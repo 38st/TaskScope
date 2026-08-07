@@ -999,7 +999,10 @@ struct TaskScopePopoverView: View {
         } else {
             watchedApps.add(preset)
             processManager.setMessage("Watching \(preset.displayName).")
-            Task { await processManager.refreshWatchedStatus(showMessage: false) }
+            // No refresh here: the app's `.onChange(of: watchedApps.presets)` handler
+            // is the single owner of preset-change refreshes. A second one raced it
+            // and was either coalesced away or ran first and diffed the new preset's
+            // already-running process against a baseline that never contained it.
         }
 
         quickPresetDraft = nil

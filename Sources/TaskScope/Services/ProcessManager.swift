@@ -296,22 +296,13 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    /// - Parameter rebaselineNotifications: refresh without emitting start/stop
-    ///   notifications, then re-baseline from the freshly computed snapshots. Used
-    ///   when the preset list changes: the old baseline has no entry for a preset
-    ///   that did not exist yet, so an already-running app would otherwise be
-    ///   reported as having just started.
-    func refreshWatchedStatus(
-        showMessage: Bool = true,
-        rebaselineNotifications: Bool = false
-    ) async {
+    /// Callers do not need to say whether this refresh should re-baseline
+    /// notifications; `apply` detects a changed watched-name set on its own.
+    func refreshWatchedStatus(showMessage: Bool = true) async {
         await runAction(kind: .read(.watchedStatus)) {
             switch await currentSnapshots() {
             case .success(let watched):
-                apply(watched, suppressNotifications: rebaselineNotifications)
-                if rebaselineNotifications {
-                    primeNotificationBaseline(notifiableRunningNames(in: watched))
-                }
+                apply(watched)
                 processLoadError = nil
                 if showMessage {
                     message = watched.aggregateDetail
@@ -797,12 +788,30 @@ final class ProcessManager: ObservableObject {
         NotificationService.shared.prime(initialRunningNames: $0)
     }
 
-    private func apply(_ watched: [WatchedAppSnapshot], suppressNotifications: Bool = false) {
+    /// The set of process names the baseline is allowed to be diffed against.
+    /// Changing it — adding or removing a preset, editing its process names, or
+    /// toggling its notification switch — invalidates the baseline.
+    private func notifiableWatchedNames(in watched: [WatchedAppSnapshot]) -> Set<String> {
+        Set(watched.filter { $0.preset.notificationsEnabled }.flatMap { $0.preset.allProcessNames })
+    }
+
+    private func apply(_ watched: [WatchedAppSnapshot]) {
+        let previousWatchedNames = notifiableWatchedNames(in: snapshots)
         snapshots = watched
         status = watched.aggregateStatus
 
-        if enableNotifications, !suppressNotifications {
-            notifyTransitions(notifiableRunningNames(in: watched))
+        guard enableNotifications else { return }
+
+        // Decide here rather than at the call site. A diff is only meaningful when
+        // the watched-name universe is unchanged; if it changed, the baseline
+        // predates these presets and diffing would report an already-running app as
+        // newly started. Self-detecting removes any dependence on callers passing
+        // the right flag, and on the order in which they run.
+        let names = notifiableRunningNames(in: watched)
+        if previousWatchedNames == notifiableWatchedNames(in: watched) {
+            notifyTransitions(names)
+        } else {
+            primeNotificationBaseline(names)
         }
     }
 

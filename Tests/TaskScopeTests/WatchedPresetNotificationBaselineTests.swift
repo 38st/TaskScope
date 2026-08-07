@@ -24,16 +24,18 @@ final class WatchedPresetNotificationBaselineTests: XCTestCase {
         manager.watchedAppsProvider = { [self.preset(named: "Slack")] }
         XCTAssertTrue(manager.snapshots.isEmpty, "precondition: no snapshot for the new preset")
 
-        await manager.refreshWatchedStatus(showMessage: false, rebaselineNotifications: true)
+        // Note: an ordinary refresh, with no flag. The decision is made inside
+        // `apply`, so no caller can get it wrong and no ordering can defeat it.
+        await manager.refreshWatchedStatus(showMessage: false)
 
-        XCTAssertTrue(started.isEmpty, "the re-baseline pass must not emit transitions")
+        XCTAssertTrue(started.isEmpty, "a changed watched-name set must not be diffed")
         XCTAssertEqual(
             primed,
             [["Slack"]],
             "the baseline must come from the refreshed snapshots, which include the running app"
         )
 
-        // A subsequent ordinary refresh with nothing changed must stay silent.
+        // A subsequent refresh with the same watched names must diff normally.
         await manager.refreshWatchedStatus(showMessage: false)
 
         XCTAssertEqual(started, [["Slack"]], "one diff, against a baseline that already had Slack")
@@ -48,11 +50,61 @@ final class WatchedPresetNotificationBaselineTests: XCTestCase {
         var started: [Set<String>] = []
         manager.notifyTransitions = { started.append($0) }
 
-        await manager.refreshWatchedStatus(showMessage: false, rebaselineNotifications: true)
+        await manager.refreshWatchedStatus(showMessage: false)
         inventory.processes = [appProcess(pid: 41, name: "Slack")]
         await manager.refreshWatchedStatus(showMessage: false)
 
         XCTAssertEqual(started, [["Slack"]], "a real start must still reach the notifier")
+    }
+
+    /// Turning a preset's notification switch on changes which names the baseline
+    /// covers, so that refresh must re-baseline rather than diff — otherwise the
+    /// already-running app is announced as newly started.
+    func testEnablingNotificationsForARunningPresetDoesNotAnnounceAStart() async {
+        let manager = makeManager(
+            inventory: StubInventory(processes: [appProcess(pid: 41, name: "Slack")])
+        )
+        var silent = preset(named: "Slack")
+        silent.notificationsEnabled = false
+        manager.watchedAppsProvider = { [silent] }
+        await manager.refreshWatchedStatus(showMessage: false)
+
+        var started: [Set<String>] = []
+        var primed: [Set<String>] = []
+        manager.notifyTransitions = { started.append($0) }
+        manager.primeNotificationBaseline = { primed.append($0) }
+
+        manager.watchedAppsProvider = { [self.preset(named: "Slack")] }
+        await manager.refreshWatchedStatus(showMessage: false)
+
+        XCTAssertTrue(started.isEmpty)
+        XCTAssertEqual(primed, [["Slack"]])
+    }
+
+    /// The quick "watch this process" action used to fire its own refresh with no
+    /// re-baseline, racing the app's preset-change handler. Whichever won, the
+    /// result was wrong. `apply` now decides for itself, so even a bare extra
+    /// refresh arriving first cannot produce a false start.
+    func testAnExtraUnflaggedRefreshCannotProduceAFalseStart() async {
+        let manager = makeManager(
+            inventory: StubInventory(processes: [appProcess(pid: 41, name: "Slack")])
+        )
+        var calls: [String] = []
+        manager.notifyTransitions = { _ in calls.append("diff") }
+        manager.primeNotificationBaseline = { _ in calls.append("prime") }
+
+        manager.watchedAppsProvider = { [self.preset(named: "Slack")] }
+        // Two bare refreshes, as the quick-watch action and the preset-change
+        // handler used to produce between them.
+        await manager.refreshWatchedStatus(showMessage: false)
+        await manager.refreshWatchedStatus(showMessage: false)
+
+        XCTAssertEqual(
+            calls.first,
+            "prime",
+            "the first refresh after the watched-name set changed must re-baseline, never diff"
+        )
+        XCTAssertEqual(calls, ["prime", "diff"])
     }
 
     // MARK: - Helpers
