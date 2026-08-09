@@ -8,6 +8,7 @@ struct ProcessRow: View {
     var isHighlightedCPU: Bool
     var isHighlightedMEM: Bool
     var showsExpandedMetrics: Bool = false
+    var leadingInset: CGFloat = 0
     var stopAction: () -> Void
     var toggleSelection: () -> Void
     var detailAction: () -> Void
@@ -40,6 +41,10 @@ struct ProcessRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(process.name), PID \(process.pid)")
+            .accessibilityValue(accessibilitySummary)
+            .accessibilityHint("Command: \(process.displayCommand)")
 
             Spacer(minLength: 8)
 
@@ -49,24 +54,28 @@ struct ProcessRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 70, alignment: .trailing)
+                    .accessibilityHidden(true)
 
                 Text("\(process.parentPID)")
                     .monospacedDigit()
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 70, alignment: .trailing)
+                    .accessibilityHidden(true)
 
                 Text(metricPair(process.netInKB, process.netOutKB, decimals: 1))
                     .monospacedDigit()
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 96, alignment: .trailing)
+                    .accessibilityHidden(true)
 
                 Text(metricPair(process.diskReadBlocks, process.diskWriteBlocks, decimals: 0))
                     .monospacedDigit()
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(width: 96, alignment: .trailing)
+                    .accessibilityHidden(true)
             }
 
             Text(process.cpu, format: .number.precision(.fractionLength(1)))
@@ -74,12 +83,14 @@ struct ProcessRow: View {
                 .font(.caption)
                 .foregroundStyle(isHighlightedCPU ? .red : .primary)
                 .frame(width: 54, alignment: .trailing)
+                .accessibilityHidden(true)
 
             Text(process.memoryMB, format: .number.precision(.fractionLength(0)))
                 .monospacedDigit()
                 .font(.caption)
                 .foregroundStyle(isHighlightedMEM ? .red : .primary)
                 .frame(width: 64, alignment: .trailing)
+                .accessibilityHidden(true)
 
             Button(role: .destructive) {
                 stopAction()
@@ -92,7 +103,8 @@ struct ProcessRow: View {
             .accessibilityLabel("Stop \(process.name)")
             .frame(width: 28)
         }
-        .padding(.horizontal, 16)
+        .padding(.leading, 16 + leadingInset)
+        .padding(.trailing, 16)
         .padding(.vertical, 7)
         .background {
             if isKeyboardSelected {
@@ -101,7 +113,6 @@ struct ProcessRow: View {
                 Color.orange.opacity(0.08)
             }
         }
-        .accessibilityValue(accessibilitySummary)
     }
 
     private func metricPair(_ first: Double?, _ second: Double?, decimals: Int) -> String {

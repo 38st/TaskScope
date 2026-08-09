@@ -35,6 +35,7 @@ final class SettingsStore: ObservableObject {
     private let userDefaults: UserDefaults
     private let key: String
     private var isNormalizing = false
+    private var allowsPersistence: Bool
 
     init(
         userDefaults: UserDefaults = .standard,
@@ -48,14 +49,19 @@ final class SettingsStore: ObservableObject {
         case .missing:
             decoded = .defaults
             recoveryMessage = nil
+            allowsPersistence = true
         case .loaded(let settings):
             decoded = settings.normalized()
             recoveryMessage = nil
+            allowsPersistence = true
         case .corrupt(let data):
             decoded = .defaults
             let backupKey = "\(key).corruptBackup"
-            userDefaults.set(data, forKey: backupKey)
-            recoveryMessage = "Settings were unreadable. The original data was backed up as \(backupKey)."
+            if userDefaults.data(forKey: backupKey) == nil {
+                userDefaults.set(data, forKey: backupKey)
+            }
+            recoveryMessage = "Settings were unreadable. The first unreadable payload is preserved as \(backupKey), and the current primary remains untouched until reset."
+            allowsPersistence = false
         }
 
         refreshIntervalSeconds = decoded.refreshIntervalSeconds
@@ -75,6 +81,20 @@ final class SettingsStore: ObservableObject {
 
     var selectedSection: TaskScopeSection {
         TaskScopeSection(rawValue: selectedSectionRaw) ?? .processes
+    }
+
+    var isReadOnlyAfterCorruption: Bool {
+        !allowsPersistence
+    }
+
+    /// Explicitly accepts the safe in-memory settings and resumes persistence. Until
+    /// this is called, every property may be used by the running app but the unreadable
+    /// primary bytes remain untouched.
+    func resetAfterCorruption() {
+        guard !allowsPersistence else { return }
+        allowsPersistence = true
+        recoveryMessage = nil
+        normalizeAndSave()
     }
 
     private func normalizeAndSave() {
@@ -110,7 +130,8 @@ final class SettingsStore: ObservableObject {
     }
 
     private func save() {
-        guard !isNormalizing,
+        guard allowsPersistence,
+              !isNormalizing,
               let data = try? JSONEncoder().encode(currentSettings.normalized()) else {
             return
         }

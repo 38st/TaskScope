@@ -15,10 +15,11 @@ esac
 BUILD_CONFIGURATION="${BUILD_CONFIGURATION:-}"
 PRODUCT_NAME="TaskScope"
 APP_NAME="TaskScope"
-BUNDLE_ID="com.local.TaskScope"
 MIN_SYSTEM_VERSION="14.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/script/packaging_common.sh"
+BUNDLE_ID="$(taskscope_resolve_bundle_id)"
 DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
@@ -29,25 +30,6 @@ INFO_PLIST="$APP_CONTENTS/Info.plist"
 APP_ICON="$APP_RESOURCES/AppIcon.icns"
 VERSION_FILE="$ROOT_DIR/VERSION"
 BUILD_NUMBER_FILE="$ROOT_DIR/BUILD_NUMBER"
-
-read_release_value() {
-  local path="$1"
-  local label="$2"
-  local value
-
-  if [[ ! -f "$path" ]]; then
-    echo "Missing $label source: $path" >&2
-    exit 1
-  fi
-
-  value="$(tr -d '[:space:]' < "$path")"
-  if [[ -z "$value" ]]; then
-    echo "$label source is empty: $path" >&2
-    exit 1
-  fi
-
-  printf '%s' "$value"
-}
 
 resolve_code_sign_identity() {
   if [[ -n "${TASKSCOPE_CODE_SIGN_IDENTITY:-}" ]]; then
@@ -67,9 +49,10 @@ resolve_code_sign_identity() {
   fi
 }
 
-APP_VERSION="$(read_release_value "$VERSION_FILE" "version")"
-APP_BUILD_NUMBER="$(read_release_value "$BUILD_NUMBER_FILE" "build number")"
+APP_VERSION="$(taskscope_read_release_value "$VERSION_FILE" "version")"
+APP_BUILD_NUMBER="$(taskscope_read_release_value "$BUILD_NUMBER_FILE" "build number")"
 CODE_SIGN_IDENTITY="$(resolve_code_sign_identity)"
+SIGNING_STYLE="${TASKSCOPE_SIGNING_STYLE:-development}"
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
   echo "Invalid VERSION value: $APP_VERSION" >&2
@@ -97,6 +80,21 @@ case "$BUILD_CONFIGURATION" in
     ;;
   *)
     echo "BUILD_CONFIGURATION must be debug or release." >&2
+    exit 2
+    ;;
+esac
+
+case "$SIGNING_STYLE" in
+  development)
+    ;;
+  distribution)
+    if [[ "$CODE_SIGN_IDENTITY" != "Developer ID Application:"* ]]; then
+      echo "Distribution packaging requires an explicit Developer ID Application identity." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "TASKSCOPE_SIGNING_STYLE must be development or distribution." >&2
     exit 2
     ;;
 esac
@@ -208,35 +206,55 @@ verify_bundle() {
   /usr/bin/codesign --verify --deep --strict "$bundle"
 }
 
-verify_startup_readiness() {
+verify_startup_readiness() (
   local bundle="$1"
   local executable="$bundle/Contents/MacOS/$APP_NAME"
+  local readiness_home
   local verify_pid=""
+  local verify_pid_identity=""
   local attempt
   local registered_bundle_id=""
   local is_ready=0
 
-  "$executable" --automation >/dev/null 2>&1 &
+  readiness_home="$(mktemp -d "${TMPDIR:-/tmp}/taskscope-startup.XXXXXX")"
+
+  CFFIXED_USER_HOME="$readiness_home" \
+    "$executable" --automation --verify-startup >/dev/null 2>&1 &
   verify_pid="$!"
+  verify_pid_identity="$(taskscope_wait_for_process_identity "$verify_pid")" || {
+    wait "$verify_pid" 2>/dev/null || true
+    echo "Bundle verification failed: could not capture startup process identity." >&2
+    return 1
+  }
 
   cleanup_readiness_process() {
-    if [[ -n "$verify_pid" ]] && /bin/kill -0 "$verify_pid" >/dev/null 2>&1; then
-      /bin/kill -TERM "$verify_pid" >/dev/null 2>&1 || true
+    if [[ -n "$verify_pid" ]] \
+      && taskscope_process_matches_identity "$verify_pid" "$verify_pid_identity"; then
+      taskscope_signal_process_if_identity_matches \
+        TERM "$verify_pid" "$verify_pid_identity" "$executable" \
+        >/dev/null 2>&1 || true
       for _ in {1..20}; do
-        if ! /bin/kill -0 "$verify_pid" >/dev/null 2>&1; then
+        if ! taskscope_process_matches_identity "$verify_pid" "$verify_pid_identity"; then
           wait "$verify_pid" 2>/dev/null || true
-          return
+          verify_pid=""
+          break
         fi
         /bin/sleep 0.1
       done
-      /bin/kill -KILL "$verify_pid" >/dev/null 2>&1 || true
-      wait "$verify_pid" 2>/dev/null || true
+      if [[ -n "$verify_pid" ]] \
+        && taskscope_process_matches_identity "$verify_pid" "$verify_pid_identity"; then
+        taskscope_signal_process_if_identity_matches \
+          KILL "$verify_pid" "$verify_pid_identity" "$executable" \
+          >/dev/null 2>&1 || true
+        wait "$verify_pid" 2>/dev/null || true
+      fi
     fi
+    rm -rf "$readiness_home"
   }
   trap cleanup_readiness_process EXIT
 
   for attempt in {1..50}; do
-    if ! /bin/kill -0 "$verify_pid" >/dev/null 2>&1; then
+    if ! taskscope_process_matches_identity "$verify_pid" "$verify_pid_identity"; then
       wait "$verify_pid" 2>/dev/null || true
       echo "Bundle verification failed: packaged app exited during startup." >&2
       return 1
@@ -260,38 +278,10 @@ verify_startup_readiness() {
 
   cleanup_readiness_process
   trap - EXIT
-}
+)
 
 stop_staged_app_instances() {
-  local executable="$APP_BINARY"
-  local pid
-  local command
-  local -a matching_pids=()
-
-  while read -r pid command; do
-    if [[ "$command" == "$executable" || "$command" == "$executable "* ]]; then
-      matching_pids+=("$pid")
-    fi
-  done < <(/bin/ps -axo pid=,command=)
-
-  if [[ "${#matching_pids[@]}" -eq 0 ]]; then
-    return
-  fi
-
-  /bin/kill -TERM "${matching_pids[@]}" >/dev/null 2>&1 || true
-  for _ in {1..20}; do
-    local any_running=0
-    for pid in "${matching_pids[@]}"; do
-      if /bin/kill -0 "$pid" >/dev/null 2>&1; then
-        any_running=1
-        break
-      fi
-    done
-    [[ "$any_running" -eq 0 ]] && return
-    /bin/sleep 0.1
-  done
-
-  /bin/kill -KILL "${matching_pids[@]}" >/dev/null 2>&1 || true
+  taskscope_stop_processes_for_executable "$APP_BINARY"
 }
 
 cd "$ROOT_DIR"
@@ -303,23 +293,62 @@ STAGING_BINARY="$STAGING_MACOS/$APP_NAME"
 STAGING_PLIST="$STAGING_CONTENTS/Info.plist"
 STAGING_ICON="$STAGING_RESOURCES/AppIcon.icns"
 METADATA_BUILD_CONFIGURATION="release"
-METADATA_WORK_DIR="$ROOT_DIR/.build/taskscope-app-intents/$METADATA_BUILD_CONFIGURATION"
-APP_INTENTS_CONST_VALUES="$METADATA_WORK_DIR/TaskScope.swiftconstvalues"
-APP_INTENTS_SOURCE_LIST="$METADATA_WORK_DIR/app-intents-sources.txt"
-APP_INTENTS_CONST_LIST="$METADATA_WORK_DIR/app-intents-const-values.txt"
-APP_INTENTS_PROTOCOLS="$METADATA_WORK_DIR/app-intents-protocols.json"
+METADATA_WORK_DIR=""
+APP_INTENTS_CONST_VALUES=""
+APP_INTENTS_SOURCE_LIST=""
+APP_INTENTS_CONST_LIST=""
+APP_INTENTS_PROTOCOLS=""
+PACKAGING_LOCK="$DIST_DIR/.$APP_NAME.package.lock"
+PACKAGING_LOCK_ACQUIRED=0
+OUTPUT_BACKUP="$DIST_DIR/.$APP_NAME.output-backup.$$"
+VERIFIED_BUNDLE_COPY="${TASKSCOPE_VERIFIED_BUNDLE_COPY:-}"
+VERIFIED_COPY_TEMP=""
+PUBLISH_COMPLETE=0
 
 cleanup_packaging_work() {
+  local exit_code="$?"
+
   if [[ -d "$STAGING_BUNDLE" ]]; then
     rm -rf "$STAGING_BUNDLE"
   fi
+  if [[ -d "$OUTPUT_BACKUP" ]]; then
+    if [[ "$PUBLISH_COMPLETE" -eq 1 ]]; then
+      rm -rf "$OUTPUT_BACKUP"
+    else
+      rm -rf "$APP_BUNDLE"
+      mv "$OUTPUT_BACKUP" "$APP_BUNDLE"
+    fi
+  fi
+  if [[ -n "$METADATA_WORK_DIR" && -d "$METADATA_WORK_DIR" ]]; then
+    rm -rf "$METADATA_WORK_DIR"
+  fi
+  if [[ -n "$VERIFIED_COPY_TEMP" && -d "$VERIFIED_COPY_TEMP" ]]; then
+    rm -rf "$VERIFIED_COPY_TEMP"
+  fi
+  if [[ "$PACKAGING_LOCK_ACQUIRED" -eq 1 ]]; then
+    rm -f "$PACKAGING_LOCK"
+  fi
+
+  return "$exit_code"
 }
 trap cleanup_packaging_work EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p "$DIST_DIR"
+if ! /usr/bin/shlock -f "$PACKAGING_LOCK" -p "$$"; then
+  echo "Another TaskScope packaging process owns $PACKAGING_LOCK." >&2
+  exit 1
+fi
+PACKAGING_LOCK_ACQUIRED=1
+
 rm -rf "$STAGING_BUNDLE"
+rm -rf "$OUTPUT_BACKUP"
+METADATA_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/taskscope-app-intents.XXXXXX")"
+APP_INTENTS_CONST_VALUES="$METADATA_WORK_DIR/TaskScope.swiftconstvalues"
+APP_INTENTS_SOURCE_LIST="$METADATA_WORK_DIR/app-intents-sources.txt"
+APP_INTENTS_CONST_LIST="$METADATA_WORK_DIR/app-intents-const-values.txt"
+APP_INTENTS_PROTOCOLS="$METADATA_WORK_DIR/app-intents-protocols.json"
 mkdir -p "$METADATA_WORK_DIR"
 
 TOOLCHAIN_DIR="$(xcode-select -p)/Toolchains/XcodeDefault.xctoolchain"
@@ -397,11 +426,58 @@ TARGET_TRIPLE="$(uname -m)-apple-macos${MIN_SYSTEM_VERSION}"
   --force \
   --no-app-shortcuts-localization
 
-/usr/bin/codesign --force --deep --timestamp=none --sign "$CODE_SIGN_IDENTITY" "$STAGING_BUNDLE"
+/usr/bin/xattr -cr "$STAGING_BUNDLE"
+if [[ "$SIGNING_STYLE" == "distribution" ]]; then
+  /usr/bin/codesign --force --options runtime --timestamp \
+    --sign "$CODE_SIGN_IDENTITY" "$STAGING_BUNDLE"
+else
+  /usr/bin/codesign --force --timestamp=none \
+    --sign "$CODE_SIGN_IDENTITY" "$STAGING_BUNDLE"
+fi
 verify_bundle "$STAGING_BUNDLE"
 
-rm -rf "$APP_BUNDLE"
-mv "$STAGING_BUNDLE" "$APP_BUNDLE"
+if [[ -d "$APP_BUNDLE" ]]; then
+  mv "$APP_BUNDLE" "$OUTPUT_BACKUP"
+fi
+if ! mv "$STAGING_BUNDLE" "$APP_BUNDLE"; then
+  if [[ -d "$OUTPUT_BACKUP" ]]; then
+    mv "$OUTPUT_BACKUP" "$APP_BUNDLE"
+  fi
+  exit 1
+fi
+PUBLISH_COMPLETE=1
+rm -rf "$OUTPUT_BACKUP"
+
+if [[ -n "$VERIFIED_BUNDLE_COPY" ]]; then
+  case "$VERIFIED_BUNDLE_COPY" in
+    /*/TaskScope.app)
+      ;;
+    *)
+      echo "TASKSCOPE_VERIFIED_BUNDLE_COPY must be an absolute TaskScope.app path." >&2
+      exit 1
+      ;;
+  esac
+  if [[ -e "$VERIFIED_BUNDLE_COPY" ]]; then
+    echo "Refusing to overwrite verified bundle copy: $VERIFIED_BUNDLE_COPY" >&2
+    exit 1
+  fi
+  if [[ ! -d "$(dirname "$VERIFIED_BUNDLE_COPY")" ]]; then
+    echo "Verified bundle copy destination directory does not exist." >&2
+    exit 1
+  fi
+
+  VERIFIED_COPY_TEMP="$VERIFIED_BUNDLE_COPY.copying.$$"
+  [[ ! -e "$VERIFIED_COPY_TEMP" ]] || {
+    echo "Refusing to overwrite verified bundle copy staging path." >&2
+    exit 1
+  }
+  /usr/bin/ditto "$APP_BUNDLE" "$VERIFIED_COPY_TEMP"
+  verify_bundle "$VERIFIED_COPY_TEMP"
+  mv "$VERIFIED_COPY_TEMP" "$VERIFIED_BUNDLE_COPY"
+  VERIFIED_COPY_TEMP=""
+fi
+
+cleanup_packaging_work
 trap - EXIT INT TERM
 
 open_app() {

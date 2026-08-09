@@ -3,37 +3,68 @@ import XCTest
 
 @MainActor
 final class AppCommandCoordinatorTests: XCTestCase {
-    func testURLContractParsesSupportedCommands() throws {
+    func testURLContractOnlyParsesNonDestructiveRefresh() throws {
         XCTAssertEqual(
             try TaskScopeURLParser.command(from: XCTUnwrap(URL(string: "taskscope://refresh"))).get(),
             .refresh
         )
-        XCTAssertEqual(
-            try TaskScopeURLParser.command(from: XCTUnwrap(URL(string: "taskscope://open/GlobalProtect"))).get(),
-            .openPreset("GlobalProtect")
-        )
-        XCTAssertEqual(
-            try TaskScopeURLParser.command(from: XCTUnwrap(URL(string: "taskscope://stop/My%20App"))).get(),
-            .stopPreset("My App")
-        )
-        XCTAssertEqual(
-            try TaskScopeURLParser.command(from: XCTUnwrap(URL(string: "taskscope://quit"))).get(),
-            .quitApplication
-        )
+        for action in ["open", "stop", "quit"] {
+            let url = try XCTUnwrap(URL(string: "taskscope://\(action)/GlobalProtect"))
+            XCTAssertEqual(
+                TaskScopeURLParser.command(from: url),
+                .failure(.unsupportedAction(action))
+            )
+        }
     }
 
-    func testURLContractRejectsMissingTargetsAndUnsupportedRoutes() throws {
-        let missing = try XCTUnwrap(URL(string: "taskscope://open"))
-        XCTAssertEqual(
-            TaskScopeURLParser.command(from: missing),
-            .failure(.missingTarget("open"))
-        )
-
+    func testURLContractRejectsUnsupportedRoutes() throws {
         let unsupported = try XCTUnwrap(URL(string: "taskscope://destroy/everything"))
         XCTAssertEqual(
             TaskScopeURLParser.command(from: unsupported),
             .failure(.unsupportedAction("destroy"))
         )
+    }
+
+    func testRefreshURLRejectsCredentialsPortPathQueryAndFragment() throws {
+        let invalidURLs = [
+            "taskscope://user@refresh",
+            "taskscope://refresh:1234",
+            "taskscope://refresh/path",
+            "taskscope://refresh?source=test",
+            "taskscope://refresh?",
+            "taskscope://refresh#section",
+            "taskscope://refresh#"
+        ]
+
+        for value in invalidURLs {
+            let url = try XCTUnwrap(URL(string: value))
+            XCTAssertEqual(
+                TaskScopeURLParser.command(from: url),
+                .failure(.invalidRefreshURL),
+                value
+            )
+        }
+
+        XCTAssertEqual(
+            try TaskScopeURLParser.command(
+                from: XCTUnwrap(URL(string: "taskscope://refresh/"))
+            ).get(),
+            .refresh
+        )
+        XCTAssertEqual(
+            TaskScopeURLParser.command(
+                from: try XCTUnwrap(URL(string: "taskscope://Refresh"))
+            ),
+            .failure(.unsupportedAction("Refresh"))
+        )
+    }
+
+    func testLoggingSubsystemUsesConfiguredBundleIdentifier() {
+        XCTAssertEqual(
+            TaskScopeLogging.subsystem(bundleIdentifier: "com.example.TaskScope"),
+            "com.example.TaskScope"
+        )
+        XCTAssertEqual(TaskScopeLogging.subsystem(bundleIdentifier: nil), "TaskScope")
     }
 
     func testColdLaunchCommandIsDeliveredExactlyOnceAfterInstall() async {
@@ -51,27 +82,46 @@ final class AppCommandCoordinatorTests: XCTestCase {
         XCTAssertEqual(result, TaskScopeCommandResult(status: .completed, message: "done"))
     }
 
-    func testCoordinatorReturnsMeaningfulMissingPresetAndQuitResults() async {
+    func testCoordinatorReturnsMeaningfulMissingPresetResult() async {
         let manager = ProcessManager(
             processInventory: EmptyInventory(),
             processSignaler: NoopSignaler(),
             lifecycle: NoopLifecycle(),
             settleAfterProcessChange: {}
         )
-        var didQuit = false
         let coordinator = AppCommandCoordinator(
             processManager: manager,
-            presets: { [] },
-            terminateApplication: { didQuit = true }
+            presets: { [] }
         )
 
         let missing = await coordinator.perform(.openPreset("Missing"))
-        let quit = await coordinator.perform(.quitApplication)
 
         XCTAssertEqual(missing.status, .rejected)
         XCTAssertTrue(missing.message.contains("Missing"))
-        XCTAssertEqual(quit.status, .completed)
-        XCTAssertTrue(didQuit)
+    }
+
+    func testStartupVerificationRejectsAllExplicitCommands() async {
+        let manager = ProcessManager(
+            processInventory: EmptyInventory(),
+            processSignaler: NoopSignaler(),
+            lifecycle: NoopLifecycle(),
+            settleAfterProcessChange: {}
+        )
+        let coordinator = AppCommandCoordinator(
+            processManager: manager,
+            presets: { [.globalProtect] },
+            allowsCommands: { false }
+        )
+
+        for command in [
+            TaskScopeCommand.refresh,
+            .openPreset("GlobalProtect"),
+            .stopPreset("GlobalProtect")
+        ] {
+            let result = await coordinator.perform(command)
+            XCTAssertEqual(result.status, .rejected)
+            XCTAssertTrue(result.message.contains("startup verification"))
+        }
     }
 
     func testURLHandlerNotifiesLaunchPolicyBeforeDispatchingCommand() async throws {

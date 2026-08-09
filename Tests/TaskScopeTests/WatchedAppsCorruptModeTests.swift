@@ -90,6 +90,7 @@ final class P10CorruptModeSilentDiscardTests: XCTestCase {
             store.isReadOnlyAfterCorruption,
             "export must be able to tell that the in-memory list is a fallback, not the user's presets"
         )
+        XCTAssertFalse(store.canExportPresets)
         XCTAssertTrue(store.presets.isEmpty)
         XCTAssertNotNil(defaults.data(forKey: "\(key).corruptBackup"))
     }

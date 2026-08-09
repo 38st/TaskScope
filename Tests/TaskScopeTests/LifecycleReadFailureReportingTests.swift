@@ -133,7 +133,12 @@ final class P8SilentStopReportsSuccessTests: XCTestCase {
             parentPID: 1,
             cpu: 0,
             memoryMB: 0,
-            command: "/Applications/\(name)",
+            command: name == "Example"
+                ? "/Applications/Example.app/Contents/MacOS/Example"
+                : "/Applications/Example.app/Contents/MacOS/\(name)",
+            executablePath: name == "Example"
+                ? "/Applications/Example.app/Contents/MacOS/Example"
+                : "/Applications/Example.app/Contents/MacOS/\(name)",
             elapsedTime: "00:10",
             startTime: "Sat Jul 26 11:20:17 2026",
             netInKB: nil,

@@ -5,6 +5,67 @@ import XCTest
 
 @MainActor
 final class SwiftUIHarnessTests: XCTestCase {
+    func testQuickPresetPrefersTrustedExecutablePathOverReportedCommand() {
+        var process = process(pid: 70, parentPID: 1, name: "Example")
+        process.command = "/Applications/Forged.app/Contents/MacOS/Forged"
+        process.executablePath = "/Applications/Real.app/Contents/MacOS/Real"
+
+        XCTAssertEqual(
+            QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Example"),
+            "/Applications/Real.app"
+        )
+        process.executablePath = nil
+        XCTAssertEqual(
+            QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Example"),
+            "/Applications/Forged.app"
+        )
+    }
+    func testProcessRowScopesAccessibilitySummaryAndPreservesActions() throws {
+        let target = process(
+            pid: 70,
+            parentPID: 1,
+            name: "Accessible",
+            cpu: 42.5,
+            memoryMB: 2_048
+        )
+        let row = ProcessRow(
+            process: target,
+            isCurrentProcess: false,
+            isSelected: false,
+            isKeyboardSelected: false,
+            isHighlightedCPU: true,
+            isHighlightedMEM: true,
+            showsExpandedMetrics: true,
+            stopAction: {},
+            toggleSelection: {},
+            detailAction: {},
+            forceStopAction: {},
+            copyCommandAction: {}
+        )
+        let inspected = try row.inspect()
+        let stack = try inspected.find(ViewType.HStack.self)
+
+        XCTAssertThrowsError(
+            try stack.accessibilityValue(),
+            "The row container must not propagate its summary to every child element"
+        )
+
+        let identity = try stack.find(ViewType.VStack.self)
+        XCTAssertEqual(try identity.accessibilityLabel().string(), "Accessible, PID 70")
+        XCTAssertEqual(
+            try identity.accessibilityValue().string(),
+            "CPU 42.5 percent, memory 2,048 megabytes, high CPU, high memory"
+        )
+        XCTAssertEqual(
+            try identity.accessibilityHint().string(),
+            "Command: /Applications/Accessible.app/Contents/MacOS/Accessible"
+        )
+
+        let buttons = stack.findAll(ViewType.Button.self)
+        XCTAssertEqual(try buttons[0].accessibilityLabel().string(), "Add Accessible to selection")
+        XCTAssertEqual(try buttons[1].accessibilityLabel().string(), "Stop Accessible")
+    }
+
     func testFilteredProcessViewRendersAndSelectsOnlyMatchingRow() async throws {
         let needle = process(pid: 71, parentPID: 1, name: "Needle", cpu: 42)
         let hidden = process(pid: 72, parentPID: 1, name: "Hidden", cpu: 3)
@@ -79,6 +140,37 @@ final class SwiftUIHarnessTests: XCTestCase {
         try presented.find(button: "Cancel").tap()
         XCTAssertFalse(confirmation.isBatchPresented)
         XCTAssertTrue(confirmation.batchTargets.isEmpty)
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+    }
+
+    func testPresetCardDestructiveActionRequiresVisibleConfirmation() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { fixture.stores.watchedApps.presets }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        let confirmation = ProcessConfirmationState()
+        let view = makePopover(fixture: fixture, confirmationState: confirmation)
+        let card = try view.inspect().find(PresetCard.self)
+
+        try card.find(button: "Quit All Killable").tap()
+
+        XCTAssertEqual(confirmation.pendingPresetAction?.action, .quitAll)
+        XCTAssertEqual(
+            confirmation.pendingPresetAction?.preset.id,
+            WatchedAppPreset.globalProtectID
+        )
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+        let presented = try view.inspect()
+        XCTAssertNoThrow(try presented.find(text: "Quit All Killable"))
+        XCTAssertNoThrow(
+            try presented.find(
+                text: "TaskScope will stop the currently running matches for: GlobalProtect, PanGPA."
+            )
+        )
+
+        try presented.find(button: "Cancel").tap()
+        XCTAssertNil(confirmation.pendingPresetAction)
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
     }
 
@@ -161,7 +253,8 @@ final class SwiftUIHarnessTests: XCTestCase {
         var rows = try view.inspect().findAll(ProcessRow.self)
         XCTAssertEqual(try rows.map { try $0.actualView().process.pid }, [parent.pid])
 
-        let disclosureButton = try view.inspect().findAll(ViewType.Button.self)[0]
+        // The disclosure overlays the row's selection and Stop buttons.
+        let disclosureButton = try view.inspect().findAll(ViewType.Button.self)[2]
         try disclosureButton.tap()
         XCTAssertEqual(disclosure.expandedPIDs, [parent.pid])
 
@@ -171,7 +264,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             [parent.pid, child.pid]
         )
 
-        try view.inspect().findAll(ViewType.Button.self)[0].tap()
+        try view.inspect().findAll(ViewType.Button.self)[2].tap()
         XCTAssertTrue(disclosure.expandedPIDs.isEmpty)
         XCTAssertEqual(try view.inspect().findAll(ProcessRow.self).count, 1)
     }
@@ -203,6 +296,9 @@ final class SwiftUIHarnessTests: XCTestCase {
             "Add",
             "Export",
             "Import",
+            "Built-in",
+            "Built-in lifecycle: 1 protected system daemon",
+            SettingsView.builtInDaemonGuidance,
             "Global Hotkey"
         ] {
             XCTAssertNoThrow(
@@ -210,6 +306,40 @@ final class SwiftUIHarnessTests: XCTestCase {
                 "Missing Settings UI content: \(expectedText)"
             )
         }
+        XCTAssertThrowsError(
+            try inspected.find(button: "Edit"),
+            "The built-in GlobalProtect identity must not expose an editor."
+        )
+    }
+
+    func testSettingsRecoveryUIRequiresExplicitReset() throws {
+        let suiteName = "TaskScope.SettingsRecoveryUI.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let corrupt = Data([0xFF, 0x04])
+        defaults.set(corrupt, forKey: "settings")
+
+        let settings = SettingsStore(userDefaults: defaults, key: "settings")
+        let view = SettingsView(
+            settings: settings,
+            watchedApps: WatchedAppsStore(userDefaults: defaults, key: "presets"),
+            autoStopRules: AutoStopRulesStore(
+                userDefaults: defaults,
+                key: "rules",
+                eventsKey: "events",
+                inventory: UIInventory(processes: [])
+            )
+        )
+        let inspected = try view.inspect()
+
+        XCTAssertTrue(settings.isReadOnlyAfterCorruption)
+        XCTAssertNoThrow(try inspected.find(text: "Recovered Settings"))
+        try inspected.find(button: "Reset Settings After Backup").tap()
+
+        XCTAssertFalse(settings.isReadOnlyAfterCorruption)
+        XCTAssertNil(settings.recoveryMessage)
+        XCTAssertNotEqual(defaults.data(forKey: "settings"), corrupt)
     }
 
     private func process(
@@ -225,6 +355,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             cpu: cpu,
             memoryMB: memoryMB,
             command: "/Applications/\(name).app/Contents/MacOS/\(name)",
+            executablePath: "/Applications/\(name).app/Contents/MacOS/\(name)",
             elapsedTime: "00:10",
             startTime: "Sun Jul 26 12:00:00 2026",
             netInKB: nil,

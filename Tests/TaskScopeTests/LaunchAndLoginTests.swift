@@ -38,6 +38,21 @@ final class LaunchContextTests: XCTestCase {
         )
     }
 
+    func testStartupVerificationIsIsolatedFromRuntimeAndCommands() {
+        let context = TaskScopeLaunchContext.detect(
+            TaskScopeLaunchSignal(
+                arguments: ["TaskScope", "--verify-startup"],
+                launchedAsLoginItem: false,
+                receivedOpenURL: false
+            )
+        )
+
+        XCTAssertEqual(context, .startupVerification)
+        XCTAssertTrue(context.suppressesAutomaticWindowPresentation)
+        XCTAssertFalse(context.allowsExplicitCommands)
+        XCTAssertFalse(context.performsRuntimeBootstrap)
+    }
+
     func testColdURLLaunchIsBackgroundButStillAcceptsItsExplicitCommand() {
         let context = TaskScopeLaunchContext.detect(
             TaskScopeLaunchSignal(
@@ -146,6 +161,13 @@ final class LaunchContextTests: XCTestCase {
                 phase: .running
             ),
             .loginItem
+        )
+        XCTAssertEqual(
+            TaskScopeLaunchContext.receivingURL(
+                current: .startupVerification,
+                phase: .starting
+            ),
+            .startupVerification
         )
     }
 }

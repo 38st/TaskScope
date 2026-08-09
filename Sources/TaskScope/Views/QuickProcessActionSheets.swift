@@ -190,12 +190,13 @@ struct QuickWatchedPresetSheet: View {
         return names
     }
 
-    private static func inferredAppPath(for process: AppProcess?, fallbackName: String) -> String {
+    static func inferredAppPath(for process: AppProcess?, fallbackName: String) -> String {
         guard let process else { return "/Applications/\(fallbackName).app" }
 
-        let command = process.command.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let range = command.range(of: ".app", options: [.caseInsensitive]) {
-            return String(command[..<range.upperBound])
+        let executablePath = process.executablePath?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if let range = executablePath.range(of: ".app", options: [.caseInsensitive]) {
+            return String(executablePath[..<range.upperBound])
         }
 
         return "/Applications/\(process.name).app"

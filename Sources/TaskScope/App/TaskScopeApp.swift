@@ -13,8 +13,12 @@ enum TaskScopeLaunchContext: Equatable {
     case loginItem
     case automation
     case urlAutomation
+    case startupVerification
 
     static func detect(_ signal: TaskScopeLaunchSignal) -> TaskScopeLaunchContext {
+        if signal.arguments.contains("--verify-startup") {
+            return .startupVerification
+        }
         if signal.launchedAsLoginItem {
             return .loginItem
         }
@@ -47,7 +51,8 @@ enum TaskScopeLaunchContext: Equatable {
         current: TaskScopeLaunchContext,
         phase: TaskScopeLaunchPhase
     ) -> TaskScopeLaunchContext {
-        phase == .starting ? .urlAutomation : current
+        guard current != .startupVerification else { return current }
+        return phase == .starting ? .urlAutomation : current
     }
 
     var suppressesAutomaticWindowPresentation: Bool {
@@ -55,7 +60,11 @@ enum TaskScopeLaunchContext: Equatable {
     }
 
     var allowsExplicitCommands: Bool {
-        true
+        self != .startupVerification
+    }
+
+    var performsRuntimeBootstrap: Bool {
+        self != .startupVerification
     }
 }
 
@@ -101,7 +110,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationDidFinishLaunching(_ notification: Notification) {
         resolveLaunchContext(finalizeInteractiveLaunch: true)
 
-        HotkeyManager.shared.register()
+        if launchContext != .startupVerification {
+            HotkeyManager.shared.register()
+        }
         if launchContext.suppressesAutomaticWindowPresentation {
             finalizeBackgroundLaunch()
             launchPhase = .running
@@ -287,7 +298,10 @@ struct TaskScopeApp: App {
         let watchedApps = WatchedAppsStore()
         let coordinator = AppCommandCoordinator(
             processManager: processManager,
-            presets: { watchedApps.presets }
+            presets: { watchedApps.presets },
+            allowsCommands: {
+                !ProcessInfo.processInfo.arguments.contains("--verify-startup")
+            }
         )
 
         processManager.watchedAppsProvider = { watchedApps.presets }
@@ -446,7 +460,8 @@ struct TaskScopeApp: App {
     }
 
     private func bootstrapRuntimeIfNeeded() async {
-        guard !didBootstrapRuntime else { return }
+        guard !didBootstrapRuntime,
+              appDelegate.launchContext.performsRuntimeBootstrap else { return }
         didBootstrapRuntime = true
 
         loginItemManager.refresh()

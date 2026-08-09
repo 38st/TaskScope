@@ -5,17 +5,17 @@ import os
 enum TaskScopeURLParser {
     enum ParseError: Error, Equatable, LocalizedError {
         case invalidScheme
-        case missingTarget(String)
         case unsupportedAction(String)
+        case invalidRefreshURL
 
         var errorDescription: String? {
             switch self {
             case .invalidScheme:
                 "The URL must use the taskscope scheme."
-            case .missingTarget(let action):
-                "taskscope://\(action)/ requires a preset name."
             case .unsupportedAction(let action):
                 "Unsupported TaskScope URL action: \(action.isEmpty ? "(empty)" : action)."
+            case .invalidRefreshURL:
+                "The refresh URL must be exactly taskscope://refresh or taskscope://refresh/."
             }
         }
     }
@@ -24,23 +24,19 @@ enum TaskScopeURLParser {
         guard url.scheme?.lowercased() == "taskscope" else {
             return .failure(.invalidScheme)
         }
-        let action = url.host?.lowercased() ?? ""
-        let target = url.pathComponents
-            .filter { $0 != "/" }
-            .first?
-            .removingPercentEncoding?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let action = url.host ?? ""
 
         switch action {
         case "refresh":
-            return .success(.refresh)
-        case "open", "stop":
-            guard let target, !target.isEmpty else {
-                return .failure(.missingTarget(action))
+            guard url.user == nil,
+                  url.password == nil,
+                  url.port == nil,
+                  url.query == nil,
+                  url.fragment == nil,
+                  url.path.isEmpty || url.path == "/" else {
+                return .failure(.invalidRefreshURL)
             }
-            return .success(action == "open" ? .openPreset(target) : .stopPreset(target))
-        case "quit":
-            return .success(.quitApplication)
+            return .success(.refresh)
         default:
             return .failure(.unsupportedAction(action))
         }
@@ -50,7 +46,10 @@ enum TaskScopeURLParser {
 @MainActor
 final class URLSchemeHandler {
     static let shared = URLSchemeHandler()
-    private let logger = Logger(subsystem: "TaskScope", category: "URLScheme")
+    private let logger = Logger(
+        subsystem: TaskScopeLogging.subsystem(),
+        category: "URLScheme"
+    )
     private let submitCommand: @MainActor (TaskScopeCommand) async -> TaskScopeCommandResult
     private var willHandleCommand: (@MainActor (TaskScopeCommand) -> Void)?
 
@@ -98,12 +97,18 @@ final class URLSchemeHandler {
             willHandleCommand?(command)
             let result = await submitCommand(command)
             if !result.succeeded {
-                logger.error("\(result.message, privacy: .public)")
+                logger.error("\(result.message, privacy: .private)")
             }
             return result
         case .failure(let error):
-            logger.error("\(error.localizedDescription, privacy: .public)")
+            logger.error("\(error.localizedDescription, privacy: .private)")
             return nil
         }
+    }
+}
+
+enum TaskScopeLogging {
+    static func subsystem(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> String {
+        bundleIdentifier ?? "TaskScope"
     }
 }

@@ -17,7 +17,32 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
+            ZStack(alignment: .leading) {
+                ProcessRow(
+                    process: node.process,
+                    isCurrentProcess: processManager.isCurrentProcess(node.process),
+                    isSelected: processManager.selectedPids.contains(node.process.pid),
+                    isKeyboardSelected: keyboardSelectedPid == node.process.pid,
+                    isHighlightedCPU: node.process.cpu >= settings.cpuHighlightThreshold,
+                    isHighlightedMEM: node.process.memoryMB >= settings.memHighlightThresholdMB,
+                    showsExpandedMetrics: showsExpandedMetrics,
+                    leadingInset: 20 + CGFloat(depth) * 16,
+                    stopAction: { pendingTermination = node.process },
+                    toggleSelection: { processManager.toggleSelection(node.process.pid) },
+                    detailAction: {
+                        detailData = nil
+                        detailFailed = false
+                        detailProcess = node.process
+                    },
+                    forceStopAction: {
+                        pendingTermination = node.process
+                    },
+                    copyCommandAction: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(node.process.command, forType: .string)
+                    }
+                )
+
                 if !node.children.isEmpty {
                     Button {
                         if isExpanded {
@@ -31,42 +56,23 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.borderless)
+                    .frame(width: 20, height: 28)
+                    .contentShape(Rectangle())
+                    .layoutPriority(1)
                     .accessibilityLabel(
                         isExpanded
                             ? "Collapse children of \(node.process.name)"
                             : "Expand children of \(node.process.name)"
                     )
+                    .padding(.leading, 4 + CGFloat(depth) * 16)
                 } else {
                     Image(systemName: "chevron.right")
                         .font(.caption)
                         .foregroundStyle(.clear)
+                        .frame(width: 20, height: 28)
+                        .padding(.leading, 4 + CGFloat(depth) * 16)
                 }
-
-                ProcessRow(
-                    process: node.process,
-                    isCurrentProcess: processManager.isCurrentProcess(node.process),
-                    isSelected: processManager.selectedPids.contains(node.process.pid),
-                    isKeyboardSelected: keyboardSelectedPid == node.process.pid,
-                    isHighlightedCPU: node.process.cpu >= settings.cpuHighlightThreshold,
-                    isHighlightedMEM: node.process.memoryMB >= settings.memHighlightThresholdMB,
-                    showsExpandedMetrics: showsExpandedMetrics,
-                    stopAction: { pendingTermination = node.process },
-                    toggleSelection: { processManager.toggleSelection(node.process.pid) },
-                    detailAction: {
-                        detailData = nil
-                        detailFailed = false
-                        detailProcess = node.process
-                    },
-                    forceStopAction: {
-                        Task { await processManager.terminate(node.process, forceKill: true) }
-                    },
-                    copyCommandAction: {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(node.process.command, forType: .string)
-                    }
-                )
             }
-            .padding(.leading, CGFloat(depth) * 16)
             .background(
                 keyboardSelectedPid == node.process.pid
                     ? Color.accentColor.opacity(0.12)

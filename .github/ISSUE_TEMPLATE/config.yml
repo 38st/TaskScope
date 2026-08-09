@@ -3,3 +3,6 @@ contact_links:
   - name: Security policy
     url: https://github.com/38st/TaskScope/security/policy
     about: Read the private vulnerability reporting instructions.
+  - name: Support
+    url: https://github.com/38st/TaskScope/blob/main/SUPPORT.md
+    about: Read support options and troubleshooting guidance.

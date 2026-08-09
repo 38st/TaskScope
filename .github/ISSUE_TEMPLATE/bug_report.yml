@@ -11,8 +11,21 @@ body:
   - type: input
     id: version
     attributes:
-      label: TaskScope version
-      placeholder: "1.0.0 (1)"
+      label: TaskScope version and build
+      description: Copy the exact version and build shown in About TaskScope.
+      placeholder: Copy the value shown in About TaskScope
+    validations:
+      required: true
+  - type: dropdown
+    id: install-source
+    attributes:
+      label: Installation source
+      description: How was this copy of TaskScope installed?
+      options:
+        - GitHub release download
+        - Built from source
+        - Local development package
+        - Other or unknown
     validations:
       required: true
   - type: input

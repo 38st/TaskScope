@@ -12,9 +12,8 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
 
     // MARK: - Precondition: does `lifecycleUserLaunchAgentJobs` really override user input?
 
-    /// Empirical check of the claim that the GlobalProtect shape hardcodes its launch-agent
-    /// job and ignores whatever the user stored. Expected to PASS (it documents the override).
-    func testGlobalProtectShapedPresetIgnoresUserClearedLaunchAgentJobs() {
+    /// Only the immutable built-in identity receives privileged lifecycle configuration.
+    func testOnlyCanonicalGlobalProtectPresetReceivesBuiltInLifecycleJobs() {
         let userCleared = WatchedAppPreset(
             displayName: "GlobalProtect",
             mainProcessName: "GlobalProtect",
@@ -25,11 +24,7 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
         )
 
         XCTAssertTrue(userCleared.userLaunchAgentJobs.isEmpty)
-        XCTAssertEqual(
-            userCleared.lifecycleUserLaunchAgentJobs.map(\.plistPath),
-            ["/Library/LaunchAgents/com.paloaltonetworks.gp.pangpa.plist"],
-            "Stored (cleared) jobs are ignored; the hardcoded GlobalProtect job is used instead."
-        )
+        XCTAssertTrue(userCleared.lifecycleUserLaunchAgentJobs.isEmpty)
 
         let userReplaced = WatchedAppPreset(
             displayName: "GlobalProtect",
@@ -41,10 +36,10 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
                 UserLaunchAgentJob(label: "mine.agent", plistPath: "/Users/me/mine.plist")
             ]
         )
+        XCTAssertEqual(userReplaced.lifecycleUserLaunchAgentJobs.map(\.label), ["mine.agent"])
         XCTAssertEqual(
-            userReplaced.lifecycleUserLaunchAgentJobs.map(\.label),
-            ["com.paloaltonetworks.gp.pangpa"],
-            "Even a user-supplied replacement job is discarded for the GlobalProtect shape."
+            WatchedAppPreset.globalProtect.lifecycleUserLaunchAgentJobs.map(\.label),
+            ["com.paloaltonetworks.gp.pangpa"]
         )
 
         // Out of the box the seeded preset is exactly this shape.
@@ -191,7 +186,9 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
             parentPID: 1,
             cpu: 0,
             memoryMB: 0,
-            command: "/Applications/\(name)",
+            command: name == "PanGPS"
+                ? "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS"
+                : "/Applications/GlobalProtect.app/Contents/MacOS/\(name)",
             elapsedTime: "00:10",
             startTime: "Sat Jul 26 11:20:17 2026",
             netInKB: nil,

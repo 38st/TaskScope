@@ -41,6 +41,161 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
     }
 
+    func testTerminationTargetsExcludeTaskScopeAndScopeMainExecutableDirectory() {
+        var spoofedArgv = process(
+            pid: 13,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        spoofedArgv.executablePath = "/tmp/Example"
+        let inventory = [
+            process(pid: 10, command: "/Applications/Example.app/Contents/MacOS/Example"),
+            process(pid: 11, command: "/tmp/Example"),
+            process(pid: 12, command: "/Applications/Example.app/Contents/MacOS/Example"),
+            spoofedArgv
+        ]
+
+        XCTAssertEqual(
+            ProcessLifecycleController.terminationTargets(
+                named: "Example",
+                expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+                excludingPID: 12,
+                in: inventory
+            ).map(\.pid),
+            [10]
+        )
+    }
+
+    func testPresetOpenVerificationRequiresExecutablePathFromLivePSSchema() async {
+        let expectedDirectory = "/Applications/Example.app/Contents/MacOS/"
+        let validRuntime = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [
+                process(pid: 10, command: "/Applications/Example.app/Contents/MacOS/Example")
+            ]
+        ).runtime
+        var spoofedArgv = process(
+            pid: 11,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        spoofedArgv.executablePath = "/tmp/Example"
+        let spoofedArgvRuntime = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [spoofedArgv]
+        ).runtime
+
+        let validResult = await ProcessLifecycleController.waitForProcessNamed(
+            "Example",
+            timeoutSeconds: 0,
+            expectedExecutableDirectory: expectedDirectory,
+            runtime: validRuntime
+        )
+        let spoofedResult = await ProcessLifecycleController.waitForProcessNamed(
+            "Example",
+            timeoutSeconds: 0,
+            expectedExecutableDirectory: expectedDirectory,
+            runtime: spoofedArgvRuntime
+        )
+
+        XCTAssertTrue(validResult)
+        XCTAssertFalse(spoofedResult)
+    }
+
+    func testScopedTerminationRechecksKernelPathAndNeverSignalsForgedArgv() async {
+        var forged = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        // Even if a stale/compromised inventory row appears in-bundle, the
+        // signal-time proc_pidpath result is authoritative.
+        forged.executablePath = "/Applications/Example.app/Contents/MacOS/Example"
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [forged],
+            executablePathsAtSignal: [10: "/tmp/Example"]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .noMatchingProcesses)
+        XCTAssertTrue(harness.signals.isEmpty)
+    }
+
+    func testScopedTerminationFailsClosedWhenKernelPathCannotBeResolved() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [target],
+            executablePathsAtSignal: [:]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: false,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .noMatchingProcesses)
+        XCTAssertTrue(harness.signals.isEmpty)
+    }
+
+    func testScopedTerminationRejectsExecToDifferentBinaryInsideSameBundle() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [target],
+            executablePathsAtSignal: [
+                10: "/Applications/Example.app/Contents/Library/LaunchServices/Other"
+            ]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: false,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .noMatchingProcesses)
+        XCTAssertTrue(harness.signals.isEmpty)
+    }
+
+    func testHelperTerminationTargetsAreRestrictedToConfiguredAppBundle() {
+        let inventory = [
+            process(pid: 10, command: "/Applications/Example.app/Contents/Library/LaunchServices/ExampleHelper"),
+            process(pid: 11, command: "/tmp/ExampleHelper")
+        ]
+
+        XCTAssertEqual(
+            ProcessLifecycleController.terminationTargets(
+                named: "ExampleHelper",
+                expectedExecutableDirectory: "/Applications/Example.app/Contents/",
+                excludingPID: 99,
+                in: inventory
+            ).map(\.pid),
+            [10]
+        )
+    }
+
     func testLaunchctlInspectionDistinguishesNotLoadedFromOperationalFailure() {
         let loaded = ShellCommandResult(
             command: "launchctl print",
@@ -141,9 +296,9 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
 
     func testUnrelatedPortListenerCannotSatisfyDaemonReadiness() async {
         let harness = LifecycleRuntimeHarness(
-            existingPaths: ["/daemons/example.plist"],
+            existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
             commandResults: [
-                result(exitCode: 0),
+                result(stdout: "pid = 42", exitCode: 0),
                 result(stderr: "Administrator approval cancelled", exitCode: 1)
             ],
             inventory: [
@@ -163,13 +318,13 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
 
     func testDaemonReadinessScopesPortProbeToExpectedProcessPID() async {
         let harness = LifecycleRuntimeHarness(
-            existingPaths: ["/daemons/example.plist"],
+            existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
             commandResults: [
-                result(exitCode: 0),
+                result(stdout: "pid = 42", exitCode: 0),
                 result(exitCode: 0)
             ],
             inventory: [
-                process(pid: 42, command: "/Applications/ExampleDaemon"),
+                process(pid: 42, command: "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS"),
                 process(pid: 99, command: "/Applications/UnrelatedListener")
             ]
         )
@@ -183,6 +338,71 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         let lsofCommand = harness.commands.first { $0.contains("/usr/sbin/lsof") }
         XCTAssertTrue(lsofCommand?.contains("-p '42'") == true)
         XCTAssertFalse(lsofCommand?.contains("99") == true)
+    }
+
+    func testDaemonReadinessRejectsSameNameProcessWhosePIDIsNotLaunchdJobPID() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
+            commandResults: [
+                result(stdout: "pid = 42", exitCode: 0),
+                result(stderr: "Administrator approval cancelled", exitCode: 1)
+            ],
+            inventory: [
+                process(pid: 99, command: "/tmp/PanGPS")
+            ]
+        )
+
+        let batch = await ProcessLifecycleController.ensureSystemLaunchDaemons(
+            for: .globalProtect,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .failed)
+        XCTAssertFalse(harness.commands.contains { $0.contains("/usr/sbin/lsof") })
+        XCTAssertTrue(harness.commands.contains { $0.contains("/usr/bin/osascript") })
+    }
+
+    func testCustomDaemonConfigurationNeverReachesPrivilegedCommandPath() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/Library/LaunchDaemons/example.plist"],
+            commandResults: []
+        )
+
+        let batch = await ProcessLifecycleController.ensureSystemLaunchDaemons(
+            for: WatchedAppPreset(
+                displayName: "Example",
+                mainProcessName: "Example",
+                helperProcessNames: [],
+                protectedProcessNames: [],
+                appPath: "/Applications/Example.app",
+                systemLaunchDaemonJobs: [
+                    SystemLaunchDaemonJob(
+                        label: "example.daemon",
+                        plistPath: "/Library/LaunchDaemons/example.plist",
+                        processName: "ExampleDaemon",
+                        servicePort: nil
+                    )
+                ]
+            ),
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch, .notNeeded)
+        XCTAssertTrue(harness.commands.isEmpty)
+    }
+
+    func testLaunchJobPIDRequiresExplicitPositivePIDField() {
+        XCTAssertEqual(
+            ProcessLifecycleController.launchJobPID(
+                from: result(stdout: "state = running\n\tpid = 42", exitCode: 0)
+            ),
+            42
+        )
+        XCTAssertNil(
+            ProcessLifecycleController.launchJobPID(
+                from: result(stdout: "state = running", exitCode: 0)
+            )
+        )
     }
 
     private func presetWithAgent(plistPath: String) -> WatchedAppPreset {
@@ -199,21 +419,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
     }
 
     private func presetWithDaemon() -> WatchedAppPreset {
-        WatchedAppPreset(
-            displayName: "Example",
-            mainProcessName: "Example",
-            helperProcessNames: [],
-            protectedProcessNames: [],
-            appPath: "/Applications/Example.app",
-            systemLaunchDaemonJobs: [
-                SystemLaunchDaemonJob(
-                    label: "example.daemon",
-                    plistPath: "/daemons/example.plist",
-                    processName: "ExampleDaemon",
-                    servicePort: 443
-                )
-            ]
-        )
+        .globalProtect
     }
 
     private func result(
@@ -236,6 +442,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             cpu: 0,
             memoryMB: 0,
             command: command,
+            executablePath: command.hasPrefix("/") ? command : nil,
             elapsedTime: "00:01",
             startTime: "Sat Jul 26 11:20:17 2026",
             netInKB: nil,
@@ -251,17 +458,24 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
     private let existingPaths: Set<String>
     private var commandResults: [ShellCommandResult]
     private let inventory: [AppProcess]
+    private let executablePathsAtSignal: [Int32: String]
     private var recordedCommands: [String] = []
     private var recordedSleepDurations: [UInt64] = []
+    private var recordedSignals: [(Int32, Int32)] = []
 
     init(
         existingPaths: Set<String>,
         commandResults: [ShellCommandResult],
-        inventory: [AppProcess] = []
+        inventory: [AppProcess] = [],
+        executablePathsAtSignal: [Int32: String]? = nil
     ) {
         self.existingPaths = existingPaths
         self.commandResults = commandResults
         self.inventory = inventory
+        self.executablePathsAtSignal = executablePathsAtSignal
+            ?? Dictionary(uniqueKeysWithValues: inventory.compactMap { process in
+                process.executablePath.map { (process.pid, $0) }
+            })
     }
 
     var runtime: ProcessLifecycleRuntime {
@@ -289,6 +503,15 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
             loadProcessInventory: { [self] in
                 .success(inventory)
             },
+            executablePathForPID: { [self] pid in
+                executablePathsAtSignal[pid]
+            },
+            sendSignal: { [self] signal, pid in
+                lock.withLock {
+                    recordedSignals.append((signal, pid))
+                }
+                return true
+            },
             sleep: { [self] duration in
                 lock.withLock {
                     recordedSleepDurations.append(duration)
@@ -303,5 +526,9 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
 
     var sleepDurations: [UInt64] {
         lock.withLock { recordedSleepDurations }
+    }
+
+    var signals: [(Int32, Int32)] {
+        lock.withLock { recordedSignals }
     }
 }

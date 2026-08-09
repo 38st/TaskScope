@@ -33,8 +33,20 @@ enum TaskScopePresentationStyle {
 
 @MainActor
 final class ProcessConfirmationState: ObservableObject {
+    enum PresetAction: String, Equatable {
+        case quitApp = "Quit App"
+        case quitHelpers = "Quit Helpers"
+        case quitAll = "Quit All Killable"
+    }
+
+    struct PendingPresetAction: Equatable {
+        var preset: WatchedAppPreset
+        var action: PresetAction
+    }
+
     @Published var pendingTermination: AppProcess?
     @Published var isBatchPresented = false
+    @Published var pendingPresetAction: PendingPresetAction?
     private(set) var batchTargets: [ProcessIdentity] = []
 
     func requestTermination(_ process: AppProcess) {
@@ -53,6 +65,14 @@ final class ProcessConfirmationState: ObservableObject {
     func clearBatch() {
         isBatchPresented = false
         batchTargets = []
+    }
+
+    func requestPresetAction(_ action: PresetAction, preset: WatchedAppPreset) {
+        pendingPresetAction = PendingPresetAction(preset: preset, action: action)
+    }
+
+    func clearPresetAction() {
+        pendingPresetAction = nil
     }
 
     var batchMessage: String {
@@ -228,6 +248,39 @@ struct TaskScopePopoverView: View {
             }
         } message: {
             Text(confirmationState.batchMessage)
+        }
+        .confirmationDialog(
+            confirmationState.pendingPresetAction?.action.rawValue ?? "Confirm Preset Action",
+            isPresented: Binding(
+                get: { confirmationState.pendingPresetAction != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        confirmationState.clearPresetAction()
+                    }
+                }
+            ),
+            presenting: confirmationState.pendingPresetAction
+        ) { pending in
+            Button(pending.action.rawValue, role: .destructive) {
+                let preset = pending.preset
+                let action = pending.action
+                confirmationState.clearPresetAction()
+                Task {
+                    switch action {
+                    case .quitApp:
+                        _ = await processManager.quitMainApp(preset)
+                    case .quitHelpers:
+                        _ = await processManager.quitHelpers(preset)
+                    case .quitAll:
+                        _ = await processManager.quitAllKillable(preset)
+                    }
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                confirmationState.clearPresetAction()
+            }
+        } message: { pending in
+            Text(presetConfirmationMessage(for: pending))
         }
         .sheet(item: $detailProcess) { process in
             ProcessDetailSheet(
@@ -660,14 +713,14 @@ struct TaskScopePopoverView: View {
                                 )
                             }
                         },
-                        onQuitApp: { Task { await processManager.quitMainApp(snapshot.preset) } },
-                        onQuitHelpers: { Task { await processManager.quitHelpers(snapshot.preset) } },
+                        onQuitApp: {
+                            confirmationState.requestPresetAction(.quitApp, preset: snapshot.preset)
+                        },
+                        onQuitHelpers: {
+                            confirmationState.requestPresetAction(.quitHelpers, preset: snapshot.preset)
+                        },
                         onQuitAll: {
-                            Task {
-                                _ = await AppCommandBus.shared.submit(
-                                    .stopPreset(snapshot.preset.displayName)
-                                )
-                            }
+                            confirmationState.requestPresetAction(.quitAll, preset: snapshot.preset)
                         }
                     )
                 }
@@ -880,7 +933,7 @@ struct TaskScopePopoverView: View {
                 detailProcess = process
             },
             forceStopAction: {
-                Task { await processManager.terminate(process, forceKill: true) }
+                confirmationState.requestTermination(process)
             },
             copyCommandAction: {
                 NSPasteboard.general.clearContents()
@@ -905,7 +958,7 @@ struct TaskScopePopoverView: View {
         Divider()
         Button("Stop") { confirmationState.requestTermination(process) }
         Button("Force Stop") {
-            Task { await processManager.terminate(process, forceKill: true) }
+            confirmationState.requestTermination(process)
         }
         Divider()
         Button("Show Detail") {
@@ -921,6 +974,22 @@ struct TaskScopePopoverView: View {
         Button("Open in Activity Monitor") {
             openInActivityMonitor(pid: process.pid)
         }
+    }
+
+    private func presetConfirmationMessage(
+        for pending: ProcessConfirmationState.PendingPresetAction
+    ) -> String {
+        let names: [String]
+        switch pending.action {
+        case .quitApp:
+            names = [pending.preset.mainProcessName]
+        case .quitHelpers:
+            names = pending.preset.helperProcessNames
+        case .quitAll:
+            names = pending.preset.killableNames
+        }
+        let targets = names.isEmpty ? "no configured processes" : names.joined(separator: ", ")
+        return "TaskScope will stop the currently running matches for: \(targets)."
     }
 
     private func moveKeyboard(by delta: Int, in processes: [AppProcess], proxy: ScrollViewProxy) {

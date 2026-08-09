@@ -5,7 +5,6 @@ enum TaskScopeCommand: Equatable {
     case refresh
     case openPreset(String)
     case stopPreset(String)
-    case quitApplication
 }
 
 struct TaskScopeCommandResult: Equatable {
@@ -27,25 +26,26 @@ struct TaskScopeCommandResult: Equatable {
 final class AppCommandCoordinator {
     private let processManager: ProcessManager
     private let presets: () -> [WatchedAppPreset]
-    private let terminateApplication: @MainActor () -> Void
+    private let allowsCommands: () -> Bool
 
     init(
         processManager: ProcessManager,
         presets: @escaping () -> [WatchedAppPreset],
-        terminateApplication: (@MainActor () -> Void)? = nil
+        allowsCommands: @escaping () -> Bool = { true }
     ) {
         self.processManager = processManager
         self.presets = presets
-        if let terminateApplication {
-            self.terminateApplication = terminateApplication
-        } else {
-            self.terminateApplication = {
-                NSApp.terminate(nil)
-            }
-        }
+        self.allowsCommands = allowsCommands
     }
 
     func perform(_ command: TaskScopeCommand) async -> TaskScopeCommandResult {
+        guard allowsCommands() else {
+            return TaskScopeCommandResult(
+                status: .rejected,
+                message: "Commands are disabled during startup verification."
+            )
+        }
+
         switch command {
         case .refresh:
             await processManager.refreshWatchedStatus(showMessage: true)
@@ -66,9 +66,6 @@ final class AppCommandCoordinator {
             }
             return await processManager.quitAllKillable(preset)
 
-        case .quitApplication:
-            terminateApplication()
-            return TaskScopeCommandResult(status: .completed, message: "TaskScope is quitting.")
         }
     }
 

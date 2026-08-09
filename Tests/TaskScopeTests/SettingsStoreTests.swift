@@ -56,6 +56,41 @@ final class SettingsStoreTests: XCTestCase {
 
         XCTAssertEqual(defaults.data(forKey: "\(key).corruptBackup"), corrupt)
         XCTAssertNotNil(store.recoveryMessage)
+        XCTAssertTrue(store.isReadOnlyAfterCorruption)
         XCTAssertEqual(defaults.data(forKey: key), corrupt)
+    }
+
+    func testFirstCorruptSettingsBackupIsNotOverwrittenByLaterCorruption() {
+        let first = Data([0xFF, 0x01])
+        let second = Data([0xFE, 0x02])
+        defaults.set(first, forKey: key)
+        _ = SettingsStore(userDefaults: defaults, key: key)
+
+        defaults.set(second, forKey: key)
+        _ = SettingsStore(userDefaults: defaults, key: key)
+
+        XCTAssertEqual(defaults.data(forKey: "\(key).corruptBackup"), first)
+        XCTAssertEqual(defaults.data(forKey: key), second)
+    }
+
+    func testCorruptSettingsCannotPersistUntilExplicitReset() {
+        let corrupt = Data([0xFF, 0x03])
+        defaults.set(corrupt, forKey: key)
+        let store = SettingsStore(userDefaults: defaults, key: key)
+
+        store.refreshIntervalSeconds = 22
+        store.enableNotifications = true
+
+        XCTAssertTrue(store.isReadOnlyAfterCorruption)
+        XCTAssertEqual(defaults.data(forKey: key), corrupt)
+
+        store.resetAfterCorruption()
+
+        XCTAssertFalse(store.isReadOnlyAfterCorruption)
+        XCTAssertNil(store.recoveryMessage)
+        XCTAssertNotEqual(defaults.data(forKey: key), corrupt)
+        let relaunched = SettingsStore(userDefaults: defaults, key: key)
+        XCTAssertEqual(relaunched.refreshIntervalSeconds, 22)
+        XCTAssertTrue(relaunched.enableNotifications)
     }
 }

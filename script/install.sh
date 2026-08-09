@@ -3,7 +3,6 @@ set -euo pipefail
 
 OPEN_AFTER_INSTALL=1
 APP_NAME="TaskScope"
-BUNDLE_ID="com.local.TaskScope"
 
 case "${1:-}" in
   --no-open)
@@ -18,11 +17,15 @@ case "${1:-}" in
 esac
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT_DIR/script/packaging_common.sh"
+BUNDLE_ID="$(taskscope_resolve_bundle_id)"
 DEST_DIR="${DEST_DIR:-/Applications}"
 DEST_BUNDLE="$DEST_DIR/$APP_NAME.app"
 STAGED_BUNDLE="$ROOT_DIR/dist/$APP_NAME.app"
 INSTALLING_BUNDLE="$DEST_DIR/.$APP_NAME.installing.$$"
 BACKUP_BUNDLE="$DEST_DIR/.$APP_NAME.backup.$$"
+INSTALL_LOCK="$DEST_DIR/.$APP_NAME.install.lock"
+INSTALL_LOCK_ACQUIRED=0
 INSTALL_STATE="preparing"
 
 cleanup_install() {
@@ -51,6 +54,9 @@ cleanup_install() {
   if [[ "$INSTALL_STATE" == "complete" && -d "$BACKUP_BUNDLE" ]]; then
     rm -rf "$BACKUP_BUNDLE"
   fi
+  if [[ "$INSTALL_LOCK_ACQUIRED" -eq 1 ]]; then
+    rm -f "$INSTALL_LOCK"
+  fi
 
   exit "$exit_code"
 }
@@ -68,38 +74,12 @@ fail_if_requested() {
 
 stop_destination_app() {
   local executable="$DEST_BUNDLE/Contents/MacOS/$APP_NAME"
-  local pid
-  local command
-  local -a matching_pids=()
 
   if [[ ! -x "$executable" ]]; then
     return 0
   fi
 
-  while read -r pid command; do
-    if [[ "$command" == "$executable" || "$command" == "$executable "* ]]; then
-      matching_pids+=("$pid")
-    fi
-  done < <(/bin/ps -axo pid=,command=)
-
-  if [[ "${#matching_pids[@]}" -eq 0 ]]; then
-    return 0
-  fi
-
-  /bin/kill -TERM "${matching_pids[@]}" >/dev/null 2>&1 || true
-  for _ in {1..20}; do
-    local any_running=0
-    for pid in "${matching_pids[@]}"; do
-      if /bin/kill -0 "$pid" >/dev/null 2>&1; then
-        any_running=1
-        break
-      fi
-    done
-    [[ "$any_running" -eq 0 ]] && return
-    /bin/sleep 0.1
-  done
-
-  /bin/kill -KILL "${matching_pids[@]}" >/dev/null 2>&1 || true
+  taskscope_stop_processes_for_executable "$executable"
 }
 
 if [[ ! -d "$DEST_DIR" ]]; then
@@ -112,6 +92,12 @@ if [[ ! -w "$DEST_DIR" ]]; then
   echo "Run with DEST_DIR set to a writable folder, or install manually with admin privileges." >&2
   exit 1
 fi
+
+if ! /usr/bin/shlock -f "$INSTALL_LOCK" -p "$$"; then
+  echo "Another TaskScope installer owns $INSTALL_LOCK." >&2
+  exit 1
+fi
+INSTALL_LOCK_ACQUIRED=1
 
 if [[ "${TASKSCOPE_SKIP_BUILD:-0}" != "1" ]]; then
   "$ROOT_DIR/script/build_and_run.sh" --stage >/dev/null

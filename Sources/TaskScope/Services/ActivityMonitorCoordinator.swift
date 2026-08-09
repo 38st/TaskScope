@@ -376,10 +376,16 @@ struct SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibilityRu
         }
 
         var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else {
+        let byteCount = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard byteCount > 0 else {
             return nil
         }
-        let name = String(cString: buffer).trimmingCharacters(in: .whitespacesAndNewlines)
+        let bytes = buffer
+            .prefix(Int(byteCount))
+            .prefix { $0 != 0 }
+            .map { UInt8(bitPattern: $0) }
+        let name = String(decoding: bytes, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? nil : name
     }
 

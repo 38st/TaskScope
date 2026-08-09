@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum ProcessInventoryError: Error, Equatable, LocalizedError, Sendable {
@@ -25,9 +26,13 @@ struct SystemProcessInventory: ProcessInventoryProviding {
 }
 
 enum ProcessListReader {
+    // `comm` is intentionally a short display/accounting name. It is argv-backed
+    // without `-c`, so it must never be treated as a trustworthy executable path.
+    static let processListCommand = "/bin/ps -acwwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
+    static let identityValidationCommand = "/bin/ps -awwwxo pid=,lstart="
+
     static func currentProcessList(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
-        let command = "/bin/ps -acwwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
-        let result = await ShellCommandRunner.run(command)
+        let result = await ShellCommandRunner.run(processListCommand)
 
         guard result.succeeded else {
             let detail = result.stderr.isEmpty ? "ps exited with status \(result.exitCode)." : result.stderr
@@ -41,6 +46,19 @@ enum ProcessListReader {
         guard result.stdout.isEmpty || !parsed.isEmpty else {
             return .failure(.parseFailed)
         }
+
+        let resolvedPaths = Dictionary(uniqueKeysWithValues: parsed.compactMap { process in
+            executablePath(for: process.pid).map { (process.pid, $0) }
+        })
+        let validation = await ShellCommandRunner.run(identityValidationCommand)
+        let validatedStartTimes = validation.succeeded
+            ? parseStartTimes(validation.stdout)
+            : [:]
+        attachExecutablePaths(
+            to: &parsed,
+            resolvedPaths: resolvedPaths,
+            validatedStartTimes: validatedStartTimes
+        )
 
         if fetchExtendedStats {
             let netStats = await currentNetworkStats()
@@ -109,6 +127,51 @@ enum ProcessListReader {
             diskReadBlocks: nil,
             diskWriteBlocks: nil
         )
+    }
+
+    static func attachExecutablePaths(
+        to processes: inout [AppProcess],
+        resolvedPaths: [Int32: String],
+        validatedStartTimes: [Int32: String]
+    ) {
+        for index in processes.indices {
+            let process = processes[index]
+            guard validatedStartTimes[process.pid] == process.startTime,
+                  let path = resolvedPaths[process.pid],
+                  path.hasPrefix("/") else {
+                processes[index].executablePath = nil
+                continue
+            }
+            processes[index].executablePath = URL(fileURLWithPath: path)
+                .standardizedFileURL.path
+        }
+    }
+
+    static func parseStartTimes(_ output: String) -> [Int32: String] {
+        var values: [Int32: String] = [:]
+        for line in output.split(separator: "\n") {
+            let parts = line.split(
+                separator: " ",
+                maxSplits: 5,
+                omittingEmptySubsequences: true
+            )
+            guard parts.count == 6, let pid = Int32(parts[0]) else { continue }
+            values[pid] = parts[1...5].joined(separator: " ")
+        }
+        return values
+    }
+
+    static func executablePath(for pid: Int32) -> String? {
+        // Swift cannot import the arithmetic C macro
+        // `PROC_PIDPATHINFO_MAXSIZE` (`4 * MAXPATHLEN`) directly.
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN) * 4)
+        let length = buffer.withUnsafeMutableBytes { bytes in
+            proc_pidpath(pid, bytes.baseAddress, UInt32(bytes.count))
+        }
+        guard length > 0 else { return nil }
+        let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
+        guard !bytes.isEmpty else { return nil }
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     private static func currentNetworkStats() async -> [Int32: (Double, Double)]? {

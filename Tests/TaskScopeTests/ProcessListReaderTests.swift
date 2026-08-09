@@ -2,6 +2,47 @@ import XCTest
 @testable import TaskScope
 
 final class ProcessListReaderTests: XCTestCase {
+    func testProductionSchemaKeepsDisplayCommandSeparateFromTrustedExecutablePath() throws {
+        XCTAssertEqual(
+            ProcessListReader.processListCommand,
+            "/bin/ps -acwwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
+        )
+        XCTAssertTrue(ProcessListReader.processListCommand.contains(" -ac"))
+
+        // This is the production macOS schema: `-c` makes `comm` a basename.
+        let liveShapedLine = "42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 Example"[...]
+        var processes = [try XCTUnwrap(ProcessListReader.parseProcessLine(liveShapedLine))]
+
+        XCTAssertEqual(processes[0].command, "Example")
+        XCTAssertNil(processes[0].executablePath)
+
+        ProcessListReader.attachExecutablePaths(
+            to: &processes,
+            resolvedPaths: [42: "/Applications/Example.app/Contents/MacOS/Example"],
+            validatedStartTimes: [42: "Sat Jul 26 11:20:17 2026"]
+        )
+
+        XCTAssertEqual(processes[0].command, "Example")
+        XCTAssertEqual(
+            processes[0].executablePath,
+            "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        XCTAssertEqual(processes[0].displayCommand, "Example")
+    }
+
+    func testExecutablePathEnrichmentFailsClosedWhenPIDStartTimeChanges() throws {
+        let line = "42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 Example"[...]
+        var processes = [try XCTUnwrap(ProcessListReader.parseProcessLine(line))]
+
+        ProcessListReader.attachExecutablePaths(
+            to: &processes,
+            resolvedPaths: [42: "/Applications/Example.app/Contents/MacOS/Example"],
+            validatedStartTimes: [42: "Sat Jul 26 11:20:18 2026"]
+        )
+
+        XCTAssertNil(processes[0].executablePath)
+    }
+
     func testParseProcessLineHandlesCommandsWithSpaces() {
         let process = ProcessListReader.parseProcessLine(
             "123 1 12.5 2048 01:02:03 /Applications/Example App.app/Contents/MacOS/Example App"[...]

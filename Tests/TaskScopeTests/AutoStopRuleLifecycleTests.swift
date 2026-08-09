@@ -102,6 +102,15 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
             return .rejected
         }
 
+        // `start` intentionally evaluates once before sleeping. Synchronize with that
+        // real engine tick so the three explicit evaluations below cannot race it.
+        for _ in 0..<100 where attempts == 0 || store.events.isEmpty {
+            await Task.yield()
+        }
+        XCTAssertEqual(attempts, 1, "precondition: the engine performs its initial evaluation")
+        XCTAssertEqual(store.events.count, 1, "precondition: the first failure is recorded")
+        attempts = 0
+
         await store.evaluateNow()
         await store.evaluateNow()
         await store.evaluateNow()

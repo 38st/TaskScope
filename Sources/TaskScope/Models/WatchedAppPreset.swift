@@ -32,17 +32,17 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
     }
 
     var lifecycleUserLaunchAgentJobs: [UserLaunchAgentJob] {
-        if usesGlobalProtectLifecycle {
+        if hasCanonicalGlobalProtectIdentity {
             return Self.globalProtectUserLaunchAgentJobs
         }
         return userLaunchAgentJobs
     }
 
     var lifecycleSystemLaunchDaemonJobs: [SystemLaunchDaemonJob] {
-        if usesGlobalProtectLifecycle {
+        if hasCanonicalGlobalProtectIdentity {
             return Self.globalProtectSystemLaunchDaemonJobs
         }
-        return systemLaunchDaemonJobs
+        return []
     }
 
     init(
@@ -97,9 +97,15 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
         systemLaunchDaemonJobs: globalProtectSystemLaunchDaemonJobs
     )
 
-    private var usesGlobalProtectLifecycle: Bool {
-        mainProcessName == "GlobalProtect"
+    var hasCanonicalGlobalProtectIdentity: Bool {
+        id == Self.globalProtectID
+            && displayName == "GlobalProtect"
+            && mainProcessName == "GlobalProtect"
+            && helperProcessNames == ["PanGPA"]
+            && protectedProcessNames == ["PanGPS"]
             && appPath == "/Applications/GlobalProtect.app"
+            && userLaunchAgentJobs == Self.globalProtectUserLaunchAgentJobs
+            && systemLaunchDaemonJobs == Self.globalProtectSystemLaunchDaemonJobs
     }
 
     func matchesLookupName(_ name: String) -> Bool {
@@ -110,14 +116,14 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
             || mainProcessName.caseInsensitiveCompare(normalizedName) == .orderedSame
     }
 
-    private static let globalProtectUserLaunchAgentJobs = [
+    static let globalProtectUserLaunchAgentJobs = [
         UserLaunchAgentJob(
             label: "com.paloaltonetworks.gp.pangpa",
             plistPath: "/Library/LaunchAgents/com.paloaltonetworks.gp.pangpa.plist"
         )
     ]
 
-    private static let globalProtectSystemLaunchDaemonJobs = [
+    static let globalProtectSystemLaunchDaemonJobs = [
         SystemLaunchDaemonJob(
             label: "com.paloaltonetworks.gp.pangpsd",
             plistPath: "/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist",

@@ -55,21 +55,7 @@ final class AdminBootstrapShellSyntaxTests: XCTestCase {
     }
 
     private func presetWithDaemon() -> WatchedAppPreset {
-        WatchedAppPreset(
-            displayName: "GlobalProtect",
-            mainProcessName: "GlobalProtect",
-            helperProcessNames: [],
-            protectedProcessNames: ["PanGPS"],
-            appPath: "/Applications/GlobalProtect.app",
-            systemLaunchDaemonJobs: [
-                SystemLaunchDaemonJob(
-                    label: "com.paloaltonetworks.gp.pangpsd",
-                    plistPath: "/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist",
-                    processName: "PanGPS",
-                    servicePort: 4767
-                )
-            ]
-        )
+        .globalProtect
     }
 
     private func result(

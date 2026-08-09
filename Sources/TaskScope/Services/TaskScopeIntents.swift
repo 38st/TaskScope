@@ -40,7 +40,7 @@ struct WatchedPresetCatalog: Sendable {
         let presets: [WatchedAppPreset]
         if let data = userDefaults.data(forKey: key),
            let decoded = try? JSONDecoder().decode([WatchedAppPreset].self, from: data) {
-            presets = decoded
+            presets = WatchedAppsStore.validatedPresets(decoded).presets
         } else if userDefaults.data(forKey: key) == nil {
             presets = [.globalProtect]
         } else {
@@ -85,6 +85,18 @@ struct WatchedPresetEntityQuery: EntityStringQuery {
 
 @available(macOS 13.0, *)
 enum TaskScopeIntentDialog {
+    enum CommandError: LocalizedError {
+        case rejected(String)
+        case failed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .rejected(let message), .failed(let message):
+                message
+            }
+        }
+    }
+
     static func message(
         for result: TaskScopeCommandResult,
         action: String
@@ -96,6 +108,20 @@ enum TaskScopeIntentDialog {
             return "Couldn’t \(action): \(result.message)"
         case .failed:
             return "Failed to \(action): \(result.message)"
+        }
+    }
+
+    static func successMessage(
+        for result: TaskScopeCommandResult,
+        action: String
+    ) throws -> String {
+        switch result.status {
+        case .completed:
+            return result.message
+        case .rejected:
+            throw CommandError.rejected("Couldn’t \(action): \(result.message)")
+        case .failed:
+            throw CommandError.failed("Failed to \(action): \(result.message)")
         }
     }
 }
@@ -112,7 +138,10 @@ struct StopWatchedAppIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await AppCommandBus.shared.submit(.stopPreset(app.displayName))
-        let message = TaskScopeIntentDialog.message(for: result, action: "stop \(app.displayName)")
+        let message = try TaskScopeIntentDialog.successMessage(
+            for: result,
+            action: "stop \(app.displayName)"
+        )
         return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }
@@ -129,7 +158,10 @@ struct OpenWatchedAppIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await AppCommandBus.shared.submit(.openPreset(app.displayName))
-        let message = TaskScopeIntentDialog.message(for: result, action: "open \(app.displayName)")
+        let message = try TaskScopeIntentDialog.successMessage(
+            for: result,
+            action: "open \(app.displayName)"
+        )
         return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }
@@ -143,7 +175,10 @@ struct RefreshTaskScopeIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await AppCommandBus.shared.submit(.refresh)
-        let message = TaskScopeIntentDialog.message(for: result, action: "refresh TaskScope")
+        let message = try TaskScopeIntentDialog.successMessage(
+            for: result,
+            action: "refresh TaskScope"
+        )
         return .result(dialog: IntentDialog(stringLiteral: message))
     }
 }

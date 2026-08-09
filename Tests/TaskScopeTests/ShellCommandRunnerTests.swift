@@ -61,21 +61,28 @@ final class ShellCommandRunnerTests: XCTestCase {
     }
 
     func testCancellationDuringOutputPreservesCapturedStreams() async {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskscope-output-ready-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
         let task = Task {
             await ShellCommandRunner.run(
                 """
-                i=0
-                while [ $i -lt 200 ]; do
-                  /usr/bin/printf 'stdout-line\n'
-                  /usr/bin/printf 'stderr-line\n' >&2
-                  i=$((i + 1))
-                done
+                /usr/bin/printf 'stdout-line\n'
+                /usr/bin/printf 'stderr-line\n' >&2
+                /usr/bin/touch \(ShellCommandRunner.shellQuoted(marker.path))
                 /bin/sleep 5
                 """,
                 timeout: 10
             )
         }
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: marker.path),
+            "The controlled child never reached its cancellation handshake."
+        )
 
         task.cancel()
         let result = await task.value

@@ -9,7 +9,7 @@ final class WatchedAppsStore: ObservableObject {
 
     nonisolated static let defaultPersistenceKey = "TaskScope.watchedPresets.v1"
 
-    @Published var presets: [WatchedAppPreset] {
+    @Published private(set) var presets: [WatchedAppPreset] {
         didSet { persistIfAllowed() }
     }
     @Published private(set) var persistenceIssue: String?
@@ -18,6 +18,7 @@ final class WatchedAppsStore: ObservableObject {
     private let userDefaults: UserDefaults
     private let key: String
     private var allowsPersistence: Bool
+    private var recoveredDecodedPayload: Bool
 
     init(
         userDefaults: UserDefaults = .standard,
@@ -28,6 +29,7 @@ final class WatchedAppsStore: ObservableObject {
         guard let data = userDefaults.data(forKey: key) else {
             presets = [.globalProtect]
             allowsPersistence = true
+            recoveredDecodedPayload = false
             // Assigning in `init` does not fire `didSet`, so the seeded default was
             // never written. Persist it now so the preset the App Intents catalog
             // publishes is backed by stored bytes and keeps one identity.
@@ -36,14 +38,34 @@ final class WatchedAppsStore: ObservableObject {
         }
 
         do {
-            presets = try JSONDecoder().decode([WatchedAppPreset].self, from: data)
-            allowsPersistence = true
+            let decoded = try JSONDecoder().decode([WatchedAppPreset].self, from: data)
+            let validated = Self.validatedPresets(decoded)
+            presets = validated.presets
+            if validated.rejectedCount > 0 {
+                let backupKey = "\(key).rejectedMigrationBackup"
+                Self.preserveFirstBackup(
+                    data,
+                    userDefaults: userDefaults,
+                    backupKey: backupKey
+                )
+                allowsPersistence = false
+                recoveredDecodedPayload = true
+                persistenceIssue = "Rejected \(validated.rejectedCount) unsafe or invalid stored preset\(validated.rejectedCount == 1 ? "" : "s"). The first rejected payload is preserved as \(backupKey); review or export the recovered presets, then reset to commit them."
+            } else {
+                allowsPersistence = true
+                recoveredDecodedPayload = false
+            }
         } catch {
             let backupKey = "\(key).corruptBackup"
-            userDefaults.set(data, forKey: backupKey)
+            Self.preserveFirstBackup(
+                data,
+                userDefaults: userDefaults,
+                backupKey: backupKey
+            )
             presets = []
             allowsPersistence = false
-            persistenceIssue = "Preset data was unreadable and preserved as \(backupKey). Reset only after exporting or reviewing the backup."
+            recoveredDecodedPayload = false
+            persistenceIssue = "Preset data was unreadable. The first unreadable payload is preserved as \(backupKey), and the current primary remains untouched until reset."
         }
     }
 
@@ -54,9 +76,16 @@ final class WatchedAppsStore: ObservableObject {
         !allowsPersistence
     }
 
+    /// Safe recovered presets from a decoded payload may be exported for review even
+    /// though persistence stays locked. A payload that could not be decoded has no
+    /// trustworthy in-memory representation to export.
+    var canExportPresets: Bool {
+        allowsPersistence || recoveredDecodedPayload
+    }
+
     private func rejectIfReadOnly() -> Bool {
         guard !allowsPersistence else { return false }
-        validationError = "Preset data is unreadable; reset presets before making changes."
+        validationError = "Preset data is in recovery mode; reset presets before making changes."
         return true
     }
 
@@ -72,16 +101,25 @@ final class WatchedAppsStore: ObservableObject {
         return true
     }
 
-    func remove(at offsets: IndexSet) {
+    @discardableResult
+    func remove(at offsets: IndexSet) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
         presets.remove(atOffsets: offsets)
+        return true
     }
 
-    func remove(_ preset: WatchedAppPreset) {
+    @discardableResult
+    func remove(_ preset: WatchedAppPreset) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
         presets.removeAll { $0.id == preset.id }
+        return true
     }
 
-    func move(from source: IndexSet, to destination: Int) {
+    @discardableResult
+    func move(from source: IndexSet, to destination: Int) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
         presets.move(fromOffsets: source, toOffset: destination)
+        return true
     }
 
     @discardableResult
@@ -97,17 +135,21 @@ final class WatchedAppsStore: ObservableObject {
         return true
     }
 
-    /// Discards the unreadable payload and resumes writing. Anything the user
-    /// rebuilt during the corrupt session is kept — resetting used to replace it
-    /// with the default preset, destroying the recovery work.
+    /// Explicitly accepts the safe recovered presets and resumes writing. A payload
+    /// that could not be decoded has no recoverable entries, so it resets to the
+    /// built-in default; a decoded payload rejected by newer validation commits only
+    /// the entries that passed current validation.
     func resetAfterCorruption() {
+        guard !allowsPersistence else { return }
+        allowsPersistence = true
+        recoveredDecodedPayload = false
         if presets.isEmpty {
             presets = [.globalProtect]
+        } else {
+            persistIfAllowed()
         }
-        allowsPersistence = true
         persistenceIssue = nil
         validationError = nil
-        persistIfAllowed()
     }
 
     func importPresets(_ candidates: [WatchedAppPreset]) -> ImportResult {
@@ -127,6 +169,40 @@ final class WatchedAppsStore: ObservableObject {
     }
 
     private func validateAndNormalize(_ preset: WatchedAppPreset) -> WatchedAppPreset? {
+        let result = Self.validateAndNormalizePreset(preset)
+        validationError = result.error
+        return result.preset
+    }
+
+    nonisolated static func validatedPresets(
+        _ candidates: [WatchedAppPreset]
+    ) -> (presets: [WatchedAppPreset], rejectedCount: Int) {
+        var accepted: [WatchedAppPreset] = []
+        var seenIDs: Set<UUID> = []
+        var semanticKeys: Set<String> = []
+        var rejected = 0
+
+        for candidate in candidates {
+            guard let preset = validateAndNormalizePreset(candidate).preset else {
+                rejected += 1
+                continue
+            }
+            let keys = [preset.displayName, preset.mainProcessName, preset.appPath]
+                .map { $0.lowercased() }
+            guard seenIDs.insert(preset.id).inserted,
+                  semanticKeys.isDisjoint(with: keys) else {
+                rejected += 1
+                continue
+            }
+            semanticKeys.formUnion(keys)
+            accepted.append(preset)
+        }
+        return (accepted, rejected)
+    }
+
+    nonisolated private static func validateAndNormalizePreset(
+        _ preset: WatchedAppPreset
+    ) -> (preset: WatchedAppPreset?, error: String?) {
         var value = preset
         value.displayName = value.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         value.mainProcessName = value.mainProcessName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -135,25 +211,36 @@ final class WatchedAppsStore: ObservableObject {
         value.appPath = value.appPath.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !value.displayName.isEmpty, !value.mainProcessName.isEmpty else {
-            validationError = "Display name and main process name are required."
-            return nil
+            return (nil, "Display name and main process name are required.")
         }
         guard value.appPath.hasPrefix("/"),
               URL(fileURLWithPath: value.appPath).pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
-            validationError = "App path must be an absolute .app bundle path."
-            return nil
+            return (nil, "App path must be an absolute .app bundle path.")
         }
-        guard jobsAreValid(value) else { return nil }
-        return value
+        let killable = Set(([value.mainProcessName] + value.helperProcessNames).map { $0.lowercased() })
+        let protected = Set(value.protectedProcessNames.map { $0.lowercased() })
+        guard killable.isDisjoint(with: protected) else {
+            return (nil, "Protected process names cannot also be main or helper process names.")
+        }
+        if value.id == WatchedAppPreset.globalProtectID {
+            guard value.hasCanonicalGlobalProtectIdentity else {
+                return (nil, "The built-in GlobalProtect lifecycle identity cannot be modified.")
+            }
+        } else if !value.systemLaunchDaemonJobs.isEmpty {
+            return (nil, "Custom presets cannot configure privileged system launch daemons.")
+        }
+        guard let jobsError = jobsValidationError(value) else {
+            return (value, nil)
+        }
+        return (nil, jobsError)
     }
 
-    private func jobsAreValid(_ preset: WatchedAppPreset) -> Bool {
+    nonisolated private static func jobsValidationError(_ preset: WatchedAppPreset) -> String? {
         for job in preset.userLaunchAgentJobs {
             guard !job.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   job.plistPath.hasPrefix("/"),
                   URL(fileURLWithPath: job.plistPath).pathExtension == "plist" else {
-                validationError = "Every launch agent requires a label and absolute .plist path."
-                return false
+                return "Every launch agent requires a label and absolute .plist path."
             }
         }
         for job in preset.systemLaunchDaemonJobs {
@@ -162,14 +249,13 @@ final class WatchedAppsStore: ObservableObject {
                   job.plistPath.hasPrefix("/"),
                   URL(fileURLWithPath: job.plistPath).pathExtension == "plist",
                   job.servicePort.map({ (1...65_535).contains($0) }) ?? true else {
-                validationError = "Every daemon requires valid label, process, plist path, and optional port."
-                return false
+                return "Every daemon requires valid label, process, plist path, and optional port."
             }
         }
-        return true
+        return nil
     }
 
-    private func normalizedNames(_ names: [String]) -> [String] {
+    nonisolated private static func normalizedNames(_ names: [String]) -> [String] {
         var seen: Set<String> = []
         return names.compactMap {
             let value = $0.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -201,5 +287,15 @@ final class WatchedAppsStore: ObservableObject {
             return
         }
         userDefaults.set(data, forKey: key)
+    }
+
+    nonisolated private static func preserveFirstBackup(
+        _ data: Data,
+        userDefaults: UserDefaults,
+        backupKey: String
+    ) {
+        if userDefaults.data(forKey: backupKey) == nil {
+            userDefaults.set(data, forKey: backupKey)
+        }
     }
 }

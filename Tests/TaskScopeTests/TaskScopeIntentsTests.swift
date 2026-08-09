@@ -74,6 +74,28 @@ final class TaskScopeIntentsTests: XCTestCase {
         )
     }
 
+    func testRejectedAndFailedCommandsThrowForShortcuts() throws {
+        XCTAssertEqual(
+            try TaskScopeIntentDialog.successMessage(
+                for: TaskScopeCommandResult(status: .completed, message: "Opened Alpha."),
+                action: "open Alpha"
+            ),
+            "Opened Alpha."
+        )
+        XCTAssertThrowsError(
+            try TaskScopeIntentDialog.successMessage(
+                for: TaskScopeCommandResult(status: .rejected, message: "No matching preset."),
+                action: "open Alpha"
+            )
+        )
+        XCTAssertThrowsError(
+            try TaskScopeIntentDialog.successMessage(
+                for: TaskScopeCommandResult(status: .failed, message: "Lifecycle incomplete."),
+                action: "stop Alpha"
+            )
+        )
+    }
+
     private func preset(name: String) -> WatchedAppPreset {
         WatchedAppPreset(
             displayName: name,

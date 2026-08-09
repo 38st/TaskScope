@@ -396,8 +396,8 @@ final class ProcessManager: ObservableObject {
             if beforeOpen.isMainRunning {
                 verified = true
             } else {
-                verified = await lifecycle.waitForProcessNamed(
-                    preset.mainProcessName,
+                verified = await lifecycle.waitForMainProcess(
+                    for: preset,
                     timeoutSeconds: 5
                 )
             }
@@ -432,10 +432,7 @@ final class ProcessManager: ObservableObject {
                     title: "\(preset.displayName) Relaunch Jobs",
                     jobs: agentResult.jobs
                 )
-            let termination = await lifecycle.terminateProcess(
-                named: preset.mainProcessName,
-                forceIfStillRunning: true
-            )
+            let termination = await lifecycle.terminateMainProcess(for: preset)
             await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
@@ -478,7 +475,7 @@ final class ProcessManager: ObservableObject {
                 )
             var terminationBlocked = false
             for name in preset.helperProcessNames {
-                let outcome = await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
+                let outcome = await lifecycle.terminateHelperProcess(named: name, for: preset)
                 terminationBlocked = terminationBlocked || outcome == .inventoryUnavailable
             }
             await lifecycle.settleAfterProcessChange()
@@ -523,8 +520,10 @@ final class ProcessManager: ObservableObject {
                     jobs: agentResult.jobs
                 )
             var terminationBlocked = false
-            for name in preset.killableNames {
-                let outcome = await lifecycle.terminateProcess(named: name, forceIfStillRunning: true)
+            for (index, name) in preset.killableNames.enumerated() {
+                let outcome = index == 0
+                    ? await lifecycle.terminateMainProcess(for: preset)
+                    : await lifecycle.terminateHelperProcess(named: name, for: preset)
                 terminationBlocked = terminationBlocked || outcome == .inventoryUnavailable
             }
             await lifecycle.settleAfterProcessChange()
@@ -628,8 +627,8 @@ final class ProcessManager: ObservableObject {
 
         // The PID resolving is not enough: if the row's process exited and the PID
         // was recycled, this read belongs to a different process. `startTime` comes
-        // from `ps lstart` on both sides, so it is directly comparable. (`command`
-        // is not: the inventory uses `ps -c` and gets a short name.)
+        // from `ps lstart` on both sides, so it is directly comparable. Bundle
+        // scoping separately uses the kernel-resolved `executablePath`.
         guard startTime == process.identity.startTime else { return nil }
 
         return ProcessDetail(
@@ -703,8 +702,29 @@ final class ProcessManager: ObservableObject {
         for preset: WatchedAppPreset,
         inventory: [AppProcess]
     ) -> WatchedAppSnapshot {
-        let runningProcessNames = Set(inventory.map(\.name))
-        let runningNames = Set(preset.allProcessNames.filter { runningProcessNames.contains($0) })
+        var runningNames = Set<String>()
+        let mainExecutableDirectory = URL(fileURLWithPath: preset.appPath, isDirectory: true)
+            .appendingPathComponent("Contents/MacOS", isDirectory: true)
+            .standardizedFileURL.path + "/"
+        let bundleContentsDirectory = URL(fileURLWithPath: preset.appPath, isDirectory: true)
+            .appendingPathComponent("Contents", isDirectory: true)
+            .standardizedFileURL.path + "/"
+        if inventory.contains(where: {
+            $0.pid != currentPID
+                && $0.name == preset.mainProcessName
+                && $0.executablePath?.hasPrefix(mainExecutableDirectory) == true
+        }) {
+            runningNames.insert(preset.mainProcessName)
+        }
+        let helperNames = Set(preset.helperProcessNames)
+        runningNames.formUnion(inventory.lazy.filter {
+            $0.pid != self.currentPID
+                && $0.executablePath?.hasPrefix(bundleContentsDirectory) == true
+        }.map(\.name).filter { helperNames.contains($0) })
+        let protectedNames = Set(preset.protectedProcessNames)
+        runningNames.formUnion(inventory.lazy.filter { $0.pid != self.currentPID }.map(\.name).filter {
+            protectedNames.contains($0)
+        })
         return WatchedAppSnapshot(preset: preset, runningNames: runningNames)
     }
 

@@ -70,6 +70,8 @@ struct AppProcess: Identifiable, Equatable, Sendable {
     var cpu: Double
     var memoryMB: Double
     var command: String
+    /// Kernel-resolved executable vnode path. Never derived from argv/`ps comm`.
+    var executablePath: String?
     var elapsedTime: String
     var startTime: String
     var netInKB: Double?
@@ -83,6 +85,7 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         cpu: Double,
         memoryMB: Double,
         command: String,
+        executablePath: String? = nil,
         elapsedTime: String,
         startTime: String = "",
         netInKB: Double?,
@@ -95,6 +98,7 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         self.cpu = cpu
         self.memoryMB = memoryMB
         self.command = command
+        self.executablePath = executablePath
         self.elapsedTime = elapsedTime
         self.startTime = startTime
         self.netInKB = netInKB

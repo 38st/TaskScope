@@ -95,7 +95,9 @@ final class ProcessManagerTests: XCTestCase {
     }
 
     func testWatchedNamesWithRegexCharactersMatchLiterally() async {
-        let watched = process(pid: 42, name: "Codex (Renderer)")
+        var watched = process(pid: 42, name: "Codex (Renderer)")
+        watched.command = "/Applications/Renderer.app/Contents/MacOS/Codex (Renderer)"
+        watched.executablePath = watched.command
         let inventory = FakeProcessInventory(results: [.success([watched])])
         let manager = makeManager(inventory: inventory)
         let preset = WatchedAppPreset(
@@ -111,6 +113,33 @@ final class ProcessManagerTests: XCTestCase {
 
         XCTAssertEqual(manager.snapshots.first?.runningNames, ["Codex (Renderer)"])
         XCTAssertEqual(manager.status, .watchedRunning)
+    }
+
+    func testWatchedStatusRequiresExecutablePathFromLivePSSchema() async {
+        var basenameOnly = process(pid: 41, name: "Example")
+        basenameOnly.command = "Example"
+        basenameOnly.executablePath = nil
+        var liveShaped = process(pid: 42, name: "Example")
+        liveShaped.command = "/Applications/Example.app/Contents/MacOS/Example"
+        let inventory = FakeProcessInventory(results: [
+            .success([basenameOnly]),
+            .success([liveShaped])
+        ])
+        let manager = makeManager(inventory: inventory)
+        let preset = WatchedAppPreset(
+            displayName: "Example",
+            mainProcessName: "Example",
+            helperProcessNames: [],
+            protectedProcessNames: [],
+            appPath: "/Applications/Example.app"
+        )
+        manager.watchedAppsProvider = { [preset] }
+
+        await manager.refreshWatchedStatus(showMessage: false)
+        XCTAssertFalse(manager.snapshots[0].isMainRunning)
+
+        await manager.refreshWatchedStatus(showMessage: false)
+        XCTAssertTrue(manager.snapshots[0].isMainRunning)
     }
 
     func testLoadFailureRetainsLastGoodProcessList() async {
@@ -408,7 +437,7 @@ final class ProcessManagerTests: XCTestCase {
         await manager.quitHelpers(lifecyclePreset())
 
         XCTAssertEqual(lifecycle.calls.first, "agents.unload")
-        XCTAssertTrue(lifecycle.calls.contains("terminate:ExampleHelper"))
+        XCTAssertTrue(lifecycle.calls.contains("terminate.helper:ExampleHelper"))
     }
 
     func testManagedStopReturnsTypedFailureWhenTargetStillRuns() async {
@@ -521,7 +550,8 @@ final class ProcessManagerTests: XCTestCase {
             parentPID: 1,
             cpu: cpu,
             memoryMB: memory,
-            command: name,
+            command: "/Applications/\(name).app/Contents/MacOS/\(name)",
+            executablePath: "/Applications/\(name).app/Contents/MacOS/\(name)",
             elapsedTime: "00:10",
             startTime: startTime,
             netInKB: 0,
@@ -553,6 +583,11 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
 
     func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome {
         calls.append("terminate:\(name)")
+        return terminationOutcome
+    }
+
+    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
+        calls.append("terminate.helper:\(name)")
         return terminationOutcome
     }
 

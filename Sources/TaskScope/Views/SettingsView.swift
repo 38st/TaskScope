@@ -3,6 +3,8 @@ import UniformTypeIdentifiers
 import Carbon.HIToolbox
 
 struct SettingsView: View {
+    static let builtInDaemonGuidance = "Privileged system launch daemons are managed only by TaskScope’s built-in GlobalProtect preset; custom presets cannot configure them."
+
     @ObservedObject var settings: SettingsStore
     @ObservedObject var watchedApps: WatchedAppsStore
     @ObservedObject var autoStopRules: AutoStopRulesStore
@@ -15,10 +17,6 @@ struct SettingsView: View {
     @State private var newAppPath = "/Applications/"
     @State private var newAgentLabels = ""
     @State private var newAgentPlistPaths = ""
-    @State private var newDaemonLabels = ""
-    @State private var newDaemonPlistPaths = ""
-    @State private var newDaemonProcessNames = ""
-    @State private var newDaemonPorts = ""
     @State private var newRuleName = ""
     @State private var newRuleMinutes = 5
     @State private var newRuleAction: AutoStopRule.Action = .prompt
@@ -82,6 +80,7 @@ struct SettingsView: View {
                     }
                 }
             }
+            .disabled(settings.isReadOnlyAfterCorruption)
 
             Section("Highlight Thresholds") {
                 HStack {
@@ -99,6 +98,7 @@ struct SettingsView: View {
                         .monospacedDigit().frame(width: 44, alignment: .trailing)
                 }
             }
+            .disabled(settings.isReadOnlyAfterCorruption)
 
             Section("Notifications") {
                 Toggle("Notify on watched process changes", isOn: $settings.enableNotifications)
@@ -112,12 +112,16 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            .disabled(settings.isReadOnlyAfterCorruption)
 
             if let recoveryMessage = settings.recoveryMessage {
                 Section("Recovered Settings") {
                     Text(recoveryMessage)
                         .font(.caption)
                         .foregroundStyle(.orange)
+                    Button("Reset Settings After Backup", role: .destructive) {
+                        settings.resetAfterCorruption()
+                    }
                 }
             }
         }
@@ -135,6 +139,7 @@ struct SettingsView: View {
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
+                .disabled(watchedApps.isReadOnlyAfterCorruption)
                 Button {
                     exportPresets()
                 } label: {
@@ -145,8 +150,14 @@ struct SettingsView: View {
                 } label: {
                     Label("Import", systemImage: "square.and.arrow.down")
                 }
+                .disabled(watchedApps.isReadOnlyAfterCorruption)
             }
             .padding(.horizontal)
+
+            Text(Self.builtInDaemonGuidance)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal)
 
             if let issue = watchedApps.persistenceIssue {
                 VStack(alignment: .leading, spacing: 8) {
@@ -166,10 +177,16 @@ struct SettingsView: View {
                         HStack {
                             Text(preset.displayName).fontWeight(.semibold)
                             Spacer()
-                            Button("Edit") {
-                                prepareToEdit(preset)
+                            if preset.id == WatchedAppPreset.globalProtectID {
+                                Text("Built-in")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Button("Edit") {
+                                    prepareToEdit(preset)
+                                }
+                                .buttonStyle(.borderless)
                             }
-                            .buttonStyle(.borderless)
                             Toggle("", isOn: Binding(
                                 get: { preset.notificationsEnabled },
                                 set: { newValue in
@@ -185,14 +202,20 @@ struct SettingsView: View {
                         Text("Helpers: \(preset.helperProcessNames.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
                         Text("Protected: \(preset.protectedProcessNames.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
                         Text("App path: \(preset.appPath)").font(.caption).foregroundStyle(.tertiary)
+                        if preset.id == WatchedAppPreset.globalProtectID {
+                            Text("Built-in lifecycle: \(preset.systemLaunchDaemonJobs.count) protected system daemon\(preset.systemLaunchDaemonJobs.count == 1 ? "" : "s")")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .padding(.vertical, 4)
                 }
                 .onMove { from, to in
-                    watchedApps.presets.move(fromOffsets: from, toOffset: to)
+                    watchedApps.move(from: from, to: to)
                 }
                 .onDelete { watchedApps.remove(at: $0) }
             }
+            .disabled(watchedApps.isReadOnlyAfterCorruption)
 
             if let err = importError {
                 Text(err).font(.caption).foregroundStyle(.red).padding(.horizontal)
@@ -224,11 +247,22 @@ struct SettingsView: View {
                     TextFieldRow(label: "Plist paths", text: $newAgentPlistPaths)
 
                     Divider().padding(.vertical, 4)
-                    Text("System Launch Daemons (optional)").font(.headline)
-                    TextFieldRow(label: "Labels", text: $newDaemonLabels)
-                    TextFieldRow(label: "Plist paths", text: $newDaemonPlistPaths)
-                    TextFieldRow(label: "Process names", text: $newDaemonProcessNames)
-                    TextFieldRow(label: "Ports (blank allowed)", text: $newDaemonPorts)
+                    Text(editingSystemLaunchDaemonJobs.isEmpty
+                         ? "System Launch Daemons"
+                         : "Built-in System Launch Daemons")
+                        .font(.headline)
+                    ForEach(editingSystemLaunchDaemonJobs.indices, id: \.self) { index in
+                        let job = editingSystemLaunchDaemonJobs[index]
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(job.label).fontWeight(.medium)
+                            Text("\(job.processName) · \(job.plistPath)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(Self.builtInDaemonGuidance)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -394,10 +428,6 @@ struct SettingsView: View {
         newAppPath = "/Applications/"
         newAgentLabels = ""
         newAgentPlistPaths = ""
-        newDaemonLabels = ""
-        newDaemonPlistPaths = ""
-        newDaemonProcessNames = ""
-        newDaemonPorts = ""
         presetValidationError = nil
         showPresetEditor = true
     }
@@ -411,14 +441,15 @@ struct SettingsView: View {
         newAppPath = preset.appPath
         newAgentLabels = preset.userLaunchAgentJobs.map(\.label).joined(separator: ", ")
         newAgentPlistPaths = preset.userLaunchAgentJobs.map(\.plistPath).joined(separator: ", ")
-        newDaemonLabels = preset.systemLaunchDaemonJobs.map(\.label).joined(separator: ", ")
-        newDaemonPlistPaths = preset.systemLaunchDaemonJobs.map(\.plistPath).joined(separator: ", ")
-        newDaemonProcessNames = preset.systemLaunchDaemonJobs.map(\.processName).joined(separator: ", ")
-        newDaemonPorts = preset.systemLaunchDaemonJobs
-            .map { $0.servicePort.map(String.init) ?? "" }
-            .joined(separator: ",")
         presetValidationError = nil
         showPresetEditor = true
+    }
+
+    private var editingSystemLaunchDaemonJobs: [SystemLaunchDaemonJob] {
+        guard editingPresetID == WatchedAppPreset.globalProtectID else { return [] }
+        return watchedApps.presets
+            .first(where: { $0.id == WatchedAppPreset.globalProtectID })?
+            .systemLaunchDaemonJobs ?? []
     }
 
     private func savePresetEditor() {
@@ -426,13 +457,7 @@ struct SettingsView: View {
             labels: newAgentLabels,
             paths: newAgentPlistPaths
         )
-        let daemons = PresetInputParser.parseSystemLaunchDaemonJobs(
-            labels: newDaemonLabels,
-            paths: newDaemonPlistPaths,
-            processNames: newDaemonProcessNames,
-            ports: newDaemonPorts
-        )
-        let mappingErrors = agents.errors + daemons.errors
+        let mappingErrors = agents.errors
         guard mappingErrors.isEmpty else {
             presetValidationError = mappingErrors.joined(separator: " ")
             return
@@ -449,7 +474,7 @@ struct SettingsView: View {
             protectedProcessNames: PresetInputParser.list(from: newProtected),
             appPath: newAppPath,
             userLaunchAgentJobs: agents.value,
-            systemLaunchDaemonJobs: daemons.value,
+            systemLaunchDaemonJobs: existing?.systemLaunchDaemonJobs ?? [],
             notificationsEnabled: existing?.notificationsEnabled ?? true
         )
         let saved = existing == nil ? watchedApps.add(preset) : watchedApps.update(preset)
@@ -465,7 +490,7 @@ struct SettingsView: View {
         // In corrupt mode the in-memory list is the empty array we fell back to, not
         // the user's presets. Exporting it would write a valid-looking but empty
         // backup — precisely when the banner is telling them to back up first.
-        guard !watchedApps.isReadOnlyAfterCorruption else {
+        guard watchedApps.canExportPresets else {
             exportError = "Preset data is unreadable, so there is nothing to export. "
                 + "Recover the backup noted above before resetting."
             return
