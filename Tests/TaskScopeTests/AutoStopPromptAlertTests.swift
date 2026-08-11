@@ -3,8 +3,8 @@ import ViewInspector
 import XCTest
 @testable import TaskScope
 
-/// Drives the real `.alert(_:isPresented:presenting:)` modifier in `TaskScopePopoverView`
-/// (Sources/TaskScope/Views/TaskScopePopoverView.swift:346-366) through ViewInspector.
+/// Drives the real `.alert(_:isPresented:presenting:)` modifier in
+/// `TaskScopePopoverView` through ViewInspector.
 ///
 /// ViewInspector's `ViewType.Button.tap()` only invokes the button's action closure; it does
 /// not perform SwiftUI's automatic `isPresented = false` write-back. That write-back is driven
@@ -21,7 +21,7 @@ final class AutoStopPromptAlertTests: XCTestCase {
 
         let store = fixture.stores.autoStopRules
         let stopped = StopRecorder()
-        store.start(cadence: 60) { process in stopped.record(process.pid) }
+        store.start(cadence: 60) { _, process in stopped.record(process.pid) }
         store.stop()
         store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt))
         await store.evaluateNow()
@@ -59,7 +59,7 @@ final class AutoStopPromptAlertTests: XCTestCase {
 
         let store = fixture.stores.autoStopRules
         let stopped = StopRecorder()
-        store.start(cadence: 60) { process in stopped.record(process.pid) }
+        store.start(cadence: 60) { _, process in stopped.record(process.pid) }
         store.stop()
         store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt))
         store.add(AutoStopRule(processName: "Other", runtimeMinutes: 1, action: .prompt))

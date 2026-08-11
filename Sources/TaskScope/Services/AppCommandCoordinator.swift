@@ -5,6 +5,13 @@ enum TaskScopeCommand: Equatable {
     case refresh
     case openPreset(String)
     case stopPreset(String)
+    case openPresetEntity(WatchedPresetCommandTarget)
+    case stopPresetEntity(WatchedPresetCommandTarget)
+}
+
+struct WatchedPresetCommandTarget: Equatable, Sendable {
+    var id: UUID
+    var displayName: String
 }
 
 struct TaskScopeCommandResult: Equatable {
@@ -66,11 +73,27 @@ final class AppCommandCoordinator {
             }
             return await processManager.quitAllKillable(preset)
 
+        case .openPresetEntity(let target):
+            guard let preset = preset(id: target.id) else {
+                return missingPresetResult(target.displayName)
+            }
+            return await processManager.openApp(preset)
+
+        case .stopPresetEntity(let target):
+            guard let preset = preset(id: target.id) else {
+                return missingPresetResult(target.displayName)
+            }
+            return await processManager.quitAllKillable(preset)
+
         }
     }
 
     private func preset(named name: String) -> WatchedAppPreset? {
         presets().first { $0.matchesLookupName(name) }
+    }
+
+    private func preset(id: UUID) -> WatchedAppPreset? {
+        presets().first { $0.id == id }
     }
 
     private func missingPresetResult(_ name: String) -> TaskScopeCommandResult {

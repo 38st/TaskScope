@@ -1,6 +1,5 @@
 import SwiftUI
 import UniformTypeIdentifiers
-import Carbon.HIToolbox
 
 struct SettingsView: View {
     static let builtInDaemonGuidance = "Privileged system launch daemons are managed only by TaskScope’s built-in GlobalProtect preset; custom presets cannot configure them."
@@ -10,13 +9,7 @@ struct SettingsView: View {
     @ObservedObject var autoStopRules: AutoStopRulesStore
     @ObservedObject private var notificationService = NotificationService.shared
 
-    @State private var newDisplayName = ""
-    @State private var newMainProcess = ""
-    @State private var newHelpers = ""
-    @State private var newProtected = ""
-    @State private var newAppPath = "/Applications/"
-    @State private var newAgentLabels = ""
-    @State private var newAgentPlistPaths = ""
+    @StateObject private var presetForm = WatchedPresetFormState()
     @State private var newRuleName = ""
     @State private var newRuleMinutes = 5
     @State private var newRuleAction: AutoStopRule.Action = .prompt
@@ -26,7 +19,6 @@ struct SettingsView: View {
     @State private var presetValidationError: String?
     @State private var showImporter = false
     @State private var showPresetEditor = false
-    @State private var editingPresetID: UUID?
 
     var body: some View {
         TabView {
@@ -61,72 +53,10 @@ struct SettingsView: View {
     }
 
     private var generalTab: some View {
-        Form {
-            Section("Refresh") {
-                HStack {
-                    Text("Watched status interval")
-                    Spacer()
-                    Slider(value: $settings.refreshIntervalSeconds, in: 2...60, step: 1)
-                    Text("\(Int(settings.refreshIntervalSeconds))s")
-                        .monospacedDigit()
-                        .frame(width: 36, alignment: .trailing)
-                }
-                Toggle("Auto-refresh process list", isOn: $settings.autoRefreshProcessList)
-                Stepper(value: $settings.processListLimit, in: 10...200, step: 10) {
-                    HStack {
-                        Text("Process list limit")
-                        Spacer()
-                        Text("\(settings.processListLimit)").monospacedDigit()
-                    }
-                }
-            }
-            .disabled(settings.isReadOnlyAfterCorruption)
-
-            Section("Highlight Thresholds") {
-                HStack {
-                    Text("CPU %")
-                    Spacer()
-                    Slider(value: $settings.cpuHighlightThreshold, in: 1...100, step: 1)
-                    Text(String(format: "%.0f%%", settings.cpuHighlightThreshold))
-                        .monospacedDigit().frame(width: 44, alignment: .trailing)
-                }
-                HStack {
-                    Text("Memory (MB)")
-                    Spacer()
-                    Slider(value: $settings.memHighlightThresholdMB, in: 100...8192, step: 64)
-                    Text(String(format: "%.0f", settings.memHighlightThresholdMB))
-                        .monospacedDigit().frame(width: 44, alignment: .trailing)
-                }
-            }
-            .disabled(settings.isReadOnlyAfterCorruption)
-
-            Section("Notifications") {
-                Toggle("Notify on watched process changes", isOn: $settings.enableNotifications)
-                LabeledContent("System permission", value: notificationService.authorizationState.label)
-                if notificationService.authorizationState == .denied {
-                    Button("Open Notification Settings") {
-                        notificationService.openSystemSettings()
-                    }
-                }
-                Text("TaskScope shows foreground banners without sound.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .disabled(settings.isReadOnlyAfterCorruption)
-
-            if let recoveryMessage = settings.recoveryMessage {
-                Section("Recovered Settings") {
-                    Text(recoveryMessage)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    Button("Reset Settings After Backup", role: .destructive) {
-                        settings.resetAfterCorruption()
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
+        GeneralSettingsTab(
+            settings: settings,
+            notificationService: notificationService
+        )
     }
 
     private var watchedAppsTab: some View {
@@ -229,22 +159,22 @@ struct SettingsView: View {
 
     private var presetEditorSheet: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(editingPresetID == nil ? "Add Watched App" : "Edit Watched App")
+            Text(presetForm.editingPresetID == nil ? "Add Watched App" : "Edit Watched App")
                 .font(.title2)
                 .fontWeight(.semibold)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    TextFieldRow(label: "Display name", text: $newDisplayName)
-                    TextFieldRow(label: "Main process name", text: $newMainProcess)
-                    TextFieldRow(label: "Helpers (comma-separated)", text: $newHelpers)
-                    TextFieldRow(label: "Protected (comma-separated)", text: $newProtected)
-                    TextFieldRow(label: "App bundle path", text: $newAppPath)
+                    TextFieldRow(label: "Display name", text: $presetForm.displayName)
+                    TextFieldRow(label: "Main process name", text: $presetForm.mainProcess)
+                    TextFieldRow(label: "Helpers (comma-separated)", text: $presetForm.helpers)
+                    TextFieldRow(label: "Protected (comma-separated)", text: $presetForm.protectedProcesses)
+                    TextFieldRow(label: "App bundle path", text: $presetForm.appPath)
 
                     Divider().padding(.vertical, 4)
                     Text("Launch Agents (optional)").font(.headline)
-                    TextFieldRow(label: "Labels", text: $newAgentLabels)
-                    TextFieldRow(label: "Plist paths", text: $newAgentPlistPaths)
+                    TextFieldRow(label: "Labels", text: $presetForm.agentLabels)
+                    TextFieldRow(label: "Plist paths", text: $presetForm.agentPlistPaths)
 
                     Divider().padding(.vertical, 4)
                     Text(editingSystemLaunchDaemonJobs.isEmpty
@@ -276,12 +206,12 @@ struct SettingsView: View {
                 Button("Cancel") { showPresetEditor = false }
                     .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button(editingPresetID == nil ? "Add Preset" : "Save Changes") {
+                Button(presetForm.editingPresetID == nil ? "Add Preset" : "Save Changes") {
                     savePresetEditor()
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .disabled(newMainProcess.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(presetForm.mainProcess.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(20)
@@ -296,11 +226,15 @@ struct SettingsView: View {
                     .foregroundStyle(.orange)
                     .padding(.horizontal)
             }
-            if autoStopRules.hasUnreadableData {
-                // Writing stays disabled until this is pressed, so without it the
-                // user would be locked out of editing rules for good.
-                Button("Reset Auto-Stop Data After Backup", role: .destructive) {
-                    autoStopRules.resetAfterCorruption()
+            if autoStopRules.isRulesReadOnlyAfterRecovery {
+                Button("Reset Auto-Stop Rules After Backup", role: .destructive) {
+                    autoStopRules.resetRulesAfterCorruption()
+                }
+                .padding(.horizontal)
+            }
+            if autoStopRules.isEventsReadOnlyAfterRecovery {
+                Button("Reset Auto-Stop Events After Backup", role: .destructive) {
+                    autoStopRules.resetEventsAfterCorruption()
                 }
                 .padding(.horizontal)
             }
@@ -335,6 +269,7 @@ struct SettingsView: View {
                     }
                     .onDelete { autoStopRules.remove(at: $0) }
                 }
+                .disabled(autoStopRules.isRulesReadOnlyAfterRecovery)
 
                 Section {
                     if autoStopRules.events.isEmpty {
@@ -366,6 +301,7 @@ struct SettingsView: View {
                         if !autoStopRules.events.isEmpty {
                             Button("Clear") { autoStopRules.clearEvents() }
                                 .buttonStyle(.borderless)
+                                .disabled(autoStopRules.isEventsReadOnlyAfterRecovery)
                         }
                     }
                 }
@@ -411,6 +347,7 @@ struct SettingsView: View {
                 }
             }
             .padding(.horizontal)
+            .disabled(autoStopRules.isRulesReadOnlyAfterRecovery)
         }
         .padding(.vertical)
     }
@@ -420,63 +357,36 @@ struct SettingsView: View {
     }
 
     private func prepareNewPreset() {
-        editingPresetID = nil
-        newDisplayName = ""
-        newMainProcess = ""
-        newHelpers = ""
-        newProtected = ""
-        newAppPath = "/Applications/"
-        newAgentLabels = ""
-        newAgentPlistPaths = ""
+        presetForm.prepareForNewPreset()
         presetValidationError = nil
         showPresetEditor = true
     }
 
     private func prepareToEdit(_ preset: WatchedAppPreset) {
-        editingPresetID = preset.id
-        newDisplayName = preset.displayName
-        newMainProcess = preset.mainProcessName
-        newHelpers = preset.helperProcessNames.joined(separator: ", ")
-        newProtected = preset.protectedProcessNames.joined(separator: ", ")
-        newAppPath = preset.appPath
-        newAgentLabels = preset.userLaunchAgentJobs.map(\.label).joined(separator: ", ")
-        newAgentPlistPaths = preset.userLaunchAgentJobs.map(\.plistPath).joined(separator: ", ")
+        presetForm.prepareForEditing(preset)
         presetValidationError = nil
         showPresetEditor = true
     }
 
     private var editingSystemLaunchDaemonJobs: [SystemLaunchDaemonJob] {
-        guard editingPresetID == WatchedAppPreset.globalProtectID else { return [] }
+        guard presetForm.editingPresetID == WatchedAppPreset.globalProtectID else { return [] }
         return watchedApps.presets
             .first(where: { $0.id == WatchedAppPreset.globalProtectID })?
             .systemLaunchDaemonJobs ?? []
     }
 
     private func savePresetEditor() {
-        let agents = PresetInputParser.parseUserLaunchAgentJobs(
-            labels: newAgentLabels,
-            paths: newAgentPlistPaths
-        )
-        let mappingErrors = agents.errors
-        guard mappingErrors.isEmpty else {
-            presetValidationError = mappingErrors.joined(separator: " ")
-            return
-        }
-
-        let existing = editingPresetID.flatMap { id in
+        let existing = presetForm.editingPresetID.flatMap { id in
             watchedApps.presets.first(where: { $0.id == id })
         }
-        let preset = WatchedAppPreset(
-            id: existing?.id ?? UUID(),
-            displayName: newDisplayName.isEmpty ? newMainProcess : newDisplayName,
-            mainProcessName: newMainProcess,
-            helperProcessNames: PresetInputParser.list(from: newHelpers),
-            protectedProcessNames: PresetInputParser.list(from: newProtected),
-            appPath: newAppPath,
-            userLaunchAgentJobs: agents.value,
-            systemLaunchDaemonJobs: existing?.systemLaunchDaemonJobs ?? [],
-            notificationsEnabled: existing?.notificationsEnabled ?? true
-        )
+        let preset: WatchedAppPreset
+        switch presetForm.makePreset(existing: existing) {
+        case .success(let value):
+            preset = value
+        case .failure(let error):
+            presetValidationError = error.message
+            return
+        }
         let saved = existing == nil ? watchedApps.add(preset) : watchedApps.update(preset)
         guard saved else {
             presetValidationError = watchedApps.validationError
@@ -521,55 +431,6 @@ struct SettingsView: View {
     }
 }
 
-private struct AutoStopRuleEditorSheet: View {
-    @State private var draft: AutoStopRule
-    let onSave: (AutoStopRule) -> Void
-    let onCancel: () -> Void
-
-    init(
-        rule: AutoStopRule,
-        onSave: @escaping (AutoStopRule) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        _draft = State(initialValue: rule)
-        self.onSave = onSave
-        self.onCancel = onCancel
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Edit Auto-Stop Rule")
-                .font(.title2)
-                .fontWeight(.semibold)
-
-            TextField("Process name", text: $draft.processName)
-                .textFieldStyle(.roundedBorder)
-
-            Stepper(value: $draft.runtimeMinutes, in: 1...1440) {
-                Text("Runtime: \(draft.runtimeMinutes) minute\(draft.runtimeMinutes == 1 ? "" : "s")")
-            }
-
-            Picker("Action", selection: $draft.action) {
-                ForEach(AutoStopRule.Action.allCases) { action in
-                    Text(action.label).tag(action)
-                }
-            }
-
-            Toggle("Enabled", isOn: $draft.isEnabled)
-
-            HStack {
-                Spacer()
-                Button("Cancel", action: onCancel)
-                Button("Save") { onSave(draft) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(draft.processName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
-        .padding(20)
-        .frame(width: 380)
-    }
-}
-
 private struct TextFieldRow: View {
     let label: String
     @Binding var text: String
@@ -580,147 +441,5 @@ private struct TextFieldRow: View {
             TextField(label, text: $text)
                 .textFieldStyle(.roundedBorder)
         }
-    }
-}
-
-private struct HotkeySettingsView: View {
-    @ObservedObject private var hotkey = HotkeyManager.shared
-    @State private var recording = false
-
-    var body: some View {
-        Form {
-            Section("Global Hotkey") {
-                Toggle("Enable global Show TaskScope hotkey", isOn: $hotkey.hotkeyEnabled)
-
-                HStack {
-                    Text("Current Hotkey")
-                    Spacer()
-                    Text(hotkey.displayString)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 6))
-                }
-
-                Button(recording ? "Press a key combination…" : "Record New Hotkey") {
-                    recording = true
-                }
-                .disabled(!hotkey.hotkeyEnabled)
-                .buttonStyle(.bordered)
-
-                if recording {
-                    Text("Press the key combination you want to use. Esc to cancel.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Text(hotkey.registrationStatus.message)
-                    .font(.caption)
-                    .foregroundStyle(
-                        hotkey.registrationStatus == .registered
-                            ? Color.secondary
-                            : Color.orange
-                    )
-
-                Text("Default: ⌘⇧T shows the TaskScope window.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-        .background {
-            RecordingListenerView(
-                isRecording: $recording,
-                onRecord: { keyCode, modifiers in
-                    _ = hotkey.updateShortcut(keyCode: keyCode, modifiers: modifiers)
-                    recording = false
-                },
-                onCancel: {
-                    recording = false
-                }
-            )
-        }
-    }
-}
-
-private struct RecordingListenerView: NSViewRepresentable {
-    @Binding var isRecording: Bool
-    let onRecord: (UInt32, UInt32) -> Void
-    let onCancel: () -> Void
-
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        return view
-    }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        if isRecording {
-            guard context.coordinator.localMonitor == nil else { return }
-
-            context.coordinator.localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                if event.keyCode == 53 {
-                    onCancel()
-                    return nil
-                }
-                let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-                var carbonMods: UInt32 = 0
-                if mods.contains(.command) { carbonMods |= UInt32(cmdKey) }
-                if mods.contains(.shift) { carbonMods |= UInt32(shiftKey) }
-                if mods.contains(.option) { carbonMods |= UInt32(optionKey) }
-                if mods.contains(.control) { carbonMods |= UInt32(controlKey) }
-                if carbonMods == 0 { return event }
-                onRecord(UInt32(event.keyCode), carbonMods)
-                return nil
-            }
-
-            context.coordinator.globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { _ in
-                onCancel()
-            }
-
-            context.coordinator.onCancel = onCancel
-            NotificationCenter.default.addObserver(
-                context.coordinator,
-                selector: #selector(Coordinator.applicationDidResignActive),
-                name: NSApplication.didResignActiveNotification,
-                object: nil
-            )
-
-        } else {
-            context.coordinator.removeMonitors()
-        }
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    @MainActor
-    final class Coordinator: NSObject {
-        var localMonitor: Any?
-        var globalMonitor: Any?
-        var onCancel: (() -> Void)?
-
-        @objc func applicationDidResignActive() {
-            onCancel?()
-        }
-
-        func removeMonitors() {
-            if let localMonitor {
-                NSEvent.removeMonitor(localMonitor)
-                self.localMonitor = nil
-            }
-            if let globalMonitor {
-                NSEvent.removeMonitor(globalMonitor)
-                self.globalMonitor = nil
-            }
-            NotificationCenter.default.removeObserver(
-                self,
-                name: NSApplication.didResignActiveNotification,
-                object: nil
-            )
-            onCancel = nil
-        }
-    }
-
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
-        coordinator.removeMonitors()
     }
 }

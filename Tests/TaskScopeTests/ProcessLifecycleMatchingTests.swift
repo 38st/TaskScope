@@ -179,6 +179,105 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertTrue(harness.signals.isEmpty)
     }
 
+    func testTerminationReportsRejectedSignal() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [target],
+            signalResults: [false]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: false,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .signalRejected)
+        XCTAssertEqual(harness.signals.map(\.0), [SIGTERM])
+    }
+
+    func testTerminationReportsUnavailableEscalationInventory() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventoryResults: [
+                .success([target]),
+                .failure(.commandFailed("ps timed out"))
+            ],
+            executablePathsAtSignal: [target.pid: target.command]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .escalationUnavailable)
+        XCTAssertEqual(harness.signals.map(\.0), [SIGTERM])
+    }
+
+    func testTerminationReportsRejectedEscalationSignal() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [target],
+            signalResults: [true, false]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .signalRejected)
+        XCTAssertEqual(harness.signals.map(\.0), [SIGTERM, SIGKILL])
+    }
+
+    func testRejectedTermIsNotReportedAsFailureWhenCapturedTargetExited() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventoryResults: [.success([target]), .success([])],
+            executablePathsAtSignal: [target.pid: target.executablePath!],
+            signalResults: [false]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .targetsExited)
+        XCTAssertEqual(harness.signals.map(\.0), [SIGTERM])
+    }
+
     func testHelperTerminationTargetsAreRestrictedToConfiguredAppBundle() {
         let inventory = [
             process(pid: 10, command: "/Applications/Example.app/Contents/Library/LaunchServices/ExampleHelper"),
@@ -271,6 +370,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
     func testAgentBootstrapExecutesAndVerifiesThroughInjectedRuntime() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
+            launchAgentLabels: ["/agents/example.plist": "example.agent"],
             commandResults: [
                 result(stderr: "Could not find service", exitCode: 113),
                 result(exitCode: 0),
@@ -291,6 +391,67 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             5
         )
         XCTAssertTrue(harness.commands.contains { $0.contains("bootstrap") })
+        XCTAssertTrue(harness.commands.contains { $0.contains("kickstart") })
+    }
+
+    func testAgentBootstrapRejectsMismatchedPlistLabelBeforeMutation() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            launchAgentLabels: ["/agents/example.plist": "actual.agent"],
+            commandResults: []
+        )
+
+        let batch = await ProcessLifecycleController.bootstrapUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .failed)
+        XCTAssertTrue(batch.jobs.first?.detail.contains("actual.agent") == true)
+        XCTAssertTrue(harness.commands.isEmpty)
+    }
+
+    func testAgentBootstrapReportsEnableFailureAndDoesNotKickstart() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            launchAgentLabels: ["/agents/example.plist": "example.agent"],
+            commandResults: [
+                result(stderr: "Could not find service", exitCode: 113),
+                result(exitCode: 0),
+                result(stderr: "Operation not permitted", exitCode: 1)
+            ]
+        )
+
+        let batch = await ProcessLifecycleController.bootstrapUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .failed)
+        XCTAssertEqual(batch.jobs.first?.detail, "Operation not permitted")
+        XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
+    }
+
+    func testLoadedAgentStillRetriesEnableAndKickstart() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            launchAgentLabels: ["/agents/example.plist": "example.agent"],
+            commandResults: [
+                result(stdout: "pid = 42", exitCode: 0),
+                result(exitCode: 0),
+                result(exitCode: 0),
+                result(stdout: "pid = 42", exitCode: 0)
+            ]
+        )
+
+        let batch = await ProcessLifecycleController.bootstrapUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .changed)
+        XCTAssertFalse(harness.commands.contains { $0.contains("bootstrap") })
+        XCTAssertTrue(harness.commands.contains { $0.contains(" enable ") })
         XCTAssertTrue(harness.commands.contains { $0.contains("kickstart") })
     }
 
@@ -456,26 +617,33 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
 private final class LifecycleRuntimeHarness: @unchecked Sendable {
     private let lock = NSLock()
     private let existingPaths: Set<String>
+    private let launchAgentLabels: [String: String]
     private var commandResults: [ShellCommandResult]
-    private let inventory: [AppProcess]
+    private var inventoryResults: [Result<[AppProcess], ProcessInventoryError>]
     private let executablePathsAtSignal: [Int32: String]
+    private var signalResults: [Bool]
     private var recordedCommands: [String] = []
     private var recordedSleepDurations: [UInt64] = []
     private var recordedSignals: [(Int32, Int32)] = []
 
     init(
         existingPaths: Set<String>,
+        launchAgentLabels: [String: String] = [:],
         commandResults: [ShellCommandResult],
         inventory: [AppProcess] = [],
-        executablePathsAtSignal: [Int32: String]? = nil
+        inventoryResults: [Result<[AppProcess], ProcessInventoryError>]? = nil,
+        executablePathsAtSignal: [Int32: String]? = nil,
+        signalResults: [Bool] = [true]
     ) {
         self.existingPaths = existingPaths
+        self.launchAgentLabels = launchAgentLabels
         self.commandResults = commandResults
-        self.inventory = inventory
+        self.inventoryResults = inventoryResults ?? [.success(inventory)]
         self.executablePathsAtSignal = executablePathsAtSignal
             ?? Dictionary(uniqueKeysWithValues: inventory.compactMap { process in
                 process.executablePath.map { (process.pid, $0) }
             })
+        self.signalResults = signalResults
     }
 
     var runtime: ProcessLifecycleRuntime {
@@ -483,6 +651,9 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
             userID: 501,
             fileExists: { [self] path in
                 existingPaths.contains(path)
+            },
+            launchAgentLabel: { [self] path in
+                launchAgentLabels[path]
             },
             runCommand: { [self] command, _ in
                 lock.withLock {
@@ -501,7 +672,13 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
                 }
             },
             loadProcessInventory: { [self] in
-                .success(inventory)
+                lock.withLock {
+                    guard inventoryResults.count > 1 else {
+                        return inventoryResults.first
+                            ?? .failure(.commandFailed("No fake inventory result configured."))
+                    }
+                    return inventoryResults.removeFirst()
+                }
             },
             executablePathForPID: { [self] pid in
                 executablePathsAtSignal[pid]
@@ -509,8 +686,11 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
             sendSignal: { [self] signal, pid in
                 lock.withLock {
                     recordedSignals.append((signal, pid))
+                    guard signalResults.count > 1 else {
+                        return signalResults.first ?? false
+                    }
+                    return signalResults.removeFirst()
                 }
-                return true
             },
             sleep: { [self] duration in
                 lock.withLock {

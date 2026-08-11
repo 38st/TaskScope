@@ -1,199 +1,4 @@
-import Darwin
 import Foundation
-
-struct ProcessLifecycleRuntime: Sendable {
-    var userID: uid_t
-    var fileExists: @Sendable (String) -> Bool
-    var runCommand: @Sendable (String, TimeInterval) async -> ShellCommandResult
-    var loadProcessInventory: @Sendable () async -> Result<[AppProcess], ProcessInventoryError>
-    var executablePathForPID: @Sendable (Int32) -> String? = {
-        ProcessListReader.executablePath(for: $0)
-    }
-    var sendSignal: @Sendable (Int32, Int32) -> Bool = { signal, pid in
-        Darwin.kill(pid, signal) == 0
-    }
-    var sleep: @Sendable (UInt64) async -> Void
-
-    static let live = ProcessLifecycleRuntime(
-        userID: getuid(),
-        fileExists: { path in
-            FileManager.default.fileExists(atPath: path)
-        },
-        runCommand: { command, timeout in
-            await ShellCommandRunner.run(command, timeout: timeout)
-        },
-        loadProcessInventory: {
-            await ProcessListReader.currentProcessList(fetchExtendedStats: false)
-        },
-        executablePathForPID: { ProcessListReader.executablePath(for: $0) },
-        sendSignal: { signal, pid in Darwin.kill(pid, signal) == 0 },
-        sleep: { nanoseconds in
-            try? await Task.sleep(nanoseconds: nanoseconds)
-        }
-    )
-}
-
-enum LifecycleJobState: String, Equatable, Sendable {
-    case missing
-    case alreadyLoaded
-    case alreadyUnloaded
-    case changed
-    case failed
-    case verified
-}
-
-enum ProcessTerminationOutcome: Equatable, Sendable {
-    /// SIGTERM (and any escalation) was sent to every match.
-    case signalled
-    /// The inventory read succeeded and nothing matched the name.
-    case noMatchingProcesses
-    /// The process list could not be read, so nothing was signalled and nothing
-    /// is known about whether the target is running.
-    case inventoryUnavailable
-}
-
-struct LifecycleJobResult: Equatable, Sendable {
-    var label: String
-    var state: LifecycleJobState
-    var detail: String
-
-    var succeeded: Bool {
-        ![.missing, .failed].contains(state)
-    }
-}
-
-struct LifecycleBatchResult: Equatable, Sendable {
-    var jobs: [LifecycleJobResult]
-
-    static let notNeeded = LifecycleBatchResult(jobs: [])
-
-    var succeeded: Bool {
-        jobs.allSatisfy(\.succeeded)
-    }
-
-    var didChangeState: Bool {
-        jobs.contains { $0.state == .changed }
-    }
-
-    var failureSummary: String? {
-        let failures = jobs.filter { !$0.succeeded }
-        guard !failures.isEmpty else { return nil }
-        return failures.map { "\($0.label): \($0.detail)" }.joined(separator: "; ")
-    }
-}
-
-struct LifecycleReport: Identifiable, Equatable, Sendable {
-    var id = UUID()
-    var title: String
-    var jobs: [LifecycleJobResult]
-}
-
-protocol ProcessLifecycleServicing: Sendable {
-    func appBundleExists(at path: String) -> Bool
-    func settleAfterProcessChange() async
-    @discardableResult
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome
-    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome
-    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome
-    func isProcessNamedRunning(_ name: String) async -> Bool
-    func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
-    func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
-    func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult
-    func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool
-    func waitForMainProcess(for preset: WatchedAppPreset, timeoutSeconds: TimeInterval) async -> Bool
-    func openAppBundle(at path: String) async -> Bool
-}
-
-extension ProcessLifecycleServicing {
-    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
-        await terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
-    }
-
-    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
-        await terminateProcess(named: name, forceIfStillRunning: true)
-    }
-
-    func waitForMainProcess(for preset: WatchedAppPreset, timeoutSeconds: TimeInterval) async -> Bool {
-        await waitForProcessNamed(preset.mainProcessName, timeoutSeconds: timeoutSeconds)
-    }
-}
-
-struct SystemProcessLifecycleService: ProcessLifecycleServicing {
-    func appBundleExists(at path: String) -> Bool {
-        FileManager.default.fileExists(atPath: path)
-    }
-
-    func settleAfterProcessChange() async {
-        await ProcessLifecycleController.settleAfterProcessChange()
-    }
-
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome {
-        await ProcessLifecycleController.terminateProcess(
-            named: name,
-            forceIfStillRunning: forceIfStillRunning
-        )
-    }
-
-    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
-        return await ProcessLifecycleController.terminateProcess(
-            named: preset.mainProcessName,
-            forceIfStillRunning: true,
-            expectedExecutableDirectory: Self.executableDirectory(for: preset)
-        )
-    }
-
-    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
-        await ProcessLifecycleController.terminateProcess(
-            named: name,
-            forceIfStillRunning: true,
-            expectedExecutableDirectory: Self.bundleContentsDirectory(for: preset)
-        )
-    }
-
-    func isProcessNamedRunning(_ name: String) async -> Bool {
-        await ProcessLifecycleController.isProcessNamedRunning(name)
-    }
-
-    func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
-        await ProcessLifecycleController.unloadUserLaunchAgents(for: preset)
-    }
-
-    func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
-        await ProcessLifecycleController.bootstrapUserLaunchAgents(for: preset)
-    }
-
-    func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
-        await ProcessLifecycleController.ensureSystemLaunchDaemons(for: preset)
-    }
-
-    func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool {
-        await ProcessLifecycleController.waitForProcessNamed(name, timeoutSeconds: timeoutSeconds)
-    }
-
-    func waitForMainProcess(for preset: WatchedAppPreset, timeoutSeconds: TimeInterval) async -> Bool {
-        await ProcessLifecycleController.waitForProcessNamed(
-            preset.mainProcessName,
-            timeoutSeconds: timeoutSeconds,
-            expectedExecutableDirectory: Self.executableDirectory(for: preset)
-        )
-    }
-
-    func openAppBundle(at path: String) async -> Bool {
-        await ProcessLifecycleController.openAppBundle(at: path)
-    }
-
-    private static func executableDirectory(for preset: WatchedAppPreset) -> String {
-        URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents/MacOS", isDirectory: true)
-            .standardizedFileURL.path + "/"
-    }
-
-    private static func bundleContentsDirectory(for preset: WatchedAppPreset) -> String {
-        URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents", isDirectory: true)
-            .standardizedFileURL.path + "/"
-    }
-}
 
 enum ProcessLifecycleController {
     enum LaunchJobInspection: Equatable {
@@ -205,7 +10,7 @@ enum ProcessLifecycleController {
     static func settleAfterProcessChange(
         runtime: ProcessLifecycleRuntime = .live
     ) async {
-        await runtime.sleep(300_000_000)
+        await ProcessTerminationController.settle(runtime: runtime)
     }
 
     @discardableResult
@@ -216,56 +21,30 @@ enum ProcessLifecycleController {
         currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> ProcessTerminationOutcome {
-        // A read failure must be reported, not swallowed: callers previously could
-        // not tell "no matching processes" from "could not read the process list",
-        // and reported a stop that never happened as success.
-        guard case .success(let initialInventory) =
-            await runtime.loadProcessInventory() else {
-            return .inventoryUnavailable
-        }
-
-        let targets = terminationTargets(
+        await ProcessTerminationController.terminate(
             named: name,
+            policy: forceIfStillRunning ? .gracefulThenForce : .graceful,
             expectedExecutableDirectory: expectedExecutableDirectory,
             excludingPID: currentPID,
-            in: initialInventory
+            runtime: runtime
         )
-        let termTargets = targets.filter {
-            executablePathStillMatches(
-                $0,
-                expectedExecutableDirectory: expectedExecutableDirectory,
-                runtime: runtime
-            )
-        }
-        guard !termTargets.isEmpty else { return .noMatchingProcesses }
-        for process in termTargets {
-            _ = runtime.sendSignal(SIGTERM, process.pid)
-        }
+    }
 
-        guard forceIfStillRunning else { return .signalled }
-
-        await settleAfterProcessChange(runtime: runtime)
-        guard case .success(let refreshedInventory) =
-            await runtime.loadProcessInventory() else {
-            return .signalled
-        }
-
-        let originalIdentities = Set(termTargets.map(\.identity))
-        for process in terminationTargets(
+    @discardableResult
+    static func terminateProcess(
+        named name: String,
+        policy: TerminationPolicy,
+        expectedExecutableDirectory: String? = nil,
+        currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
+        runtime: ProcessLifecycleRuntime = .live
+    ) async -> ProcessTerminationOutcome {
+        await ProcessTerminationController.terminate(
             named: name,
+            policy: policy,
             expectedExecutableDirectory: expectedExecutableDirectory,
             excludingPID: currentPID,
-            in: refreshedInventory
+            runtime: runtime
         )
-            where originalIdentities.contains(process.identity)
-                && executablePathStillMatches(
-                    process,
-                    expectedExecutableDirectory: expectedExecutableDirectory,
-                    runtime: runtime
-                ) {
-            _ = runtime.sendSignal(SIGKILL, process.pid)
-        }
-        return .signalled
     }
 
     static func isProcessNamedRunning(
@@ -273,23 +52,18 @@ enum ProcessLifecycleController {
         expectedExecutableDirectory: String? = nil,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> Bool {
-        guard case .success(let inventory) =
-            await runtime.loadProcessInventory() else {
-            return false
-        }
-        return !terminationTargets(
+        await ProcessTerminationController.isRunning(
             named: name,
             expectedExecutableDirectory: expectedExecutableDirectory,
-            excludingPID: ProcessInfo.processInfo.processIdentifier,
-            in: inventory
-        ).isEmpty
+            runtime: runtime
+        )
     }
 
     static func matchingProcesses(
         named name: String,
         in inventory: [AppProcess]
     ) -> [AppProcess] {
-        inventory.filter { $0.name == name }
+        ProcessTerminationController.matchingProcesses(named: name, in: inventory)
     }
 
     static func terminationTargets(
@@ -298,32 +72,12 @@ enum ProcessLifecycleController {
         excludingPID: Int32,
         in inventory: [AppProcess]
     ) -> [AppProcess] {
-        matchingProcesses(named: name, in: inventory).filter { process in
-            guard process.pid != excludingPID else { return false }
-            guard let expectedExecutableDirectory else { return true }
-            return process.executablePath?.hasPrefix(expectedExecutableDirectory) == true
-        }
-    }
-
-    private static func executablePathStillMatches(
-        _ process: AppProcess,
-        expectedExecutableDirectory: String?,
-        runtime: ProcessLifecycleRuntime
-    ) -> Bool {
-        guard let expectedExecutableDirectory else { return true }
-        guard let inventoryPath = process.executablePath,
-              let path = runtime.executablePathForPID(process.pid),
-              path.hasPrefix("/") else {
-            return false
-        }
-        // macOS has no pid handle: a residual exit/reuse race remains in the few
-        // instructions between this vnode-path lookup and kill(2). The refreshed
-        // start-time identity and this repeated check also guard escalation.
-        let standardizedPath = URL(fileURLWithPath: path).standardizedFileURL.path
-        let standardizedInventoryPath = URL(fileURLWithPath: inventoryPath)
-            .standardizedFileURL.path
-        return standardizedPath == standardizedInventoryPath
-            && standardizedPath.hasPrefix(expectedExecutableDirectory)
+        ProcessTerminationController.terminationTargets(
+            named: name,
+            expectedExecutableDirectory: expectedExecutableDirectory,
+            excludingPID: excludingPID,
+            in: inventory
+        )
     }
 
     static func unloadUserLaunchAgents(
@@ -408,16 +162,28 @@ enum ProcessLifecycleController {
                 ))
                 continue
             }
-
-            let target = "gui/\(uid)/\(job.label)"
-            switch await inspectLaunchJob(target, runtime: runtime) {
-            case .loaded:
+            guard let plistLabel = runtime.launchAgentLabel(job.plistPath) else {
                 results.append(LifecycleJobResult(
                     label: job.label,
-                    state: .alreadyLoaded,
-                    detail: "Already loaded."
+                    state: .failed,
+                    detail: "Could not read a valid Label from \(job.plistPath)."
                 ))
                 continue
+            }
+            guard plistLabel == job.label else {
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .failed,
+                    detail: "Configured label does not match plist Label \(plistLabel)."
+                ))
+                continue
+            }
+
+            let target = "gui/\(uid)/\(job.label)"
+            var wasAlreadyLoaded = false
+            switch await inspectLaunchJob(target, runtime: runtime) {
+            case .loaded:
+                wasAlreadyLoaded = true
             case .failed(let detail):
                 results.append(LifecycleJobResult(
                     label: job.label,
@@ -429,23 +195,33 @@ enum ProcessLifecycleController {
                 break
             }
 
-            let bootstrap = await runtime.runCommand(
-                "/bin/launchctl bootstrap \(ShellCommandRunner.shellQuoted("gui/\(uid)")) \(ShellCommandRunner.shellQuoted(job.plistPath))",
-                15
-            )
-            guard bootstrap.succeeded else {
-                results.append(LifecycleJobResult(
-                    label: job.label,
-                    state: .failed,
-                    detail: commandFailure(bootstrap, fallback: "Bootstrap failed.")
-                ))
-                continue
+            if !wasAlreadyLoaded {
+                let bootstrap = await runtime.runCommand(
+                    "/bin/launchctl bootstrap \(ShellCommandRunner.shellQuoted("gui/\(uid)")) \(ShellCommandRunner.shellQuoted(job.plistPath))",
+                    15
+                )
+                guard bootstrap.succeeded else {
+                    results.append(LifecycleJobResult(
+                        label: job.label,
+                        state: .failed,
+                        detail: commandFailure(bootstrap, fallback: "Bootstrap failed.")
+                    ))
+                    continue
+                }
             }
 
-            _ = await runtime.runCommand(
+            let enable = await runtime.runCommand(
                 "/bin/launchctl enable \(ShellCommandRunner.shellQuoted(target))",
                 15
             )
+            guard enable.succeeded else {
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .failed,
+                    detail: commandFailure(enable, fallback: "Loaded, but enable failed.")
+                ))
+                continue
+            }
             let kickstart = await runtime.runCommand(
                 "/bin/launchctl kickstart -k \(ShellCommandRunner.shellQuoted(target))",
                 15
@@ -455,7 +231,7 @@ enum ProcessLifecycleController {
                 label: job.label,
                 state: kickstart.succeeded && verified ? .changed : .failed,
                 detail: kickstart.succeeded && verified
-                    ? "Loaded and verified."
+                    ? (wasAlreadyLoaded ? "Re-enabled, restarted, and verified." : "Loaded and verified.")
                     : commandFailure(kickstart, fallback: "Job could not be verified.")
             ))
         }
@@ -523,19 +299,9 @@ enum ProcessLifecycleController {
         expectedExecutableDirectory: String? = nil,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while Date() < deadline {
-            if await isProcessNamedRunning(
-                name,
-                expectedExecutableDirectory: expectedExecutableDirectory,
-                runtime: runtime
-            ) {
-                return true
-            }
-            await runtime.sleep(300_000_000)
-        }
-        return await isProcessNamedRunning(
-            name,
+        await ProcessTerminationController.waitUntilRunning(
+            named: name,
+            timeoutSeconds: timeoutSeconds,
             expectedExecutableDirectory: expectedExecutableDirectory,
             runtime: runtime
         )

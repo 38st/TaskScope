@@ -1,0 +1,94 @@
+import Foundation
+
+struct AppProcess: Identifiable, Equatable, Sendable {
+    var pid: Int32
+    var parentPID: Int32
+    var cpu: Double
+    var memoryMB: Double
+    var command: String
+    /// Kernel-resolved executable vnode path. Never derived from argv/`ps comm`.
+    var executablePath: String?
+    var elapsedTime: String
+    var startTime: String
+    var netInKB: Double?
+    var netOutKB: Double?
+    var diskReadBlocks: Double?
+    var diskWriteBlocks: Double?
+
+    init(
+        pid: Int32,
+        parentPID: Int32,
+        cpu: Double,
+        memoryMB: Double,
+        command: String,
+        executablePath: String? = nil,
+        elapsedTime: String,
+        startTime: String = "",
+        netInKB: Double?,
+        netOutKB: Double?,
+        diskReadBlocks: Double?,
+        diskWriteBlocks: Double?
+    ) {
+        self.pid = pid
+        self.parentPID = parentPID
+        self.cpu = cpu
+        self.memoryMB = memoryMB
+        self.command = command
+        self.executablePath = executablePath
+        self.elapsedTime = elapsedTime
+        self.startTime = startTime
+        self.netInKB = netInKB
+        self.netOutKB = netOutKB
+        self.diskReadBlocks = diskReadBlocks
+        self.diskWriteBlocks = diskWriteBlocks
+    }
+
+    var id: Int32 {
+        pid
+    }
+
+    var name: String {
+        let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lastPathComponent = URL(fileURLWithPath: trimmedCommand).lastPathComponent
+        return lastPathComponent.isEmpty ? trimmedCommand : lastPathComponent
+    }
+
+    var displayCommand: String {
+        command.replacingOccurrences(of: NSHomeDirectory(), with: "~")
+    }
+
+    var identity: ProcessIdentity {
+        ProcessIdentity(pid: pid, startTime: startTime, command: command)
+    }
+
+    /// Runtime reported by `ps etime`, whose shape is `[[dd-]hh:]mm:ss`.
+    var runtimeSeconds: TimeInterval? {
+        let dayAndClock = elapsedTime.split(separator: "-", maxSplits: 1)
+        let dayCount: Int
+        let clock: Substring
+        if dayAndClock.count == 2 {
+            guard let parsedDays = Int(dayAndClock[0]) else { return nil }
+            dayCount = parsedDays
+            clock = dayAndClock[1]
+        } else {
+            dayCount = 0
+            clock = dayAndClock[0]
+        }
+
+        let components = clock.split(separator: ":").compactMap { Int($0) }
+        guard components.count == 2 || components.count == 3 else { return nil }
+        let hours = components.count == 3 ? components[0] : 0
+        let minutes = components[components.count - 2]
+        let seconds = components[components.count - 1]
+        guard minutes < 60, seconds < 60 else { return nil }
+        return TimeInterval((((dayCount * 24) + hours) * 60 + minutes) * 60 + seconds)
+    }
+}
+
+struct ProcessDetail: Equatable, Sendable {
+    var pid: Int32
+    var parentPID: Int32
+    var user: String
+    var startTime: String
+    var command: String
+}

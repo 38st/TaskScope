@@ -15,8 +15,7 @@ final class WatchedAppsStore: ObservableObject {
     @Published private(set) var persistenceIssue: String?
     @Published private(set) var validationError: String?
 
-    private let userDefaults: UserDefaults
-    private let key: String
+    private let persistence: RecoveringCodableStorage<[WatchedAppPreset]>
     private var allowsPersistence: Bool
     private var recoveredDecodedPayload: Bool
 
@@ -24,9 +23,12 @@ final class WatchedAppsStore: ObservableObject {
         userDefaults: UserDefaults = .standard,
         key: String = WatchedAppsStore.defaultPersistenceKey
     ) {
-        self.userDefaults = userDefaults
-        self.key = key
-        guard let data = userDefaults.data(forKey: key) else {
+        let persistence = RecoveringCodableStorage<[WatchedAppPreset]>(
+            userDefaults: userDefaults,
+            key: key
+        )
+        self.persistence = persistence
+        guard persistence.rawData != nil else {
             presets = [.globalProtect]
             allowsPersistence = true
             recoveredDecodedPayload = false
@@ -37,17 +39,14 @@ final class WatchedAppsStore: ObservableObject {
             return
         }
 
-        do {
-            let decoded = try JSONDecoder().decode([WatchedAppPreset].self, from: data)
+        let loaded = persistence.load()
+        if let decoded = loaded.value {
             let validated = Self.validatedPresets(decoded)
             presets = validated.presets
             if validated.rejectedCount > 0 {
-                let backupKey = "\(key).rejectedMigrationBackup"
-                Self.preserveFirstBackup(
-                    data,
-                    userDefaults: userDefaults,
-                    backupKey: backupKey
-                )
+                let backupKey = persistence.preserveCurrentPayload(
+                    suffix: "rejectedMigrationBackup"
+                ) ?? "\(key).rejectedMigrationBackup"
                 allowsPersistence = false
                 recoveredDecodedPayload = true
                 persistenceIssue = "Rejected \(validated.rejectedCount) unsafe or invalid stored preset\(validated.rejectedCount == 1 ? "" : "s"). The first rejected payload is preserved as \(backupKey); review or export the recovered presets, then reset to commit them."
@@ -55,13 +54,8 @@ final class WatchedAppsStore: ObservableObject {
                 allowsPersistence = true
                 recoveredDecodedPayload = false
             }
-        } catch {
-            let backupKey = "\(key).corruptBackup"
-            Self.preserveFirstBackup(
-                data,
-                userDefaults: userDefaults,
-                backupKey: backupKey
-            )
+        } else {
+            let backupKey = loaded.backupKey ?? "\(key).corruptBackup"
             presets = []
             allowsPersistence = false
             recoveredDecodedPayload = false
@@ -282,20 +276,8 @@ final class WatchedAppsStore: ObservableObject {
     }
 
     private func persistIfAllowed() {
-        guard allowsPersistence,
-              let data = try? JSONEncoder().encode(presets) else {
-            return
-        }
-        userDefaults.set(data, forKey: key)
+        guard allowsPersistence else { return }
+        persistence.save(presets)
     }
 
-    nonisolated private static func preserveFirstBackup(
-        _ data: Data,
-        userDefaults: UserDefaults,
-        backupKey: String
-    ) {
-        if userDefaults.data(forKey: backupKey) == nil {
-            userDefaults.set(data, forKey: backupKey)
-        }
-    }
 }

@@ -89,7 +89,7 @@ final class AutoStopRulesStoreTests: XCTestCase {
         store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill))
         store.add(AutoStopRule(processName: "Other", runtimeMinutes: 1, action: .kill))
         var actionOrder: [Int32] = []
-        store.start(cadence: 60) { process in
+        store.start(cadence: 60) { _, process in
             actionOrder.append(process.pid)
             return process.pid == 41 ? .stopped : .rejected
         }

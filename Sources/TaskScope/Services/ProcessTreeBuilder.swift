@@ -7,6 +7,22 @@ struct ProcessTreeNode: Identifiable, Equatable {
 }
 
 enum ProcessTreeBuilder {
+    static func visibleProcesses(
+        in roots: [ProcessTreeNode],
+        expandedPIDs: Set<Int32>
+    ) -> [AppProcess] {
+        roots.flatMap { node in
+            var visible = [node.process]
+            if expandedPIDs.contains(node.process.pid) {
+                visible.append(contentsOf: visibleProcesses(
+                    in: node.children,
+                    expandedPIDs: expandedPIDs
+                ))
+            }
+            return visible
+        }
+    }
+
     /// Builds a stable tree and, when `matchingPIDs` is supplied, retains every
     /// available ancestor needed to give matching rows hierarchy context.
     static func build(

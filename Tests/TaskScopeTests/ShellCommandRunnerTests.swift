@@ -45,6 +45,44 @@ final class ShellCommandRunnerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
+    func testTimeoutTerminatesDescendantsThatIgnoreTermAndHoldPipesOpen() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskscope-timeout-group-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        let started = Date()
+        let result = await ShellCommandRunner.run(
+            descendantHoldingPipesCommand(marker: marker),
+            timeout: 0.25
+        )
+        let pids = try processIdentifiers(from: marker)
+        XCTAssertEqual(result.exitCode, -3)
+        XCTAssertTrue(result.stderr.contains("timed out"))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        await assertProcessDisappears(pids.descendant)
+    }
+
+    func testCancellationTerminatesDescendantsThatIgnoreTermAndHoldPipesOpen() async throws {
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskscope-cancel-group-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: marker) }
+
+        let started = Date()
+        let command = descendantHoldingPipesCommand(marker: marker)
+        let task = Task {
+            await ShellCommandRunner.run(command, timeout: 10)
+        }
+
+        let pids = try await waitForProcessIdentifiers(from: marker)
+        task.cancel()
+        let result = await task.value
+
+        XCTAssertEqual(result.exitCode, -2)
+        XCTAssertTrue(result.stderr.hasSuffix("Command cancelled."))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        await assertProcessDisappears(pids.descendant)
+    }
+
     func testCancellationBeforeRunDoesNotLaunchCommand() async {
         let marker = FileManager.default.temporaryDirectory
             .appendingPathComponent("taskscope-pre-run-\(UUID().uuidString)")
@@ -139,5 +177,59 @@ final class ShellCommandRunnerTests: XCTestCase {
         errno = 0
         XCTAssertEqual(Darwin.kill(pid, 0), -1)
         XCTAssertEqual(errno, ESRCH)
+    }
+
+    private func descendantHoldingPipesCommand(marker: URL) -> String {
+        """
+        /bin/sh -c 'trap "" TERM; /bin/sleep 5' &
+        descendant=$!
+        /usr/bin/printf '%s:%s' $$ "$descendant" > \(ShellCommandRunner.shellQuoted(marker.path))
+        wait "$descendant"
+        """
+    }
+
+    private func processIdentifiers(from marker: URL) throws -> (group: Int32, descendant: Int32) {
+        let contents = try String(contentsOf: marker, encoding: .utf8)
+        let components = contents.split(separator: ":")
+        guard components.count == 2,
+              let group = Int32(components[0]),
+              let descendant = Int32(components[1]) else {
+            XCTFail("Invalid process-group handshake: \(contents)")
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        return (group, descendant)
+    }
+
+    private func waitForProcessIdentifiers(
+        from marker: URL
+    ) async throws -> (group: Int32, descendant: Int32) {
+        for _ in 0..<200 {
+            if let contents = try? String(contentsOf: marker, encoding: .utf8) {
+                let components = contents.split(separator: ":")
+                if components.count == 2,
+                   let group = Int32(components[0]),
+                   let descendant = Int32(components[1]) {
+                    return (group, descendant)
+                }
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+
+        return try processIdentifiers(from: marker)
+    }
+
+    private func assertProcessDisappears(
+        _ pid: Int32,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<200 {
+            errno = 0
+            if Darwin.kill(pid, 0) == -1, errno == ESRCH {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Descendant PID \(pid) survived command termination.", file: file, line: line)
     }
 }

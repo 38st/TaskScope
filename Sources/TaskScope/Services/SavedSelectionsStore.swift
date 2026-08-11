@@ -94,41 +94,32 @@ final class SavedSelectionsStore: ObservableObject {
         }
     }
 
-    @Published var selections: [SavedSelection] {
+    @Published private(set) var selections: [SavedSelection] {
         didSet { saveToDefaults() }
     }
     @Published private(set) var validationError: String?
     @Published private(set) var recoveryMessage: String?
 
-    private let userDefaults: UserDefaults
-    private let key: String
+    private let persistence: RecoveringCodableStorage<[SavedSelection]>
     private var allowsPersistence: Bool
 
     init(
         userDefaults: UserDefaults = .standard,
         key: String = "TaskScope.savedSelections.v1"
     ) {
-        self.userDefaults = userDefaults
-        self.key = key
+        let persistence = RecoveringCodableStorage<[SavedSelection]>(
+            userDefaults: userDefaults,
+            key: key
+        )
+        self.persistence = persistence
         allowsPersistence = true
-        if let data = userDefaults.data(forKey: key) {
-            do {
-                selections = try JSONDecoder().decode([SavedSelection].self, from: data)
-            } catch {
-                let backupKey = "\(key).corruptBackup"
-                // Preserve the first backup rather than clobbering it on a later
-                // corrupt read.
-                if userDefaults.data(forKey: backupKey) == nil {
-                    userDefaults.set(data, forKey: backupKey)
-                }
-                selections = []
-                // Writing now would replace the unreadable payload with the empty
-                // array we fell back to, destroying it at its primary key.
-                allowsPersistence = false
-                recoveryMessage = "Saved selections were unreadable and backed up as \(backupKey)."
-            }
-        } else {
-            selections = []
+        let loaded = persistence.load()
+        selections = loaded.value ?? []
+        if let backupKey = loaded.backupKey {
+            // Writing now would replace the unreadable payload with the empty
+            // array we fell back to, destroying it at its primary key.
+            allowsPersistence = false
+            recoveryMessage = "Saved selections were unreadable and backed up as \(backupKey)."
         }
     }
 
@@ -136,20 +127,25 @@ final class SavedSelectionsStore: ObservableObject {
         !allowsPersistence
     }
 
-    /// Discards the unreadable payload and resumes writing, keeping whatever the
-    /// user rebuilt during the corrupt session.
+    /// Discards the unreadable payload and resumes durable mutations from an empty,
+    /// known-safe selection list.
     func resetAfterCorruption() {
+        guard !allowsPersistence else { return }
         allowsPersistence = true
         recoveryMessage = nil
+        validationError = nil
         saveToDefaults()
+    }
+
+    private func rejectIfReadOnly() -> Bool {
+        guard !allowsPersistence else { return false }
+        validationError = "Saved selection data is unreadable; reset it before making changes."
+        return true
     }
 
     @discardableResult
     func save(name: String, processes: [AppProcess]) -> Bool {
-        guard allowsPersistence else {
-            validationError = "Saved selection data is unreadable; reset it before saving."
-            return false
-        }
+        guard !rejectIfReadOnly() else { return false }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             validationError = "Selection name is required."
@@ -177,6 +173,7 @@ final class SavedSelectionsStore: ObservableObject {
 
     @discardableResult
     func rename(_ selection: SavedSelection, to name: String) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else {
             validationError = "Selection name is required."
@@ -236,12 +233,21 @@ final class SavedSelectionsStore: ObservableObject {
         )
     }
 
-    func remove(at offsets: IndexSet) {
+    @discardableResult
+    func remove(at offsets: IndexSet) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
         selections.remove(atOffsets: offsets)
+        validationError = nil
+        return true
     }
 
-    func remove(_ selection: SavedSelection) {
+    @discardableResult
+    func remove(_ selection: SavedSelection) -> Bool {
+        guard !rejectIfReadOnly() else { return false }
+        guard selections.contains(where: { $0.id == selection.id }) else { return false }
         selections.removeAll { $0.id == selection.id }
+        validationError = nil
+        return true
     }
 
     private func containsName(_ name: String, excluding id: UUID? = nil) -> Bool {
@@ -251,8 +257,8 @@ final class SavedSelectionsStore: ObservableObject {
     }
 
     private func saveToDefaults() {
-        guard allowsPersistence, let data = try? JSONEncoder().encode(selections) else { return }
-        userDefaults.set(data, forKey: key)
+        guard allowsPersistence else { return }
+        persistence.save(selections)
     }
 
 }

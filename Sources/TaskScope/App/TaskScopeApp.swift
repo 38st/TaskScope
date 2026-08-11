@@ -1,78 +1,6 @@
 import AppKit
 import SwiftUI
 
-struct TaskScopeLaunchSignal: Equatable, Sendable {
-    var arguments: [String]
-    var launchedAsLoginItem: Bool
-    var receivedOpenURL: Bool
-}
-
-enum TaskScopeLaunchContext: Equatable {
-    case pending
-    case interactive
-    case loginItem
-    case automation
-    case urlAutomation
-    case startupVerification
-
-    static func detect(_ signal: TaskScopeLaunchSignal) -> TaskScopeLaunchContext {
-        if signal.arguments.contains("--verify-startup") {
-            return .startupVerification
-        }
-        if signal.launchedAsLoginItem {
-            return .loginItem
-        }
-        if signal.arguments.contains("--background")
-            || signal.arguments.contains("--automation") {
-            return .automation
-        }
-        if signal.receivedOpenURL {
-            return .urlAutomation
-        }
-        return .interactive
-    }
-
-    static func resolve(
-        current: TaskScopeLaunchContext,
-        signal: TaskScopeLaunchSignal,
-        finalizeInteractiveLaunch: Bool
-    ) -> TaskScopeLaunchContext {
-        let detected = detect(signal)
-        if detected.suppressesAutomaticWindowPresentation {
-            return detected
-        }
-        if current != .pending, current.suppressesAutomaticWindowPresentation {
-            return current
-        }
-        return finalizeInteractiveLaunch ? .interactive : .pending
-    }
-
-    static func receivingURL(
-        current: TaskScopeLaunchContext,
-        phase: TaskScopeLaunchPhase
-    ) -> TaskScopeLaunchContext {
-        guard current != .startupVerification else { return current }
-        return phase == .starting ? .urlAutomation : current
-    }
-
-    var suppressesAutomaticWindowPresentation: Bool {
-        self != .interactive
-    }
-
-    var allowsExplicitCommands: Bool {
-        self != .startupVerification
-    }
-
-    var performsRuntimeBootstrap: Bool {
-        self != .startupVerification
-    }
-}
-
-enum TaskScopeLaunchPhase: Equatable, Sendable {
-    case starting
-    case running
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var launchContext: TaskScopeLaunchContext
@@ -292,6 +220,7 @@ struct TaskScopeApp: App {
     @State private var didBootstrapRuntime = false
     @State private var didRequestOnboarding = false
     @State private var commandCoordinator: AppCommandCoordinator?
+    @State private var notificationEnablement = NotificationEnablementCoordinator()
 
     init() {
         let processManager = ProcessManager()
@@ -442,13 +371,22 @@ struct TaskScopeApp: App {
             processManager.applyCurrentDisplayLimit()
         }
         .onChange(of: settings.enableNotifications) { _, newValue in
-            processManager.enableNotifications = newValue
-            if newValue {
-                Task {
-                    await NotificationService.shared.requestAuthorization()
-                    let running = eligibleNotificationNames()
-                    NotificationService.shared.prime(initialRunningNames: running)
-                }
+            let token = notificationEnablement.beginConfiguration(
+                enabled: newValue,
+                setDeliveryEnabled: { processManager.enableNotifications = $0 }
+            )
+            guard newValue else { return }
+
+            Task {
+                await NotificationService.shared.requestAuthorization()
+                notificationEnablement.completeEnabledConfiguration(
+                    token: token,
+                    currentRunningNames: { eligibleNotificationNames() },
+                    primeBaseline: {
+                        NotificationService.shared.prime(initialRunningNames: $0)
+                    },
+                    setDeliveryEnabled: { processManager.enableNotifications = $0 }
+                )
             }
         }
         .onChange(of: watchedApps.presets) { _, _ in
@@ -456,6 +394,18 @@ struct TaskScopeApp: App {
             // so a newly watched app that was already running is not announced as
             // having just started.
             Task { await processManager.refreshWatchedStatus(showMessage: false) }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+        ) { _ in
+            Task {
+                await TaskScopeExternalStateRefresh.perform(
+                    refreshLoginItem: { loginItemManager.refresh() },
+                    refreshNotificationAuthorization: {
+                        await NotificationService.shared.refreshAuthorizationStatus()
+                    }
+                )
+            }
         }
     }
 
@@ -474,8 +424,13 @@ struct TaskScopeApp: App {
         }
         configurePolling()
         processHistory.start(cadence: settings.refreshIntervalSeconds)
-        autoStopRules.start(cadence: 10) { process in
-            await processManager.terminate(process)
+        autoStopRules.start(cadence: 10) { rule, process in
+            return await processManager.terminate(
+                process,
+                isAuthorized: {
+                    autoStopRules.authorizesAutomaticStop(ruleID: rule.id)
+                }
+            )
         }
         await processManager.refreshWatchedStatus(showMessage: false)
 

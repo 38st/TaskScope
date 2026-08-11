@@ -3,14 +3,7 @@ import Foundation
 import XCTest
 @testable import TaskScope
 
-/// Proof for claim P3: `ProcessManager.detail(for:)` re-reads a row by PID only and
-/// never compares the fresh read against the row's captured `ProcessIdentity`.
-///
-/// `detail(for:)` calls the static `ShellCommandRunner.run` directly
-/// (ProcessManager.swift:579) and `ProcessManager.init` exposes no command-runner
-/// seam, so the `ps` output cannot be faked. This test therefore uses a *real*
-/// child process, following the convention already established by
-/// `ProcessSignalIntegrationTests`.
+/// Integration coverage for the live `ps` detail reader and its PID-reuse guard.
 @MainActor
 final class ProcessDetailIdentityProofTests: XCTestCase {
     func testDetailRejectsStaleRowWhoseIdentityNoLongerOwnsThePID() async throws {
@@ -30,10 +23,8 @@ final class ProcessDetailIdentityProofTests: XCTestCase {
         try await Task.sleep(nanoseconds: 150_000_000)
 
         // The row the user is still looking at, captured while `recycledPID` belonged
-        // to Xcode. `AppProcess.startTime` is `ps lstart` (ProcessListReader.swift:29,
-        // :78) — the same field, from the same program, in the same format that
-        // `detail(for:)` re-reads (ProcessManager.swift:580, :594). The two are
-        // directly comparable strings.
+        // to Xcode. `AppProcess.startTime` and the detail reader both use the same
+        // `ps lstart` field, so the values are directly comparable.
         let staleRow = AppProcess(
             pid: recycledPID,
             parentPID: 1,

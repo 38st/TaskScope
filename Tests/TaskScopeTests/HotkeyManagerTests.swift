@@ -41,4 +41,21 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertEqual(manager.modifiers, originalModifiers)
         XCTAssertEqual(manager.registrationStatus, .unsupported)
     }
+
+    func testConflictMessageOnlyClaimsPreviousShortcutWhenOneRemainsActive() {
+        XCTAssertEqual(
+            HotkeyManager.RegistrationStatus.conflict(
+                OSStatus(eventHotKeyExistsErr),
+                previousShortcutRemainsActive: true
+            ).message,
+            "That shortcut is unavailable. The previous shortcut remains active."
+        )
+        XCTAssertEqual(
+            HotkeyManager.RegistrationStatus.conflict(
+                OSStatus(eventHotKeyExistsErr),
+                previousShortcutRemainsActive: false
+            ).message,
+            "That shortcut is unavailable. No global hotkey is currently active."
+        )
+    }
 }

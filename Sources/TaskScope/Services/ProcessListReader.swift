@@ -39,25 +39,34 @@ enum ProcessListReader {
             return .failure(.commandFailed(detail))
         }
 
-        var parsed = result.stdout
-            .split(separator: "\n")
-            .compactMap(parseProcessLine)
-
-        guard result.stdout.isEmpty || !parsed.isEmpty else {
-            return .failure(.parseFailed)
+        var parsed: [AppProcess]
+        switch parseProcessListOutput(result.stdout) {
+        case .success(let processes):
+            parsed = processes
+        case .failure(let error):
+            return .failure(error)
         }
 
         let resolvedPaths = Dictionary(uniqueKeysWithValues: parsed.compactMap { process in
             executablePath(for: process.pid).map { (process.pid, $0) }
         })
         let validation = await ShellCommandRunner.run(identityValidationCommand)
-        let validatedStartTimes = validation.succeeded
-            ? parseStartTimes(validation.stdout)
-            : [:]
+        let validatedStartTimeMap: [Int32: String]
+        switch validatedStartTimes(from: validation) {
+        case .success(let startTimes):
+            validatedStartTimeMap = startTimes
+        case .failure(let error):
+            return .failure(error)
+        }
+        // Process churn between the two `ps` snapshots is normal (the first
+        // `ps` invocation can itself disappear). Keep only rows whose identity
+        // survived unchanged; malformed validation output still fails the
+        // entire read, but a cleanly missing PID is simply no longer present.
+        parsed = validatedProcesses(parsed, using: validatedStartTimeMap)
         attachExecutablePaths(
             to: &parsed,
             resolvedPaths: resolvedPaths,
-            validatedStartTimes: validatedStartTimes
+            validatedStartTimes: validatedStartTimeMap
         )
 
         if fetchExtendedStats {
@@ -72,6 +81,19 @@ enum ProcessListReader {
         }
 
         return .success(parsed)
+    }
+
+    static func parseProcessListOutput(
+        _ output: String
+    ) -> Result<[AppProcess], ProcessInventoryError> {
+        var processes: [AppProcess] = []
+        for line in output.split(separator: "\n") {
+            guard let process = parseProcessLine(line) else {
+                return .failure(.parseFailed)
+            }
+            processes.append(process)
+        }
+        return .success(processes)
     }
 
     static func parseProcessLine(_ line: Substring) -> AppProcess? {
@@ -147,7 +169,9 @@ enum ProcessListReader {
         }
     }
 
-    static func parseStartTimes(_ output: String) -> [Int32: String] {
+    static func parseStartTimes(
+        _ output: String
+    ) -> Result<[Int32: String], ProcessInventoryError> {
         var values: [Int32: String] = [:]
         for line in output.split(separator: "\n") {
             let parts = line.split(
@@ -155,10 +179,37 @@ enum ProcessListReader {
                 maxSplits: 5,
                 omittingEmptySubsequences: true
             )
-            guard parts.count == 6, let pid = Int32(parts[0]) else { continue }
+            guard parts.count == 6, let pid = Int32(parts[0]) else {
+                return .failure(.parseFailed)
+            }
             values[pid] = parts[1...5].joined(separator: " ")
         }
-        return values
+        return .success(values)
+    }
+
+    static func validatedStartTimes(
+        from result: ShellCommandResult
+    ) -> Result<[Int32: String], ProcessInventoryError> {
+        guard result.succeeded else {
+            let detail = result.stderr.isEmpty
+                ? "Identity validation exited with status \(result.exitCode)."
+                : result.stderr
+            return .failure(.commandFailed(detail))
+        }
+
+        switch parseStartTimes(result.stdout) {
+        case .success(let startTimes):
+            return .success(startTimes)
+        case .failure(let error):
+            return .failure(error)
+        }
+    }
+
+    static func validatedProcesses(
+        _ processes: [AppProcess],
+        using startTimes: [Int32: String]
+    ) -> [AppProcess] {
+        processes.filter { startTimes[$0.pid] == $0.startTime }
     }
 
     static func executablePath(for pid: Int32) -> String? {

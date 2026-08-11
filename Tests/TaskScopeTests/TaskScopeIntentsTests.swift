@@ -9,6 +9,16 @@ final class TaskScopeIntentsTests: XCTestCase {
         XCTAssertFalse(StopWatchedAppIntent.openAppWhenRun)
     }
 
+    func testEntityCommandTargetPreservesStableIdentifier() {
+        let id = UUID()
+        let entity = WatchedPresetEntity(id: id, displayName: "Example")
+
+        XCTAssertEqual(
+            entity.commandTarget,
+            WatchedPresetCommandTarget(id: id, displayName: "Example")
+        )
+    }
+
     private let suiteName = "TaskScope.TaskScopeIntentsTests"
     private let key = "watched-presets-intent-tests"
     private var defaults: UserDefaults!

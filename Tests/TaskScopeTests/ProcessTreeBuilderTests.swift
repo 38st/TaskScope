@@ -3,6 +3,29 @@ import XCTest
 
 @MainActor
 final class ProcessTreeBuilderTests: XCTestCase {
+    func testVisibleProcessesIncludesOnlyChildrenOfExpandedRows() {
+        let root = process(pid: 1, command: "root")
+        let child = process(pid: 2, command: "child")
+        let grandchild = process(pid: 3, command: "grandchild")
+        let tree = ProcessTreeBuilder.build(
+            from: [root, child, grandchild],
+            ppidMap: [1: 0, 2: 1, 3: 2]
+        )
+
+        XCTAssertEqual(
+            ProcessTreeBuilder.visibleProcesses(in: tree, expandedPIDs: []).map(\.pid),
+            [1]
+        )
+        XCTAssertEqual(
+            ProcessTreeBuilder.visibleProcesses(in: tree, expandedPIDs: [1]).map(\.pid),
+            [1, 2]
+        )
+        XCTAssertEqual(
+            ProcessTreeBuilder.visibleProcesses(in: tree, expandedPIDs: [1, 2]).map(\.pid),
+            [1, 2, 3]
+        )
+    }
+
     func testBuildNestsChildrenUnderVisibleParents() {
         let root = process(pid: 100, command: "/Applications/Root.app/Root")
         let child = process(pid: 101, command: "/usr/bin/child")

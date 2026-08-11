@@ -104,6 +104,50 @@ source "$COMMON_SCRIPT"
   trap - EXIT
 )
 
+(
+  rejected_executable="/bin/sleep"
+  taskscope_list_processes() {
+    printf '4242 %s 30\n' "$rejected_executable"
+  }
+  taskscope_process_identity() {
+    printf 'captured-identity'
+  }
+  taskscope_process_command() {
+    printf '%s 30' "$rejected_executable"
+  }
+  taskscope_process_matches_identity() {
+    return 0
+  }
+  taskscope_process_matches_executable() {
+    return 0
+  }
+  taskscope_send_signal() {
+    return 1
+  }
+  taskscope_pause() {
+    return 0
+  }
+
+  if taskscope_stop_processes_for_executable "$rejected_executable" >/dev/null 2>&1; then
+    echo "Guarded stop helper reported success after every signal was rejected." >&2
+    exit 1
+  fi
+)
+
+RELEASE_PUBLISH_LINE="$(
+  /usr/bin/grep -nF 'mv "$OUTPUT_DIR" "$FINAL_DIR"' "$RELEASE_SCRIPT" \
+    | /usr/bin/cut -d: -f1
+)"
+if [[ -z "$RELEASE_PUBLISH_LINE" ]]; then
+  echo "Release script does not publish through the expected atomic move." >&2
+  exit 1
+fi
+if /usr/bin/tail -n "+$((RELEASE_PUBLISH_LINE + 1))" "$RELEASE_SCRIPT" \
+  | /usr/bin/grep -Eq '^[[:space:]]*(shasum|verify_[[:alnum:]_]+)'; then
+  echo "Release script performs fallible artifact verification after publication." >&2
+  exit 1
+fi
+
 FAKE_BIN="$TEST_DIR/bin"
 SWIFT_MARKER="$TEST_DIR/swift-was-called"
 mkdir -p "$FAKE_BIN"

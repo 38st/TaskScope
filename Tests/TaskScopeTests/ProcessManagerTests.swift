@@ -292,6 +292,23 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(manager.message, "Stop requested; 1 still running, 1 no longer matched.")
     }
 
+    func testBatchStopReportsTaskScopeSelfTargetInsteadOfOmittingIt() async {
+        let taskScope = process(
+            pid: ProcessInfo.processInfo.processIdentifier,
+            name: "TaskScope"
+        )
+        let inventory = FakeProcessInventory(results: [.success([taskScope])])
+        let signaler = FakeProcessSignaler(alivePids: [taskScope.pid])
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        await manager.batchTerminate([taskScope.identity])
+
+        XCTAssertTrue(signaler.sent.isEmpty)
+        XCTAssertEqual(manager.batchActionReport?.targets.map(\.state), [.selfProcess])
+        XCTAssertEqual(manager.batchActionReport?.targets.map(\.identity), [taskScope.identity])
+        XCTAssertEqual(manager.message, "TaskScope cannot stop itself; use Quit.")
+    }
+
     func testEquivalentOverlappingRefreshesAreCoalesced() async {
         let inventory = BlockingProcessInventory()
         let manager = ProcessManager(
@@ -316,6 +333,26 @@ final class ProcessManagerTests: XCTestCase {
         let finalCount = await inventory.currentLoadCount()
         XCTAssertEqual(finalCount, 1)
         XCTAssertEqual(manager.operationState, .idle)
+    }
+
+    func testQueuedTerminationRechecksAuthorityImmediatelyBeforeSignal() async {
+        let target = process(pid: 88, name: "Revoked")
+        let inventory = OrderedBlockingProcessInventory(results: [.success([target])])
+        let signaler = FakeProcessSignaler(alivePids: [target.pid])
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+        var isAuthorized = true
+
+        let termination = Task {
+            await manager.terminate(target, isAuthorized: { isAuthorized })
+        }
+        await inventory.waitForFirstCall()
+        isAuthorized = false
+        await inventory.finishFirstCall()
+
+        let result = await termination.value
+        XCTAssertEqual(result, .rejected)
+        XCTAssertTrue(signaler.sent.isEmpty)
+        XCTAssertEqual(manager.message, "Stop for Revoked was cancelled.")
     }
 
     func testCancellingQueuedRefreshRemovesItWithoutPublishingObsoleteWork() async {
@@ -455,6 +492,48 @@ final class ProcessManagerTests: XCTestCase {
 
         XCTAssertEqual(result.status, .failed)
         XCTAssertEqual(result.message, "Example may still run.")
+    }
+
+    func testManagedQuitFailsWhenLifecycleSignalIsRejected() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.terminationOutcome = .signalRejected
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+
+        let result = await manager.quitMainApp(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("signal was rejected"))
+    }
+
+    func testManagedHelperQuitFailsWhenEscalationCannotBeVerified() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.terminationOutcome = .escalationUnavailable
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+
+        let result = await manager.quitHelpers(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("before Force Stop"))
+    }
+
+    func testManagedCloseFailsWhenAnyLifecycleSignalIsRejected() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.terminationOutcome = .signalRejected
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+
+        let result = await manager.quitAllKillable(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("signal was rejected"))
     }
 
     func testExpandedMetricConsumersEnableCollectionAndRefreshLoadedList() async {

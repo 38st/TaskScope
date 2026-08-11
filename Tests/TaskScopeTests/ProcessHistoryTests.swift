@@ -40,6 +40,50 @@ final class ProcessHistoryTests: XCTestCase {
         XCTAssertEqual(history.state, .unavailable("ps unavailable"))
     }
 
+    func testStopDiscardsResultFromInFlightSamplingGeneration() async {
+        let inventory = BlockingHistoryInventory(
+            firstResult: .success([process(pid: 1, cpu: 10, memory: 100)]),
+            laterResult: .success([])
+        )
+        let history = ProcessHistory(inventory: inventory)
+
+        history.start(cadence: 2)
+        await inventory.waitForFirstLoad()
+        history.stop()
+        await inventory.releaseFirstLoad()
+        await inventory.waitForFirstReturn()
+        for _ in 0..<10 { await Task.yield() }
+
+        XCTAssertEqual(history.state, .paused)
+        XCTAssertEqual(history.samples, [])
+    }
+
+    func testRestartDiscardsResultFromPreviousSamplingGeneration() async {
+        let stale = process(pid: 1, cpu: 10, memory: 100)
+        let current = process(pid: 2, cpu: 20, memory: 200)
+        let inventory = BlockingHistoryInventory(
+            firstResult: .success([stale]),
+            laterResult: .success([current])
+        )
+        let history = ProcessHistory(inventory: inventory)
+
+        history.start(cadence: 2)
+        await inventory.waitForFirstLoad()
+        history.start(cadence: 2)
+        for _ in 0..<100 where history.samples.isEmpty {
+            await Task.yield()
+        }
+        XCTAssertEqual(history.samples.map(\.observedProcessCPU), [20])
+
+        await inventory.releaseFirstLoad()
+        await inventory.waitForFirstReturn()
+        for _ in 0..<10 { await Task.yield() }
+
+        history.stop()
+        XCTAssertEqual(history.samples.map(\.observedProcessCPU), [20])
+        XCTAssertEqual(history.state, .paused)
+    }
+
     private func process(pid: Int32, cpu: Double, memory: Double) -> AppProcess {
         AppProcess(
             pid: pid,
@@ -67,5 +111,59 @@ private final class HistoryInventory: ProcessInventoryProviding, @unchecked Send
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         if results.count == 1 { return results[0] }
         return results.removeFirst()
+    }
+}
+
+private actor BlockingHistoryInventory: ProcessInventoryProviding {
+    private let firstResult: Result<[AppProcess], ProcessInventoryError>
+    private let laterResult: Result<[AppProcess], ProcessInventoryError>
+    private var loadCount = 0
+    private var firstLoadStarted = false
+    private var firstLoadReturned = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var returnWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstLoadContinuation: CheckedContinuation<Void, Never>?
+
+    init(
+        firstResult: Result<[AppProcess], ProcessInventoryError>,
+        laterResult: Result<[AppProcess], ProcessInventoryError>
+    ) {
+        self.firstResult = firstResult
+        self.laterResult = laterResult
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        loadCount += 1
+        guard loadCount == 1 else { return laterResult }
+
+        firstLoadStarted = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            firstLoadContinuation = continuation
+        }
+        firstLoadReturned = true
+        returnWaiters.forEach { $0.resume() }
+        returnWaiters.removeAll()
+        return firstResult
+    }
+
+    func waitForFirstLoad() async {
+        guard !firstLoadStarted else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirstLoad() {
+        firstLoadContinuation?.resume()
+        firstLoadContinuation = nil
+    }
+
+    func waitForFirstReturn() async {
+        guard !firstLoadReturned else { return }
+        await withCheckedContinuation { continuation in
+            returnWaiters.append(continuation)
+        }
     }
 }

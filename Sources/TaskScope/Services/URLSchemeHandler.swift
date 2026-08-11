@@ -15,7 +15,7 @@ enum TaskScopeURLParser {
             case .unsupportedAction(let action):
                 "Unsupported TaskScope URL action: \(action.isEmpty ? "(empty)" : action)."
             case .invalidRefreshURL:
-                "The refresh URL must be exactly taskscope://refresh or taskscope://refresh/."
+                "The refresh URL must be exactly taskscope://refresh."
             }
         }
     }
@@ -33,7 +33,7 @@ enum TaskScopeURLParser {
                   url.port == nil,
                   url.query == nil,
                   url.fragment == nil,
-                  url.path.isEmpty || url.path == "/" else {
+                  url.path.isEmpty else {
                 return .failure(.invalidRefreshURL)
             }
             return .success(.refresh)

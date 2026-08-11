@@ -63,6 +63,64 @@ final class ProcessListReaderTests: XCTestCase {
         XCTAssertNil(ProcessListReader.parseProcessLine("abc 1 0.0 10 00:01 command"[...]))
     }
 
+    func testProcessListOutputRejectsMixedValidAndMalformedRows() {
+        let valid = "42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 Example"
+        let output = "\(valid)\nmalformed partial row"
+
+        XCTAssertEqual(
+            ProcessListReader.parseProcessListOutput(output),
+            .failure(.parseFailed)
+        )
+    }
+
+    func testStartTimeValidationRejectsPartialMalformedOutput() {
+        let output = """
+        42 Sat Jul 26 11:20:17 2026
+        43 Sat Jul 26
+        """
+
+        XCTAssertEqual(
+            ProcessListReader.parseStartTimes(output),
+            .failure(.parseFailed)
+        )
+    }
+
+    func testFailedIdentityValidationCommandIsInventoryFailure() {
+        let result = ShellCommandResult(
+            command: ProcessListReader.identityValidationCommand,
+            stdout: "",
+            stderr: "ps denied",
+            exitCode: 1
+        )
+
+        XCTAssertEqual(
+            ProcessListReader.validatedStartTimes(from: result),
+            .failure(.commandFailed("ps denied"))
+        )
+    }
+
+    func testIdentityValidationOmitsProcessThatExitedBetweenSnapshots() throws {
+        let result = ShellCommandResult(
+            command: ProcessListReader.identityValidationCommand,
+            stdout: "42 Sat Jul 26 11:20:17 2026",
+            stderr: "",
+            exitCode: 0
+        )
+
+        let startTimes = try ProcessListReader.validatedStartTimes(from: result).get()
+        let first = try XCTUnwrap(ProcessListReader.parseProcessLine(
+            "42 1 0 100 Sat Jul 26 11:20:17 2026 00:01 First"[...]
+        ))
+        let exited = try XCTUnwrap(ProcessListReader.parseProcessLine(
+            "43 1 0 100 Sat Jul 26 11:20:18 2026 00:01 Exited"[...]
+        ))
+
+        XCTAssertEqual(
+            ProcessListReader.validatedProcesses([first, exited], using: startTimes),
+            [first]
+        )
+    }
+
     func testParseExtendedProcessLineCapturesStableStartTime() {
         let line = "42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 /Applications/Example App.app/Contents/MacOS/Example App"[...]
 

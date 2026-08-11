@@ -23,6 +23,37 @@ struct ProcessNotificationBaseline {
     }
 }
 
+/// Keeps notification delivery disabled until a newly enabled configuration has
+/// been re-baselined. The generation prevents an older authorization task from
+/// completing after a newer toggle and restoring stale state.
+@MainActor
+final class NotificationEnablementCoordinator {
+    private var generation: UInt64 = 0
+
+    @discardableResult
+    func beginConfiguration(
+        enabled: Bool,
+        setDeliveryEnabled: (Bool) -> Void
+    ) -> UInt64 {
+        generation &+= 1
+        setDeliveryEnabled(false)
+        return generation
+    }
+
+    @discardableResult
+    func completeEnabledConfiguration(
+        token: UInt64,
+        currentRunningNames: () -> Set<String>,
+        primeBaseline: (Set<String>) -> Void,
+        setDeliveryEnabled: (Bool) -> Void
+    ) -> Bool {
+        guard token == generation else { return false }
+        primeBaseline(currentRunningNames())
+        setDeliveryEnabled(true)
+        return true
+    }
+}
+
 @MainActor
 final class NotificationService: NSObject, ObservableObject, UNUserNotificationCenterDelegate {
     enum AuthorizationState: Equatable, Sendable {

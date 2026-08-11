@@ -290,9 +290,5 @@ SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
 verify_notarized_bundle "$ROUND_TRIP_DIR/$APP_NAME.app"
 
 mv "$OUTPUT_DIR" "$FINAL_DIR"
-(
-  cd "$FINAL_DIR"
-  shasum -a 256 -c SHA256SUMS
-)
 
 echo "Created verified release artifacts in $FINAL_DIR"

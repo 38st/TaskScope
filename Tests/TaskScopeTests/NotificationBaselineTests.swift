@@ -59,4 +59,60 @@ final class NotificationBaselineTests: XCTestCase {
         XCTAssertTrue(options.contains(.banner))
         XCTAssertFalse(options.contains(.sound))
     }
+
+    @MainActor
+    func testEnablementPrimesBeforeDeliveryAndRejectsStaleCompletion() {
+        let coordinator = NotificationEnablementCoordinator()
+        var deliveryEnabled = true
+        var events: [String] = []
+
+        let staleToken = coordinator.beginConfiguration(
+            enabled: true,
+            setDeliveryEnabled: {
+                deliveryEnabled = $0
+                events.append("delivery:\($0)")
+            }
+        )
+        _ = coordinator.beginConfiguration(
+            enabled: false,
+            setDeliveryEnabled: { deliveryEnabled = $0 }
+        )
+
+        XCTAssertFalse(
+            coordinator.completeEnabledConfiguration(
+                token: staleToken,
+                currentRunningNames: { ["Stale"] },
+                primeBaseline: { _ in events.append("stale-prime") },
+                setDeliveryEnabled: { deliveryEnabled = $0 }
+            )
+        )
+        XCTAssertFalse(deliveryEnabled)
+        XCTAssertFalse(events.contains("stale-prime"))
+
+        let currentToken = coordinator.beginConfiguration(
+            enabled: true,
+            setDeliveryEnabled: {
+                deliveryEnabled = $0
+                events.append("delivery:\($0)")
+            }
+        )
+        XCTAssertTrue(
+            coordinator.completeEnabledConfiguration(
+                token: currentToken,
+                currentRunningNames: { ["Current"] },
+                primeBaseline: { names in events.append("prime:\(names.sorted())") },
+                setDeliveryEnabled: {
+                    deliveryEnabled = $0
+                    events.append("delivery:\($0)")
+                }
+            )
+        )
+
+        XCTAssertTrue(deliveryEnabled)
+        XCTAssertEqual(Array(events.suffix(3)), [
+            "delivery:false",
+            "prime:[\"Current\"]",
+            "delivery:true"
+        ])
+    }
 }

@@ -72,7 +72,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         let stored = store.rules[0]
 
         var handled: [Int32] = []
-        store.start(cadence: 3_600) { process in
+        store.start(cadence: 3_600) { _, process in
             handled.append(process.pid)
             // Delete the rule from inside the first in-flight action, exactly as a
             // Settings tap landing during the suspension would.
@@ -97,7 +97,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill))
 
         var attempts = 0
-        store.start(cadence: 3_600) { _ in
+        store.start(cadence: 3_600) { _, _ in
             attempts += 1
             return .rejected
         }
@@ -131,7 +131,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill))
 
         var attempts = 0
-        store.start(cadence: 3_600) { _ in
+        store.start(cadence: 3_600) { _, _ in
             attempts += 1
             return .stopped
         }

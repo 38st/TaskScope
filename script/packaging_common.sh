@@ -125,6 +125,21 @@ taskscope_process_matches_executable() {
   [[ "$actual_canonical" == "$expected_canonical" ]]
 }
 
+taskscope_send_signal() {
+  local signal="$1"
+  local pid="$2"
+
+  /bin/kill "-$signal" "$pid"
+}
+
+taskscope_list_processes() {
+  /bin/ps -ww -axo pid=,command=
+}
+
+taskscope_pause() {
+  /bin/sleep "$1"
+}
+
 taskscope_signal_process_if_identity_matches() {
   local signal="$1"
   local pid="$2"
@@ -142,7 +157,7 @@ taskscope_signal_process_if_identity_matches() {
 
   taskscope_process_matches_identity "$pid" "$expected_identity" || return 1
   taskscope_process_matches_executable "$pid" "$expected_executable" || return 1
-  /bin/kill "-$signal" "$pid"
+  taskscope_send_signal "$signal" "$pid"
 }
 
 taskscope_stop_processes_for_executable() {
@@ -173,7 +188,7 @@ taskscope_stop_processes_for_executable() {
         matching_identities+=("$identity")
       fi
     fi
-  done < <(/bin/ps -ww -axo pid=,command=)
+  done < <(taskscope_list_processes)
 
   if [[ "${#matching_pids[@]}" -eq 0 ]]; then
     return 0
@@ -195,7 +210,7 @@ taskscope_stop_processes_for_executable() {
       fi
     done
     [[ "$any_running" -eq 0 ]] && return 0
-    /bin/sleep 0.1
+    taskscope_pause 0.1
   done
 
   for ((index = 0; index < ${#matching_pids[@]}; index++)); do
@@ -203,4 +218,20 @@ taskscope_stop_processes_for_executable() {
       KILL "${matching_pids[$index]}" "${matching_identities[$index]}" \
       "$canonical_executable" >/dev/null 2>&1 || true
   done
+
+  for _ in {1..20}; do
+    local any_running=0
+    for ((index = 0; index < ${#matching_pids[@]}; index++)); do
+      if taskscope_process_matches_identity \
+        "${matching_pids[$index]}" "${matching_identities[$index]}"; then
+        any_running=1
+        break
+      fi
+    done
+    [[ "$any_running" -eq 0 ]] && return 0
+    taskscope_pause 0.1
+  done
+
+  echo "Could not stop every verified TaskScope process for $canonical_executable." >&2
+  return 1
 }

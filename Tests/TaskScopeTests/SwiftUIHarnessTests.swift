@@ -91,22 +91,50 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertFalse(fixture.manager.selectedPids.contains(hidden.pid))
 
         try rowButtons[1].tap()
-        XCTAssertEqual(confirmation.pendingTermination?.identity, needle.identity)
+        XCTAssertEqual(confirmation.pendingTermination?.process.identity, needle.identity)
+        XCTAssertEqual(confirmation.pendingTermination?.mode, .normal)
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
 
         let presented = try view.inspect()
         XCTAssertNoThrow(try presented.find(text: "Stop Process?"))
         XCTAssertNoThrow(try presented.find(text: "Stop Needle"))
-        XCTAssertNoThrow(try presented.find(text: "Force Stop Needle"))
+        XCTAssertThrowsError(
+            try presented.find(button: "Force Stop Needle"),
+            "A normal Stop confirmation must not expose SIGKILL"
+        )
         XCTAssertNoThrow(
             try presented.find(
-                text: "Send a normal quit signal to PID 71. Force Stop sends an immediate kill signal if the process does not respond."
+                text: "Send a normal quit signal to PID 71, allowing the process to clean up before it exits."
             )
         )
 
         try presented.find(button: "Cancel").tap()
         XCTAssertNil(confirmation.pendingTermination)
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
+    }
+
+    func testForceStopUsesDistinctConfirmationWithoutNormalStopAction() async throws {
+        let target = process(pid: 72, parentPID: 1, name: "ForceTarget")
+        let fixture = await makeFixture(processes: [target])
+        defer { fixture.stores.cleanup() }
+        let confirmation = ProcessConfirmationState()
+        confirmation.requestTermination(target, mode: .force)
+
+        let presented = try makePopover(
+            fixture: fixture,
+            confirmationState: confirmation
+        ).inspect()
+
+        XCTAssertEqual(confirmation.pendingTermination?.process.identity, target.identity)
+        XCTAssertEqual(confirmation.pendingTermination?.mode, .force)
+        XCTAssertNoThrow(try presented.find(text: "Force Stop Process?"))
+        XCTAssertNoThrow(try presented.find(button: "Force Stop ForceTarget"))
+        XCTAssertThrowsError(try presented.find(button: "Stop ForceTarget"))
+        XCTAssertNoThrow(
+            try presented.find(
+                text: "Immediately send a kill signal to PID 72. The process cannot clean up before it exits."
+            )
+        )
     }
 
     func testBatchConfirmationUsesImmutableTargetSnapshotAndExposesActions() async throws {
@@ -120,7 +148,11 @@ final class SwiftUIHarnessTests: XCTestCase {
         confirmation.requestBatch(requestedTargets)
         requestedTargets.removeAll()
 
-        XCTAssertEqual(confirmation.batchTargets, [first.identity, second.identity])
+        XCTAssertEqual(
+            confirmation.pendingBatchTermination?.targets,
+            [first.identity, second.identity]
+        )
+        XCTAssertEqual(confirmation.pendingBatchTermination?.mode, .normal)
         XCTAssertEqual(
             confirmation.batchMessage,
             "Stop 2 selected processes: First, Second."
@@ -134,13 +166,26 @@ final class SwiftUIHarnessTests: XCTestCase {
 
         XCTAssertNoThrow(try presented.find(text: "Stop Selected Processes?"))
         XCTAssertNoThrow(try presented.find(text: "Stop Selected"))
-        XCTAssertNoThrow(try presented.find(text: "Force Stop Selected"))
+        XCTAssertThrowsError(try presented.find(button: "Force Stop Selected"))
         XCTAssertNoThrow(try presented.find(text: confirmation.batchMessage))
 
         try presented.find(button: "Cancel").tap()
-        XCTAssertFalse(confirmation.isBatchPresented)
-        XCTAssertTrue(confirmation.batchTargets.isEmpty)
+        XCTAssertNil(confirmation.pendingBatchTermination)
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
+
+        confirmation.requestBatch([first.identity, second.identity], mode: .force)
+        let forcePresented = try makePopover(
+            fixture: fixture,
+            confirmationState: confirmation
+        ).inspect()
+        XCTAssertEqual(confirmation.pendingBatchTermination?.mode, .force)
+        XCTAssertNoThrow(try forcePresented.find(text: "Force Stop Selected Processes?"))
+        XCTAssertNoThrow(try forcePresented.find(button: "Force Stop Selected"))
+        XCTAssertThrowsError(try forcePresented.find(button: "Stop Selected"))
+        XCTAssertEqual(
+            confirmation.batchMessage,
+            "Force stop 2 selected processes: First, Second."
+        )
     }
 
     func testPresetCardDestructiveActionRequiresVisibleConfirmation() async throws {
@@ -224,13 +269,107 @@ final class SwiftUIHarnessTests: XCTestCase {
 
         let sheet = QuickWatchedPresetSheet(
             draft: QuickWatchedPresetDraft(processes: draftProcesses),
-            onSave: { _ in },
+            onSave: { _ in nil },
             onCancel: {}
         )
         XCTAssertNoThrow(
             try sheet.inspect().find(text: "Needle"),
             "Preset sheet should summarise the selected process, not report it as empty"
         )
+    }
+
+    func testQuickPresetSheetKeepsRejectedDraftAndShowsStoreError() throws {
+        let target = process(pid: 94, parentPID: 1, name: "Rejected")
+        var saveAttempts = 0
+        let form = QuickWatchedPresetFormState(
+            displayName: target.name,
+            mainProcessName: target.name,
+            helperNames: "",
+            appPath: "/Applications/Rejected.app"
+        )
+        let sheet = QuickWatchedPresetSheet(
+            draft: QuickWatchedPresetDraft(processes: [target]),
+            onSave: { _ in
+                saveAttempts += 1
+                return "A watched preset with that display name already exists."
+            },
+            onCancel: {},
+            form: form
+        )
+
+        let inspected = try sheet.inspect()
+        try inspected.find(button: "Add Preset").tap()
+
+        XCTAssertEqual(saveAttempts, 1)
+        XCTAssertEqual(
+            form.validationError,
+            "A watched preset with that display name already exists."
+        )
+        XCTAssertNoThrow(
+            try sheet.inspect().find(
+                text: "A watched preset with that display name already exists."
+            )
+        )
+        XCTAssertNoThrow(try sheet.inspect().find(button: "Add Preset"))
+    }
+
+    func testQuickAutoStopSheetKeepsRejectedDraftAndShowsStoreError() throws {
+        let target = process(pid: 96, parentPID: 1, name: "Rejected")
+        var saveAttempts = 0
+        let form = QuickAutoStopRuleFormState(
+            processName: target.name,
+            runtimeMinutes: 5,
+            action: .prompt
+        )
+        let sheet = QuickAutoStopRuleSheet(
+            process: target,
+            existingRule: nil,
+            onSave: { _, _, _ in
+                saveAttempts += 1
+                return "Auto-stop rule data is in recovery mode."
+            },
+            onCancel: {},
+            form: form
+        )
+
+        try sheet.inspect().find(button: "Add Rule").tap()
+
+        XCTAssertEqual(saveAttempts, 1)
+        XCTAssertEqual(form.validationError, "Auto-stop rule data is in recovery mode.")
+        XCTAssertNoThrow(
+            try sheet.inspect().find(text: "Auto-stop rule data is in recovery mode.")
+        )
+        XCTAssertNoThrow(try sheet.inspect().find(button: "Add Rule"))
+    }
+
+    func testCurrentProcessSelectionControlIsDisabledAndExplainsProtection() throws {
+        let target = process(pid: 95, parentPID: 1, name: "TaskScope")
+        var selectionAttempts = 0
+        let row = ProcessRow(
+            process: target,
+            isCurrentProcess: true,
+            isSelected: false,
+            isKeyboardSelected: false,
+            isHighlightedCPU: false,
+            isHighlightedMEM: false,
+            stopAction: {},
+            toggleSelection: { selectionAttempts += 1 },
+            detailAction: {},
+            forceStopAction: {},
+            copyCommandAction: {}
+        )
+
+        let selectionButton = try row.inspect().findAll(ViewType.Button.self)[0]
+        XCTAssertTrue(selectionButton.isDisabled())
+        XCTAssertEqual(
+            try selectionButton.accessibilityLabel().string(),
+            "TaskScope cannot be selected"
+        )
+        XCTAssertEqual(
+            try selectionButton.accessibilityHint().string(),
+            "TaskScope protects its own process"
+        )
+        XCTAssertEqual(selectionAttempts, 0)
     }
 
     func testTreeDisclosureControlsRenderedChildVisibility() async throws {

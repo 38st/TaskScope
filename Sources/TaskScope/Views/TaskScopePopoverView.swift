@@ -1,92 +1,6 @@
 import AppKit
 import SwiftUI
 
-enum TaskScopeSection: String, CaseIterable, Identifiable {
-    case processes = "Processes"
-    case presets = "Presets"
-
-    var id: String {
-        rawValue
-    }
-}
-
-enum ProcessFilterMode: String, CaseIterable, Identifiable {
-    case all
-    case watched
-    case highlighted
-
-    var id: String { rawValue }
-
-    var label: String {
-        switch self {
-        case .all: "All"
-        case .watched: "Watched"
-        case .highlighted: "Hot"
-        }
-    }
-}
-
-enum TaskScopePresentationStyle {
-    case menuBarCompact
-    case expandedWindow
-}
-
-@MainActor
-final class ProcessConfirmationState: ObservableObject {
-    enum PresetAction: String, Equatable {
-        case quitApp = "Quit App"
-        case quitHelpers = "Quit Helpers"
-        case quitAll = "Quit All Killable"
-    }
-
-    struct PendingPresetAction: Equatable {
-        var preset: WatchedAppPreset
-        var action: PresetAction
-    }
-
-    @Published var pendingTermination: AppProcess?
-    @Published var isBatchPresented = false
-    @Published var pendingPresetAction: PendingPresetAction?
-    private(set) var batchTargets: [ProcessIdentity] = []
-
-    func requestTermination(_ process: AppProcess) {
-        pendingTermination = process
-    }
-
-    func clearTermination() {
-        pendingTermination = nil
-    }
-
-    func requestBatch(_ targets: [ProcessIdentity]) {
-        batchTargets = targets
-        isBatchPresented = !targets.isEmpty
-    }
-
-    func clearBatch() {
-        isBatchPresented = false
-        batchTargets = []
-    }
-
-    func requestPresetAction(_ action: PresetAction, preset: WatchedAppPreset) {
-        pendingPresetAction = PendingPresetAction(preset: preset, action: action)
-    }
-
-    func clearPresetAction() {
-        pendingPresetAction = nil
-    }
-
-    var batchMessage: String {
-        let names = batchTargets.prefix(3).map { identity in
-            let component = URL(fileURLWithPath: identity.command).lastPathComponent
-            return component.isEmpty ? identity.command : component
-        }
-        let suffix = batchTargets.count > names.count
-            ? " and \(batchTargets.count - names.count) more"
-            : ""
-        return "Stop \(batchTargets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
-    }
-}
-
 struct TaskScopePopoverView: View {
     @ObservedObject var processManager: ProcessManager
     @ObservedObject var loginItemManager: LoginItemManager
@@ -151,6 +65,10 @@ struct TaskScopePopoverView: View {
     }
 
     var body: some View {
+        autoStopAlertContent
+    }
+
+    private var baseContent: some View {
         VStack(spacing: 0) {
             header
             sectionPicker
@@ -171,6 +89,10 @@ struct TaskScopePopoverView: View {
             footer
         }
         .background(.regularMaterial)
+    }
+
+    private var observedContent: some View {
+        baseContent
         .onAppear {
             guard isExpandedWindow, !registeredExtendedMetrics else { return }
             registeredExtendedMetrics = true
@@ -201,64 +123,66 @@ struct TaskScopePopoverView: View {
         .onChange(of: renderedProcessIdentities) { _, _ in
             processManager.restrictSelection(to: renderedSelectionProcesses)
         }
-        .confirmationDialog(
-            "Stop Process?",
-            isPresented: Binding(
-                get: { confirmationState.pendingTermination != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        confirmationState.clearTermination()
-                    }
-                }
-            ),
-            presenting: confirmationState.pendingTermination
-        ) { process in
-            Button("Stop \(process.name)", role: .destructive) {
-                Task { await processManager.terminate(process) }
-                confirmationState.clearTermination()
-            }
+    }
 
-            Button("Force Stop \(process.name)", role: .destructive) {
-                Task { await processManager.terminate(process, forceKill: true) }
+    private var terminationConfirmationContent: some View {
+        observedContent
+        .confirmationDialog(
+            confirmationState.pendingTermination?.mode.title ?? "Stop Process?",
+            isPresented: terminationConfirmationBinding,
+            presenting: confirmationState.pendingTermination
+        ) { pending in
+            Button(
+                pending.mode == .force
+                    ? "Force Stop \(pending.process.name)"
+                    : "Stop \(pending.process.name)",
+                role: .destructive
+            ) {
+                let process = pending.process
+                let forceKill = pending.mode == .force
+                Task { await processManager.terminate(process, forceKill: forceKill) }
                 confirmationState.clearTermination()
             }
 
             Button("Cancel", role: .cancel) {
                 confirmationState.clearTermination()
             }
-        } message: { process in
-            Text("Send a normal quit signal to PID \(process.pid). Force Stop sends an immediate kill signal if the process does not respond.")
+        } message: { pending in
+            if pending.mode == .force {
+                Text("Immediately send a kill signal to PID \(pending.process.pid). The process cannot clean up before it exits.")
+            } else {
+                Text("Send a normal quit signal to PID \(pending.process.pid), allowing the process to clean up before it exits.")
+            }
         }
         .confirmationDialog(
-            "Stop Selected Processes?",
-            isPresented: $confirmationState.isBatchPresented
-        ) {
-            Button("Stop Selected", role: .destructive) {
-                let targets = confirmationState.batchTargets
-                Task { await processManager.batchTerminate(targets) }
-                confirmationState.clearBatch()
-            }
-            Button("Force Stop Selected", role: .destructive) {
-                let targets = confirmationState.batchTargets
-                Task { await processManager.batchTerminate(targets, forceKill: true) }
+            confirmationState.pendingBatchTermination?.mode == .force
+                ? "Force Stop Selected Processes?"
+                : "Stop Selected Processes?",
+            isPresented: batchConfirmationBinding,
+            presenting: confirmationState.pendingBatchTermination
+        ) { pending in
+            Button(
+                pending.mode == .force ? "Force Stop Selected" : "Stop Selected",
+                role: .destructive
+            ) {
+                let targets = pending.targets
+                let forceKill = pending.mode == .force
+                Task { await processManager.batchTerminate(targets, forceKill: forceKill) }
                 confirmationState.clearBatch()
             }
             Button("Cancel", role: .cancel) {
                 confirmationState.clearBatch()
             }
-        } message: {
+        } message: { _ in
             Text(confirmationState.batchMessage)
         }
+    }
+
+    private var presetConfirmationContent: some View {
+        terminationConfirmationContent
         .confirmationDialog(
             confirmationState.pendingPresetAction?.action.rawValue ?? "Confirm Preset Action",
-            isPresented: Binding(
-                get: { confirmationState.pendingPresetAction != nil },
-                set: { isPresented in
-                    if !isPresented {
-                        confirmationState.clearPresetAction()
-                    }
-                }
-            ),
+            isPresented: presetConfirmationBinding,
             presenting: confirmationState.pendingPresetAction
         ) { pending in
             Button(pending.action.rawValue, role: .destructive) {
@@ -282,6 +206,10 @@ struct TaskScopePopoverView: View {
         } message: { pending in
             Text(presetConfirmationMessage(for: pending))
         }
+    }
+
+    private var processDetailContent: some View {
+        presetConfirmationContent
         .sheet(item: $detailProcess) { process in
             ProcessDetailSheet(
                 process: process,
@@ -303,10 +231,14 @@ struct TaskScopePopoverView: View {
                 }
             }
         }
+    }
+
+    private var savedSelectionSheetContent: some View {
+        processDetailContent
         .sheet(isPresented: $showSaveSelectionSheet) {
             SaveSelectionSheet(
                 name: $saveSelectionName,
-                count: processManager.selectedPids.count,
+                    count: processManager.selectedPids.count,
                 validationError: savedSelections.validationError,
                 onSave: {
                     if savedSelections.save(
@@ -351,6 +283,10 @@ struct TaskScopePopoverView: View {
                 onCancel: { renameSelection = nil }
             )
         }
+    }
+
+    private var reportSheetContent: some View {
+        savedSelectionSheetContent
         .sheet(
             item: lifecycleReportBinding
         ) { report in
@@ -367,6 +303,10 @@ struct TaskScopePopoverView: View {
                 onClose: { processManager.dismissBatchActionReport() }
             )
         }
+    }
+
+    private var quickActionSheetContent: some View {
+        reportSheetContent
         .sheet(item: $quickAutoStopProcess) { process in
             QuickAutoStopRuleSheet(
                 process: process,
@@ -396,6 +336,10 @@ struct TaskScopePopoverView: View {
                 }
             )
         }
+    }
+
+    private var autoStopAlertContent: some View {
+        quickActionSheetContent
         .alert(
             autoStopPromptTitle,
             isPresented: autoStopPromptBinding(for: autoStopRules.currentPrompt),
@@ -546,8 +490,19 @@ struct TaskScopePopoverView: View {
                 .help("Saved Selections")
 
                 if !processManager.selectedPids.isEmpty {
-                    Button {
-                        confirmationState.requestBatch(processManager.selectionSnapshot())
+                    Menu {
+                        Button("Stop Selected…", role: .destructive) {
+                            confirmationState.requestBatch(
+                                processManager.selectionSnapshot(),
+                                mode: .normal
+                            )
+                        }
+                        Button("Force Stop Selected…", role: .destructive) {
+                            confirmationState.requestBatch(
+                                processManager.selectionSnapshot(),
+                                mode: .force
+                            )
+                        }
                     } label: {
                         Label("\(processManager.selectedPids.count)", systemImage: "stop.fill")
                     }
@@ -701,60 +656,11 @@ struct TaskScopePopoverView: View {
     }
 
     private var presetsView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                ForEach(processManager.snapshots) { snapshot in
-                    PresetCard(
-                        snapshot: snapshot,
-                        onOpen: {
-                            Task {
-                                _ = await AppCommandBus.shared.submit(
-                                    .openPreset(snapshot.preset.displayName)
-                                )
-                            }
-                        },
-                        onQuitApp: {
-                            confirmationState.requestPresetAction(.quitApp, preset: snapshot.preset)
-                        },
-                        onQuitHelpers: {
-                            confirmationState.requestPresetAction(.quitHelpers, preset: snapshot.preset)
-                        },
-                        onQuitAll: {
-                            confirmationState.requestPresetAction(.quitAll, preset: snapshot.preset)
-                        }
-                    )
-                }
-
-                if processManager.snapshots.isEmpty {
-                    Text("No watched apps configured. Add presets in Settings.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Toggle(
-                    "Launch at Login",
-                    isOn: Binding(
-                        get: { loginItemManager.isEnabled },
-                        set: { loginItemManager.setEnabled($0) }
-                    )
-                )
-                .toggleStyle(.switch)
-                .padding(.top, 4)
-
-                if let loginMessage = loginItemManager.message {
-                    Text(loginMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                if loginItemManager.state == .requiresApproval {
-                    Button("Open Login Item Settings") {
-                        loginItemManager.openSystemSettings()
-                    }
-                    .buttonStyle(.bordered)
-                }
-            }
-            .padding(16)
-        }
+        PresetsSectionView(
+            processManager: processManager,
+            loginItemManager: loginItemManager,
+            confirmationState: confirmationState
+        )
     }
 
     private var footer: some View {
@@ -767,26 +673,14 @@ struct TaskScopePopoverView: View {
     }
 
     private var filteredProcesses: [AppProcess] {
-        let trimmedSearch = settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let watchedNames = Set(processManager.snapshots.flatMap { $0.preset.allProcessNames })
-
-        return processManager.displayProcesses { process in
-            let matchesSearch = trimmedSearch.isEmpty
-                || process.name.localizedCaseInsensitiveContains(trimmedSearch)
-                || process.command.localizedCaseInsensitiveContains(trimmedSearch)
-                || String(process.pid).contains(trimmedSearch)
-            guard matchesSearch else { return false }
-
-            switch filterMode {
-            case .all:
-                return true
-            case .watched:
-                return watchedNames.contains(process.name)
-            case .highlighted:
-                return process.cpu >= settings.cpuHighlightThreshold
-                    || process.memoryMB >= settings.memHighlightThresholdMB
-            }
-        }
+        let query = ProcessListQuery(
+            searchText: settings.searchText,
+            filterMode: filterMode,
+            watchedNames: Set(processManager.snapshots.flatMap { $0.preset.allProcessNames }),
+            cpuHighlightThreshold: settings.cpuHighlightThreshold,
+            memoryHighlightThresholdMB: settings.memHighlightThresholdMB
+        )
+        return processManager.displayProcesses(matching: query.matches)
     }
 
     private var processCountTitle: String {
@@ -838,16 +732,10 @@ struct TaskScopePopoverView: View {
     }
 
     private var visibleTreeProcesses: [AppProcess] {
-        func flatten(_ nodes: [ProcessTreeNode]) -> [AppProcess] {
-            nodes.flatMap { node in
-                var visible = [node.process]
-                if expandedTreePids.contains(node.process.pid) {
-                    visible.append(contentsOf: flatten(node.children))
-                }
-                return visible
-            }
-        }
-        return flatten(treeRoots)
+        ProcessTreeBuilder.visibleProcesses(
+            in: treeRoots,
+            expandedPIDs: expandedTreePids
+        )
     }
 
     private var renderedSelectionProcesses: [AppProcess] {
@@ -858,14 +746,47 @@ struct TaskScopePopoverView: View {
         renderedSelectionProcesses.map(\.identity)
     }
 
+    private var terminationConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { confirmationState.pendingTermination != nil },
+            set: { isPresented in
+                if !isPresented {
+                    confirmationState.clearTermination()
+                }
+            }
+        )
+    }
+
     private var pendingTerminationBinding: Binding<AppProcess?> {
         Binding(
-            get: { confirmationState.pendingTermination },
+            get: { confirmationState.pendingTermination?.process },
             set: { process in
                 if let process {
                     confirmationState.requestTermination(process)
                 } else {
                     confirmationState.clearTermination()
+                }
+            }
+        )
+    }
+
+    private var batchConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { confirmationState.pendingBatchTermination != nil },
+            set: { isPresented in
+                if !isPresented {
+                    confirmationState.clearBatch()
+                }
+            }
+        )
+    }
+
+    private var presetConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { confirmationState.pendingPresetAction != nil },
+            set: { isPresented in
+                if !isPresented {
+                    confirmationState.clearPresetAction()
                 }
             }
         )
@@ -933,7 +854,7 @@ struct TaskScopePopoverView: View {
                 detailProcess = process
             },
             forceStopAction: {
-                confirmationState.requestTermination(process)
+                confirmationState.requestTermination(process, mode: .force)
             },
             copyCommandAction: {
                 NSPasteboard.general.clearContents()
@@ -958,7 +879,7 @@ struct TaskScopePopoverView: View {
         Divider()
         Button("Stop") { confirmationState.requestTermination(process) }
         Button("Force Stop") {
-            confirmationState.requestTermination(process)
+            confirmationState.requestTermination(process, mode: .force)
         }
         Divider()
         Button("Show Detail") {
@@ -1031,49 +952,59 @@ struct TaskScopePopoverView: View {
         processName: String,
         runtimeMinutes: Int,
         action: AutoStopRule.Action
-    ) {
+    ) -> String? {
         let trimmedName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return }
+        guard !trimmedName.isEmpty else { return "Process name is required." }
 
         if let existing = autoStopRules.rules.first(where: {
             $0.processName.caseInsensitiveCompare(trimmedName) == .orderedSame
         }) {
-            _ = autoStopRules.update(AutoStopRule(
+            guard autoStopRules.update(AutoStopRule(
                 id: existing.id,
                 processName: trimmedName,
                 runtimeMinutes: runtimeMinutes,
                 action: action,
                 isEnabled: existing.isEnabled
-            ))
+            )) else {
+                return autoStopRules.validationError ?? "The auto-stop rule could not be updated."
+            }
             processManager.setMessage("Updated auto-stop rule for \(trimmedName).")
         } else {
-            autoStopRules.add(
+            guard autoStopRules.add(
                 AutoStopRule(
                     processName: trimmedName,
                     runtimeMinutes: runtimeMinutes,
                     action: action
                 )
-            )
+            ) else {
+                return autoStopRules.validationError ?? "The auto-stop rule could not be added."
+            }
             processManager.setMessage("Added auto-stop rule for \(trimmedName).")
         }
 
         quickAutoStopProcess = nil
+        return nil
     }
 
-    private func saveQuickWatchedPreset(_ preset: WatchedAppPreset) {
+    private func saveQuickWatchedPreset(_ preset: WatchedAppPreset) -> String? {
         if watchedApps.presets.contains(where: {
             $0.mainProcessName.caseInsensitiveCompare(preset.mainProcessName) == .orderedSame
         }) {
-            processManager.setMessage("\(preset.mainProcessName) is already watched.")
-        } else {
-            watchedApps.add(preset)
-            processManager.setMessage("Watching \(preset.displayName).")
-            // No refresh here: the app's `.onChange(of: watchedApps.presets)` handler
-            // is the single owner of preset-change refreshes. A second one raced it
-            // and was either coalesced away or ran first and diffed the new preset's
-            // already-running process against a baseline that never contained it.
+            return "\(preset.mainProcessName) is already watched."
         }
 
+        guard watchedApps.add(preset) else {
+            return watchedApps.validationError
+                ?? watchedApps.persistenceIssue
+                ?? "TaskScope could not save this watched preset."
+        }
+
+        processManager.setMessage("Watching \(preset.displayName).")
+        // No refresh here: the app's `.onChange(of: watchedApps.presets)` handler
+        // is the single owner of preset-change refreshes. A second one raced it
+        // and was either coalesced away or ran first and diffed the new preset's
+        // already-running process against a baseline that never contained it.
         quickPresetDraft = nil
+        return nil
     }
 }

@@ -1,136 +1,13 @@
 import Foundation
 
-struct AutoStopRule: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
-    var processName: String
-    var runtimeMinutes: Int
-    var action: Action
-    var isEnabled: Bool = true
-
-    enum Action: String, Codable, CaseIterable, Identifiable {
-        case prompt
-        case kill
-        case silent
-
-        var id: String { rawValue }
-
-        var label: String {
-            switch self {
-            case .prompt: "Prompt"
-            case .kill: "Auto Stop"
-            case .silent: "Log Only"
-            }
-        }
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id, processName, runtimeMinutes, action, isEnabled
-    }
-
-    init(
-        id: UUID = UUID(),
-        processName: String,
-        runtimeMinutes: Int,
-        action: Action,
-        isEnabled: Bool = true
-    ) {
-        self.id = id
-        self.processName = processName
-        self.runtimeMinutes = runtimeMinutes
-        self.action = action
-        self.isEnabled = isEnabled
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        processName = try container.decode(String.self, forKey: .processName)
-        runtimeMinutes = try container.decode(Int.self, forKey: .runtimeMinutes)
-        action = try container.decode(Action.self, forKey: .action)
-        isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
-    }
-}
-
-struct AutoStopPrompt: Identifiable, Equatable {
-    var id: AutoStopOccurrence
-    var rule: AutoStopRule
-    var process: AppProcess
-}
-
-struct AutoStopOccurrence: Hashable {
-    var ruleID: UUID
-    var processIdentity: ProcessIdentity
-}
-
-struct AutoStopEvent: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
-    var timestamp: Date
-    var processName: String
-    var pid: Int32
-    var ruleID: UUID
-    var outcome: Outcome
-    var detail: String
-
-    enum Outcome: String, Codable {
-        case logged
-        case stopped
-        case failed
-        case dismissed
-        case processEnded
-
-        var label: String {
-            switch self {
-            case .logged: "Logged"
-            case .stopped: "Stopped"
-            case .failed: "Failed"
-            case .dismissed: "Dismissed"
-            case .processEnded: "Ended"
-            }
-        }
-    }
-
-    private enum CodingKeys: String, CodingKey {
-        case id, timestamp, processName, pid, ruleID, outcome, detail
-    }
-
-    init(
-        id: UUID = UUID(),
-        timestamp: Date,
-        processName: String,
-        pid: Int32,
-        ruleID: UUID,
-        outcome: Outcome,
-        detail: String
-    ) {
-        self.id = id
-        self.timestamp = timestamp
-        self.processName = processName
-        self.pid = pid
-        self.ruleID = ruleID
-        self.outcome = outcome
-        self.detail = detail
-    }
-
-    /// Hand-written so a payload written by another build still decodes: the
-    /// synthesized decoder ignores property defaults and hard-fails on any key it
-    /// does not find, which would make one added field destroy the whole log.
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
-        timestamp = try container.decodeIfPresent(Date.self, forKey: .timestamp) ?? Date(timeIntervalSince1970: 0)
-        processName = try container.decodeIfPresent(String.self, forKey: .processName) ?? ""
-        pid = try container.decodeIfPresent(Int32.self, forKey: .pid) ?? 0
-        ruleID = try container.decodeIfPresent(UUID.self, forKey: .ruleID) ?? UUID()
-        outcome = (try? container.decode(Outcome.self, forKey: .outcome)) ?? .logged
-        detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
-    }
-}
-
 @MainActor
 final class AutoStopRulesStore: ObservableObject {
-    @Published var rules: [AutoStopRule] {
+    static let maximumRuntimeMinutes = AutoStopRuleValidation.maximumRuntimeMinutes
+
+    @Published private(set) var rules: [AutoStopRule] {
         didSet {
             normalizeRules()
+            cancelUnauthorizedActions()
             saveRules()
         }
     }
@@ -139,22 +16,27 @@ final class AutoStopRulesStore: ObservableObject {
     @Published private(set) var engineError: String?
     @Published private(set) var isEngineRunning = false
     @Published private(set) var validationError: String?
-    @Published private(set) var recoveryMessages: [String] = []
+    @Published private(set) var rulesRecoveryMessage: String?
+    @Published private(set) var eventsRecoveryMessage: String?
+
+    var recoveryMessages: [String] {
+        [rulesRecoveryMessage, eventsRecoveryMessage].compactMap { $0 }
+    }
 
     var currentPrompt: AutoStopPrompt? {
         pendingPrompts.first
     }
 
-    private let userDefaults: UserDefaults
-    private let key: String
-    private let eventsKey: String
+    private let rulesPersistence: RecoveringCodableStorage<[AutoStopRule]>
+    private let eventsPersistence: RecoveringCodableStorage<[AutoStopEvent]>
     private let now: () -> Date
     private let inventory: any ProcessInventoryProviding
+    private let pollingController: ProcessPollingController
     private let eventLimit: Int
     private var handledOccurrences: Set<AutoStopOccurrence> = []
     private var reportedFailures: Set<AutoStopOccurrence> = []
-    private var engineTask: Task<Void, Never>?
-    private var actionHandler: ((AppProcess) async -> ProcessActionResult)?
+    private var actionHandler: ((AutoStopRule, AppProcess) async -> ProcessActionResult)?
+    private var inFlightActions: [AutoStopOccurrence: Task<ProcessActionResult, Never>] = [:]
     private var isNormalizing = false
     private var allowsRulesPersistence: Bool
     private var allowsEventsPersistence: Bool
@@ -165,54 +47,106 @@ final class AutoStopRulesStore: ObservableObject {
         eventsKey: String = "TaskScope.autoStopEvents.v1",
         inventory: any ProcessInventoryProviding = SystemProcessInventory(),
         eventLimit: Int = 200,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        pollingController: ProcessPollingController? = nil
     ) {
-        self.userDefaults = userDefaults
-        self.key = key
-        self.eventsKey = eventsKey
-        self.inventory = inventory
-        self.eventLimit = max(1, eventLimit)
-        self.now = now
-        let loadedRules = Self.loadRecovering(
-            [AutoStopRule].self,
+        let boundedEventLimit = max(1, eventLimit)
+        let rulesPersistence = RecoveringCodableStorage<[AutoStopRule]>(
             userDefaults: userDefaults,
             key: key
         )
-        let loadedEvents = Self.loadRecovering(
-            [AutoStopEvent].self,
+        let eventsPersistence = RecoveringCodableStorage<[AutoStopEvent]>(
             userDefaults: userDefaults,
             key: eventsKey
         )
+        self.rulesPersistence = rulesPersistence
+        self.eventsPersistence = eventsPersistence
+        self.inventory = inventory
+        self.pollingController = pollingController ?? ProcessPollingController()
+        self.eventLimit = boundedEventLimit
+        self.now = now
+        let rulesLoad = rulesPersistence.load()
+        let eventsLoad = eventsPersistence.load()
+        let loadedRules = (
+            value: rulesLoad.value,
+            message: rulesLoad.backupKey.map { "Unreadable data was backed up as \($0)." }
+        )
+        let loadedEvents = (
+            value: eventsLoad.value,
+            message: eventsLoad.backupKey.map { "Unreadable data was backed up as \($0)." }
+        )
+        let validatedRules = AutoStopRuleValidation.validateStored(loadedRules.value ?? [])
+        var rulesMessage = loadedRules.message
+        var permitsRulesPersistence = loadedRules.message == nil
+        if loadedRules.message == nil, validatedRules.rejectedCount > 0,
+           let backupKey = rulesPersistence.preserveCurrentPayload(
+               suffix: "rejectedMigrationBackup"
+           ) {
+            permitsRulesPersistence = false
+            rulesMessage = "Rejected \(validatedRules.rejectedCount) invalid or duplicate stored auto-stop rule\(validatedRules.rejectedCount == 1 ? "" : "s"). The first rejected payload is preserved as \(backupKey); reset after review to commit only the recovered safe rules."
+        }
         // A decode failure must never lead to the unreadable payload being replaced
         // by the empty array we fell back to, so persistence stays disabled for that
         // key until the user explicitly resets it.
-        allowsRulesPersistence = loadedRules.message == nil
+        allowsRulesPersistence = permitsRulesPersistence
         allowsEventsPersistence = loadedEvents.message == nil
-        rules = loadedRules.value ?? []
-        events = loadedEvents.value ?? []
-        recoveryMessages = [loadedRules.message, loadedEvents.message].compactMap { $0 }
+        rules = validatedRules.rules
+        events = Array((loadedEvents.value ?? []).prefix(boundedEventLimit))
+        rulesRecoveryMessage = rulesMessage
+        eventsRecoveryMessage = loadedEvents.message
+
+        if allowsEventsPersistence,
+           let loadedEventCount = loadedEvents.value?.count,
+           loadedEventCount > boundedEventLimit {
+            saveEvents()
+        }
     }
 
     deinit {
-        engineTask?.cancel()
+        inFlightActions.values.forEach { $0.cancel() }
     }
 
     var hasUnreadableData: Bool {
         !allowsRulesPersistence || !allowsEventsPersistence
     }
 
-    /// Discards the unreadable payloads and re-enables writing. Anything the user
-    /// rebuilt during the corrupt session is kept rather than thrown away.
-    func resetAfterCorruption() {
+    var isRulesReadOnlyAfterRecovery: Bool {
+        !allowsRulesPersistence
+    }
+
+    var isEventsReadOnlyAfterRecovery: Bool {
+        !allowsEventsPersistence
+    }
+
+    /// Accepts only the rules that decoded and passed current validation, then
+    /// resumes durable rule mutations.
+    func resetRulesAfterCorruption() {
+        guard !allowsRulesPersistence else { return }
         allowsRulesPersistence = true
-        allowsEventsPersistence = true
-        recoveryMessages = []
+        rulesRecoveryMessage = nil
+        validationError = nil
         saveRules()
+    }
+
+    /// Discards an unreadable event payload and resumes durable event logging.
+    func resetEventsAfterCorruption() {
+        guard !allowsEventsPersistence else { return }
+        allowsEventsPersistence = true
+        eventsRecoveryMessage = nil
+        validationError = nil
         saveEvents()
+    }
+
+    /// Compatibility entry point for callers that explicitly choose to reset both
+    /// independently protected payloads.
+    func resetAfterCorruption() {
+        resetRulesAfterCorruption()
+        resetEventsAfterCorruption()
     }
 
     @discardableResult
     func add(_ rule: AutoStopRule) -> Bool {
+        guard !rejectRulesIfReadOnly() else { return false }
         let normalized = validated(rule)
         guard let normalized else { return false }
         guard !rules.contains(where: {
@@ -228,6 +162,7 @@ final class AutoStopRulesStore: ObservableObject {
 
     @discardableResult
     func update(_ rule: AutoStopRule) -> Bool {
+        guard !rejectRulesIfReadOnly() else { return false }
         guard let index = rules.firstIndex(where: { $0.id == rule.id }),
               let normalized = validated(rule) else {
             return false
@@ -249,66 +184,70 @@ final class AutoStopRulesStore: ObservableObject {
         return true
     }
 
-    func setEnabled(_ enabled: Bool, for rule: AutoStopRule) {
+    @discardableResult
+    func setEnabled(_ enabled: Bool, for rule: AutoStopRule) -> Bool {
         var updated = rule
         updated.isEnabled = enabled
-        _ = update(updated)
+        return update(updated)
     }
 
-    func duplicate(_ rule: AutoStopRule) {
+    @discardableResult
+    func duplicate(_ rule: AutoStopRule) -> Bool {
+        guard !rejectRulesIfReadOnly() else { return false }
         var copy = rule
         copy.id = UUID()
         copy.processName = uniqueName(basedOn: rule.processName)
-        _ = add(copy)
+        return add(copy)
     }
 
-    func remove(at offsets: IndexSet) {
+    @discardableResult
+    func remove(at offsets: IndexSet) -> Bool {
+        guard !rejectRulesIfReadOnly() else { return false }
         let removedIDs = Set(offsets.compactMap { rules.indices.contains($0) ? rules[$0].id : nil })
         rules.remove(atOffsets: offsets)
         handledOccurrences = handledOccurrences.filter { !removedIDs.contains($0.ruleID) }
         reportedFailures = reportedFailures.filter { !removedIDs.contains($0.ruleID) }
         pendingPrompts.removeAll { removedIDs.contains($0.rule.id) }
+        validationError = nil
+        return true
     }
 
-    func remove(_ rule: AutoStopRule) {
+    @discardableResult
+    func remove(_ rule: AutoStopRule) -> Bool {
+        guard !rejectRulesIfReadOnly() else { return false }
+        guard rules.contains(where: { $0.id == rule.id }) else { return false }
         rules.removeAll { $0.id == rule.id }
         handledOccurrences = handledOccurrences.filter { $0.ruleID != rule.id }
         reportedFailures = reportedFailures.filter { $0.ruleID != rule.id }
         pendingPrompts.removeAll { $0.rule.id == rule.id }
+        validationError = nil
+        return true
     }
 
     func start(
         cadence: TimeInterval = 10,
-        actionHandler: @escaping (AppProcess) async -> ProcessActionResult
+        actionHandler: @escaping (AutoStopRule, AppProcess) async -> ProcessActionResult
     ) {
         self.actionHandler = actionHandler
-        guard engineTask == nil else { return }
+        guard !isEngineRunning else { return }
         isEngineRunning = true
-        let interval = max(2, cadence)
-        engineTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.evaluateNow()
-                do {
-                    try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                } catch {
-                    break
-                }
-            }
-            self?.isEngineRunning = false
+        pollingController.restart(interval: cadence, performImmediately: true) { [weak self] in
+            await self?.evaluateNow()
         }
     }
 
     func restart(
         cadence: TimeInterval,
-        actionHandler: @escaping (AppProcess) async -> ProcessActionResult
+        actionHandler: @escaping (AutoStopRule, AppProcess) async -> ProcessActionResult
     ) {
         stop()
         start(cadence: cadence, actionHandler: actionHandler)
     }
 
     func stop() {
-        engineTask?.cancel()
-        engineTask = nil
+        pollingController.stop()
+        inFlightActions.values.forEach { $0.cancel() }
+        inFlightActions.removeAll()
         isEngineRunning = false
     }
 
@@ -336,7 +275,7 @@ final class AutoStopRulesStore: ObservableObject {
 
     /// Completes a stop for a prompt already claimed via `claimPrompt`.
     func finishStop(_ prompt: AutoStopPrompt) async {
-        let result = await actionHandler?(prompt.process) ?? .rejected
+        let result = await actionHandler?(prompt.rule, prompt.process) ?? .rejected
         record(
             prompt,
             outcome: result.succeeded ? .stopped : .failed,
@@ -362,9 +301,13 @@ final class AutoStopRulesStore: ObservableObject {
         dismissPrompt(prompt)
     }
 
-    func clearEvents() {
+    @discardableResult
+    func clearEvents() -> Bool {
+        guard !rejectEventsIfReadOnly() else { return false }
         events.removeAll()
         saveEvents()
+        validationError = nil
+        return true
     }
 
     /// Compatibility entry point for focused callers; app enforcement uses `evaluateNow`.
@@ -377,7 +320,7 @@ final class AutoStopRulesStore: ObservableObject {
             guard let runtime = process.runtimeSeconds else { continue }
             for rule in activeRules where matches(rule, process: process) {
                 let occurrence = AutoStopOccurrence(ruleID: rule.id, processIdentity: process.identity)
-                guard runtime >= TimeInterval(rule.runtimeMinutes * 60),
+                guard runtime >= TimeInterval(rule.runtimeMinutes) * 60,
                       !handledOccurrences.contains(occurrence) else {
                     continue
                 }
@@ -400,7 +343,7 @@ final class AutoStopRulesStore: ObservableObject {
             guard let runtime = process.runtimeSeconds else { continue }
             for rule in activeRules where matches(rule, process: process) && isStillActive(rule) {
                 let occurrence = AutoStopOccurrence(ruleID: rule.id, processIdentity: process.identity)
-                guard runtime >= TimeInterval(rule.runtimeMinutes * 60),
+                guard runtime >= TimeInterval(rule.runtimeMinutes) * 60,
                       !handledOccurrences.contains(occurrence) else {
                     continue
                 }
@@ -411,7 +354,13 @@ final class AutoStopRulesStore: ObservableObject {
                 case .prompt:
                     pendingPrompts.append(prompt)
                 case .kill:
-                    let result = await actionHandler?(process) ?? .rejected
+                    let action = Task { [actionHandler] in
+                        guard !Task.isCancelled else { return ProcessActionResult.rejected }
+                        return await actionHandler?(rule, process) ?? .rejected
+                    }
+                    inFlightActions[occurrence] = action
+                    let result = await action.value
+                    inFlightActions[occurrence] = nil
                     // The handler suspends, so the rule may have been deleted or
                     // disabled while it ran. Drop the outcome rather than acting
                     // under a rule the user has already retired.
@@ -434,7 +383,11 @@ final class AutoStopRulesStore: ObservableObject {
                         }
                     }
                 case .silent:
-                    record(prompt, outcome: .logged, detail: "Runtime threshold reached.")
+                    if !record(prompt, outcome: .logged, detail: "Runtime threshold reached.") {
+                        // A log-only occurrence has not completed until its event is
+                        // durably recorded. Retry after the event recovery gate is reset.
+                        handledOccurrences.remove(occurrence)
+                    }
                 }
             }
         }
@@ -453,7 +406,12 @@ final class AutoStopRulesStore: ObservableObject {
         pendingPrompts.removeAll { ended.contains($0.id) }
     }
 
-    private func record(_ prompt: AutoStopPrompt, outcome: AutoStopEvent.Outcome, detail: String) {
+    @discardableResult
+    private func record(
+        _ prompt: AutoStopPrompt,
+        outcome: AutoStopEvent.Outcome,
+        detail: String
+    ) -> Bool {
         events.insert(
             AutoStopEvent(
                 timestamp: now(),
@@ -468,25 +426,53 @@ final class AutoStopRulesStore: ObservableObject {
         if events.count > eventLimit {
             events.removeLast(events.count - eventLimit)
         }
+        // Keep truthful in-memory history while preserving an unreadable primary
+        // payload. The recovery banner makes its non-durable state visible, and an
+        // explicit reset commits the recovered session history.
         saveEvents()
+        return true
     }
 
     private func matches(_ rule: AutoStopRule, process: AppProcess) -> Bool {
         rule.processName.caseInsensitiveCompare(process.name) == .orderedSame
     }
 
+    private func cancelUnauthorizedActions() {
+        let authorizedRuleIDs = Set(
+            rules.lazy
+                .filter { $0.isEnabled && $0.action == .kill }
+                .map(\.id)
+        )
+        for (occurrence, task) in inFlightActions
+            where !authorizedRuleIDs.contains(occurrence.ruleID) {
+            task.cancel()
+        }
+    }
+
+    func authorizesAutomaticStop(ruleID: UUID) -> Bool {
+        rules.contains { $0.id == ruleID && $0.isEnabled && $0.action == .kill }
+    }
+
+    private func rejectRulesIfReadOnly() -> Bool {
+        guard !allowsRulesPersistence else { return false }
+        validationError = "Auto-stop rule data is in recovery mode; reset the rules before making changes."
+        return true
+    }
+
+    private func rejectEventsIfReadOnly() -> Bool {
+        guard !allowsEventsPersistence else { return false }
+        validationError = "Auto-stop event data is in recovery mode; reset the event log before clearing it."
+        return true
+    }
+
     private func validated(_ rule: AutoStopRule) -> AutoStopRule? {
-        var normalized = rule
-        normalized.processName = rule.processName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.processName.isEmpty else {
-            validationError = "Process name is required."
+        switch AutoStopRuleValidation.validate(rule) {
+        case .success(let normalized):
+            return normalized
+        case .failure(let error):
+            validationError = error.message
             return nil
         }
-        guard normalized.runtimeMinutes > 0 else {
-            validationError = "Runtime must be at least one minute."
-            return nil
-        }
-        return normalized
     }
 
     private func uniqueName(basedOn name: String) -> String {
@@ -515,31 +501,13 @@ final class AutoStopRulesStore: ObservableObject {
     }
 
     private func saveRules() {
-        guard allowsRulesPersistence, let data = try? JSONEncoder().encode(rules) else { return }
-        userDefaults.set(data, forKey: key)
+        guard allowsRulesPersistence else { return }
+        rulesPersistence.save(rules)
     }
 
     private func saveEvents() {
-        guard allowsEventsPersistence, let data = try? JSONEncoder().encode(events) else { return }
-        userDefaults.set(data, forKey: eventsKey)
+        guard allowsEventsPersistence else { return }
+        eventsPersistence.save(events)
     }
 
-    private static func loadRecovering<T: Decodable>(
-        _ type: T.Type,
-        userDefaults: UserDefaults,
-        key: String
-    ) -> (value: T?, message: String?) {
-        guard let data = userDefaults.data(forKey: key) else { return (nil, nil) }
-        do {
-            return (try JSONDecoder().decode(type, from: data), nil)
-        } catch {
-            let backupKey = "\(key).corruptBackup"
-            // Never clobber an earlier backup: a second unreadable read would
-            // otherwise destroy the only surviving copy of the original data.
-            if userDefaults.data(forKey: backupKey) == nil {
-                userDefaults.set(data, forKey: backupKey)
-            }
-            return (nil, "Unreadable data was backed up as \(backupKey).")
-        }
-    }
 }

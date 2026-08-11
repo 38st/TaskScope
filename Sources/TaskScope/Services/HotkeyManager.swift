@@ -6,14 +6,17 @@ final class HotkeyManager: ObservableObject {
     enum RegistrationStatus: Equatable {
         case disabled
         case registered
-        case conflict(OSStatus)
+        case conflict(OSStatus, previousShortcutRemainsActive: Bool)
         case unsupported
 
         var message: String {
             switch self {
             case .disabled: "Hotkey is disabled."
             case .registered: "Hotkey is registered."
-            case .conflict: "That shortcut is unavailable. The previous shortcut remains active."
+            case .conflict(_, let previousShortcutRemainsActive):
+                previousShortcutRemainsActive
+                    ? "That shortcut is unavailable. The previous shortcut remains active."
+                    : "That shortcut is unavailable. No global hotkey is currently active."
             case .unsupported: "Choose a supported key with at least one modifier."
             }
         }
@@ -181,6 +184,7 @@ final class HotkeyManager: ObservableObject {
 
     private func registerCandidate(keyCode: UInt32, modifiers: UInt32) -> Bool {
         installEventHandlerIfNeeded()
+        let previousShortcutRemainsActive = hotkeyRef != nil
         let identifier = EventHotKeyID(signature: OSType(0x54534350), id: nextRegistrationID)
         nextRegistrationID &+= 1
         var candidate: EventHotKeyRef?
@@ -193,7 +197,10 @@ final class HotkeyManager: ObservableObject {
             &candidate
         )
         guard status == noErr, let candidate else {
-            registrationStatus = .conflict(status)
+            registrationStatus = .conflict(
+                status,
+                previousShortcutRemainsActive: previousShortcutRemainsActive
+            )
             return false
         }
 

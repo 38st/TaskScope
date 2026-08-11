@@ -30,6 +30,7 @@ final class ProcessHistory: ObservableObject {
     private let now: () -> Date
     private let maxSamples: Int
     private var samplingTask: Task<Void, Never>?
+    private var samplingGeneration = 0
 
     init(
         inventory: any ProcessInventoryProviding = SystemProcessInventory(),
@@ -49,9 +50,10 @@ final class ProcessHistory: ObservableObject {
         stop()
         state = .sampling
         let interval = max(2, cadence)
+        let generation = samplingGeneration
         samplingTask = Task { [weak self] in
             while !Task.isCancelled {
-                await self?.sampleNow()
+                await self?.sampleNow(for: generation)
                 do {
                     try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 } catch {
@@ -62,13 +64,21 @@ final class ProcessHistory: ObservableObject {
     }
 
     func stop() {
+        samplingGeneration &+= 1
         samplingTask?.cancel()
         samplingTask = nil
         state = .paused
     }
 
     func sampleNow() async {
-        switch await inventory.load(fetchExtendedStats: false) {
+        await sampleNow(for: samplingGeneration)
+    }
+
+    private func sampleNow(for generation: Int) async {
+        let result = await inventory.load(fetchExtendedStats: false)
+        guard generation == samplingGeneration, !Task.isCancelled else { return }
+
+        switch result {
         case .failure(let error):
             state = .unavailable(error.localizedDescription)
         case .success(let processes):

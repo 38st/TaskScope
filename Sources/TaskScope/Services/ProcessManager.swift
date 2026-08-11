@@ -2,23 +2,6 @@ import Darwin
 import Foundation
 import Combine
 
-protocol ProcessSignaling {
-    func send(_ signal: Int32, to pid: Int32) -> Bool
-    func isAlive(_ pid: Int32) -> Bool
-}
-
-struct DarwinProcessSignaler: ProcessSignaling {
-    func send(_ signal: Int32, to pid: Int32) -> Bool {
-        Darwin.kill(pid, signal) == 0
-    }
-
-    func isAlive(_ pid: Int32) -> Bool {
-        errno = 0
-        let result = Darwin.kill(pid, 0)
-        return result == 0 || errno == EPERM
-    }
-}
-
 @MainActor
 final class ProcessManager: ObservableObject {
     @Published private(set) var status: ProcessStatus = .idle
@@ -30,8 +13,13 @@ final class ProcessManager: ObservableObject {
     func setMessage(_ text: String) {
         message = text
     }
-    @Published private(set) var isWorking = false
-    @Published private(set) var operationState: ProcessOperationState = .idle
+    var isWorking: Bool {
+        operationGate.isWorking
+    }
+
+    var operationState: ProcessOperationState {
+        operationGate.state
+    }
 
     @Published var sortKey: ProcessSortKey = .cpu {
         didSet { resortProcesses() }
@@ -52,39 +40,22 @@ final class ProcessManager: ObservableObject {
 
     var enableNotifications: Bool = true
 
-    private var pollingTask: Task<Void, Never>?
     private var pollInterval: TimeInterval = 10
     private var pollProcessList = false
 
-    private let currentPID = ProcessInfo.processInfo.processIdentifier
+    private let currentPID: Int32
     private let processInventory: any ProcessInventoryProviding
     private let processSignaler: any ProcessSignaling
+    private let batchTerminator: ProcessBatchTerminator
     private let lifecycle: any ProcessLifecycleServicing
+    private let detailReader: any ProcessDetailReading
     private let settleAfterProcessChange: () async -> Void
+    private let pollingController: ProcessPollingController
+    private let snapshotBuilder: WatchedSnapshotBuilder
+    private let operationGate = ProcessOperationGate()
+    private var operationGateCancellable: AnyCancellable?
     private var fullProcessInventory: [AppProcess] = []
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
-    private enum ReadOperation: Equatable {
-        case watchedStatus
-        case processList
-    }
-
-    private enum OperationKind: Equatable {
-        case read(ReadOperation)
-        case mutation
-
-        var isMutation: Bool {
-            self == .mutation
-        }
-    }
-
-    private struct OperationWaiter {
-        var id: UUID
-        var kind: OperationKind
-        var continuation: CheckedContinuation<Bool, Never>
-    }
-
-    private var activeOperation: OperationKind?
-    private var operationWaiters: [OperationWaiter] = []
     private var extendedMetricsConsumers = 0
 
     init(
@@ -93,16 +64,28 @@ final class ProcessManager: ObservableObject {
         lifecycle: any ProcessLifecycleServicing = SystemProcessLifecycleService(),
         settleAfterProcessChange: @escaping () async -> Void = {
             await ProcessLifecycleController.settleAfterProcessChange()
-        }
+        },
+        currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
+        pollingController: ProcessPollingController? = nil,
+        detailReader: any ProcessDetailReading = SystemProcessDetailReader()
     ) {
+        self.currentPID = currentPID
         self.processInventory = processInventory
         self.processSignaler = processSignaler
+        batchTerminator = ProcessBatchTerminator(
+            inventory: processInventory,
+            signaler: processSignaler,
+            settleAfterProcessChange: settleAfterProcessChange,
+            currentPID: currentPID
+        )
         self.lifecycle = lifecycle
+        self.detailReader = detailReader
         self.settleAfterProcessChange = settleAfterProcessChange
-    }
-
-    deinit {
-        pollingTask?.cancel()
+        self.pollingController = pollingController ?? ProcessPollingController()
+        snapshotBuilder = WatchedSnapshotBuilder(excludedPID: currentPID)
+        operationGateCancellable = operationGate.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     func setPolling(interval: TimeInterval, includeProcessList: Bool) {
@@ -112,26 +95,20 @@ final class ProcessManager: ObservableObject {
     }
 
     func restartPolling() {
-        pollingTask?.cancel()
         pollInterval = max(2, pollInterval)
         let interval = pollInterval
         let includeList = pollProcessList
-        pollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                if Task.isCancelled { break }
-                guard let self else { break }
-                await self.refreshWatchedStatus(showMessage: false)
-                if includeList, self.hasLoadedProcessList {
-                    await self.loadProcessList(showMessage: false)
-                }
+        pollingController.restart(interval: interval) { [weak self] in
+            guard let self else { return }
+            await self.refreshWatchedStatus(showMessage: false)
+            if includeList, self.hasLoadedProcessList {
+                await self.loadProcessList(showMessage: false)
             }
         }
     }
 
     func stopPolling() {
-        pollingTask?.cancel()
-        pollingTask = nil
+        pollingController.stop()
     }
 
     func toggleSelection(_ pid: Int32) {
@@ -199,100 +176,19 @@ final class ProcessManager: ObservableObject {
         }
 
         await runAction(kind: .mutation) {
-            let currentResult = await processInventory.load(fetchExtendedStats: false)
-            guard case .success(let currentProcesses) = currentResult else {
-                if case .failure(let error) = currentResult {
-                    processLoadError = error.localizedDescription
-                }
-                message = "Could not verify selected processes."
-                batchActionReport = ProcessBatchActionReport(
-                    title: forceKill ? "Force Stop Results" : "Stop Results",
-                    targets: requestedIdentities.map {
-                        ProcessTargetActionResult(
-                            identity: $0,
-                            name: $0.command.isEmpty ? "PID \($0.pid)" : URL(fileURLWithPath: $0.command).lastPathComponent,
-                            // Nothing was checked, so we cannot claim these are gone.
-                            state: .unverified
-                        )
-                    }
-                )
-                return
-            }
-
-            let currentByIdentity = Dictionary(
-                uniqueKeysWithValues: currentProcesses.map { ($0.identity, $0) }
+            let outcome = await batchTerminator.terminate(
+                requestedIdentities,
+                forceKill: forceKill
             )
-            let verified = requestedIdentities.compactMap { currentByIdentity[$0] }
-            var targetResults = requestedIdentities.compactMap { identity -> ProcessTargetActionResult? in
-                guard currentByIdentity[identity] == nil else { return nil }
-                return ProcessTargetActionResult(
-                    identity: identity,
-                    name: identity.command.isEmpty
-                        ? "PID \(identity.pid)"
-                        : URL(fileURLWithPath: identity.command).lastPathComponent,
-                    state: .stale
-                )
-            }
-            let staleCount = targetResults.count
-            guard !verified.isEmpty else {
+            processLoadError = outcome.inventoryError
+            message = outcome.message
+            batchActionReport = outcome.report
+            if outcome.shouldClearSelection {
                 clearSelection()
-                message = "Selection changed; \(staleCount) no longer matched. Nothing was stopped."
-                batchActionReport = ProcessBatchActionReport(
-                    title: forceKill ? "Force Stop Results" : "Stop Results",
-                    targets: targetResults
-                )
+            }
+            if outcome.shouldRefresh {
                 await refreshAfterMutation()
-                return
             }
-
-            let signal: Int32 = forceKill ? SIGKILL : SIGTERM
-            var acceptedIdentities: Set<ProcessIdentity> = []
-            for process in verified where process.pid != currentPID {
-                guard processSignaler.send(signal, to: process.pid) else {
-                    targetResults.append(ProcessTargetActionResult(
-                        identity: process.identity,
-                        name: process.name,
-                        state: .signalRejected
-                    ))
-                    continue
-                }
-                acceptedIdentities.insert(process.identity)
-            }
-            await settleAfterProcessChange()
-
-            for process in verified where acceptedIdentities.contains(process.identity) {
-                targetResults.append(ProcessTargetActionResult(
-                    identity: process.identity,
-                    name: process.name,
-                    state: processSignaler.isAlive(process.pid)
-                        ? .requestedStillRunning
-                        : .stopped
-                ))
-            }
-            targetResults.sort { lhs, rhs in
-                let lhsIndex = requestedIdentities.firstIndex(of: lhs.identity) ?? Int.max
-                let rhsIndex = requestedIdentities.firstIndex(of: rhs.identity) ?? Int.max
-                return lhsIndex < rhsIndex
-            }
-            batchActionReport = ProcessBatchActionReport(
-                title: forceKill ? "Force Stop Results" : "Stop Results",
-                targets: targetResults
-            )
-
-            let accepted = acceptedIdentities.count
-            let stopped = targetResults.filter { $0.state == .stopped }.count
-            clearSelection()
-            if forceKill {
-                message = "Force stopped \(stopped) of \(requestedIdentities.count) selected."
-            } else if accepted == 0 {
-                message = "Could not send stop to the selected processes."
-            } else if stopped == verified.count, staleCount == 0 {
-                message = "Stopped \(stopped) of \(requestedIdentities.count) selected."
-            } else {
-                let stillRunning = verified.count - stopped
-                message = "Stop requested; \(stillRunning) still running, \(staleCount) no longer matched."
-            }
-            await refreshAfterMutation()
         }
     }
 
@@ -304,14 +200,18 @@ final class ProcessManager: ObservableObject {
             case .success(let watched):
                 apply(watched)
                 processLoadError = nil
-                if showMessage {
-                    message = watched.aggregateDetail
-                }
             case .failure(let error):
                 processLoadError = error.localizedDescription
-                if showMessage {
-                    message = "Could not refresh watched status: \(error.localizedDescription)"
-                }
+            }
+        }
+        // An equivalent refresh may have been coalesced with a silent polling
+        // refresh. Publish the explicit caller's message after the joined read has
+        // completed so automation never returns a stale status string.
+        if showMessage {
+            if let processLoadError {
+                message = "Could not refresh watched status: \(processLoadError)"
+            } else {
+                message = snapshots.aggregateDetail
             }
         }
     }
@@ -439,6 +339,12 @@ final class ProcessManager: ObservableObject {
             if termination == .inventoryUnavailable {
                 message = "Could not read the process list; \(preset.displayName) was not stopped."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if termination == .signalRejected {
+                message = "A stop signal was rejected; \(preset.displayName) was not fully stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if termination == .escalationUnavailable {
+                message = "Could not verify \(preset.displayName) before Force Stop; it may still run."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Quit \(preset.displayName), but relaunch jobs failed: \(agentResult.failureSummary ?? "unknown failure")."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
@@ -473,17 +379,23 @@ final class ProcessManager: ObservableObject {
                     title: "\(preset.displayName) Relaunch Jobs",
                     jobs: agentResult.jobs
                 )
-            var terminationBlocked = false
+            var terminationOutcomes: [ProcessTerminationOutcome] = []
             for name in preset.helperProcessNames {
                 let outcome = await lifecycle.terminateHelperProcess(named: name, for: preset)
-                terminationBlocked = terminationBlocked || outcome == .inventoryUnavailable
+                terminationOutcomes.append(outcome)
             }
             await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowHelpers = snapshot(for: preset).helpersRunning
-            if terminationBlocked {
+            if terminationOutcomes.contains(.inventoryUnavailable) {
                 message = "Could not read the process list; user helpers were not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if terminationOutcomes.contains(.signalRejected) {
+                message = "A stop signal was rejected; user helpers were not fully stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if terminationOutcomes.contains(.escalationUnavailable) {
+                message = "Could not verify user helpers before Force Stop; they may still run."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Helper stop was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
@@ -519,19 +431,25 @@ final class ProcessManager: ObservableObject {
                     title: "\(preset.displayName) Relaunch Jobs",
                     jobs: agentResult.jobs
                 )
-            var terminationBlocked = false
+            var terminationOutcomes: [ProcessTerminationOutcome] = []
             for (index, name) in preset.killableNames.enumerated() {
                 let outcome = index == 0
                     ? await lifecycle.terminateMainProcess(for: preset)
                     : await lifecycle.terminateHelperProcess(named: name, for: preset)
-                terminationBlocked = terminationBlocked || outcome == .inventoryUnavailable
+                terminationOutcomes.append(outcome)
             }
             await lifecycle.settleAfterProcessChange()
             await refreshAfterMutation()
 
             let nowSnap = snapshot(for: preset)
-            if terminationBlocked {
+            if terminationOutcomes.contains(.inventoryUnavailable) {
                 message = "Could not read the process list; \(preset.displayName) was not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if terminationOutcomes.contains(.signalRejected) {
+                message = "A stop signal was rejected; \(preset.displayName) was not fully stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if terminationOutcomes.contains(.escalationUnavailable) {
+                message = "Could not verify \(preset.displayName) before Force Stop; it may still run."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Close was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
@@ -556,7 +474,11 @@ final class ProcessManager: ObservableObject {
     }
 
     @discardableResult
-    func terminate(_ process: AppProcess, forceKill: Bool = false) async -> ProcessActionResult {
+    func terminate(
+        _ process: AppProcess,
+        forceKill: Bool = false,
+        isAuthorized: @escaping @MainActor () -> Bool = { true }
+    ) async -> ProcessActionResult {
         guard process.pid != currentPID else {
             message = "Use Quit to close TaskScope."
             return .rejected
@@ -580,6 +502,15 @@ final class ProcessManager: ObservableObject {
                 message = "\(process.name) is no longer the same running process."
                 reconcileSelection(with: currentProcesses)
                 result = .stale
+                return
+            }
+
+            // Auto-stop rules can be disabled or deleted while this mutation is
+            // queued or while identity verification is suspended. This is the
+            // final authority check: no await may occur between it and kill(2).
+            guard !Task.isCancelled, isAuthorized() else {
+                message = "Stop for \(process.name) was cancelled."
+                result = .rejected
                 return
             }
 
@@ -607,37 +538,7 @@ final class ProcessManager: ObservableObject {
     }
 
     func detail(for process: AppProcess) async -> ProcessDetail? {
-        let result = await ShellCommandRunner.run(
-            "/bin/ps -o pid=,ppid=,user=,lstart=,comm= -p \(process.pid)"
-        )
-        guard result.succeeded, !result.stdout.isEmpty else { return nil }
-
-        let line = result.stdout.split(separator: "\n").first.map(String.init) ?? ""
-        let tokens = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-
-        guard tokens.count >= 8,
-              let pid = Int32(tokens[0]),
-              let ppid = Int32(tokens[1]) else {
-            return nil
-        }
-
-        let user = tokens[2]
-        let startTime = tokens[3..<8].joined(separator: " ")
-        let command = tokens[8...].joined(separator: " ")
-
-        // The PID resolving is not enough: if the row's process exited and the PID
-        // was recycled, this read belongs to a different process. `startTime` comes
-        // from `ps lstart` on both sides, so it is directly comparable. Bundle
-        // scoping separately uses the kernel-resolved `executablePath`.
-        guard startTime == process.identity.startTime else { return nil }
-
-        return ProcessDetail(
-            pid: pid,
-            parentPID: ppid,
-            user: user,
-            startTime: startTime,
-            command: command
-        )
+        await detailReader.readDetail(for: process)
     }
 
     func isCurrentProcess(_ process: AppProcess) -> Bool {
@@ -664,13 +565,6 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    private func currentProcesses(
-        from result: Result<[AppProcess], ProcessInventoryError>
-    ) -> [AppProcess] {
-        guard case .success(let processes) = result else { return [] }
-        return processes
-    }
-
     private func snapshot(for preset: WatchedAppPreset) -> WatchedAppSnapshot {
         snapshots.first(where: { $0.preset.id == preset.id }) ?? WatchedAppSnapshot(preset: preset, runningNames: [])
     }
@@ -695,37 +589,14 @@ final class ProcessManager: ObservableObject {
 
     private func snapshots(from inventory: [AppProcess]) -> [WatchedAppSnapshot] {
         let presets = watchedAppsProvider?() ?? []
-        return presets.map { snapshot(for: $0, inventory: inventory) }
+        return snapshotBuilder.snapshots(for: presets, in: inventory)
     }
 
     private func snapshot(
         for preset: WatchedAppPreset,
         inventory: [AppProcess]
     ) -> WatchedAppSnapshot {
-        var runningNames = Set<String>()
-        let mainExecutableDirectory = URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents/MacOS", isDirectory: true)
-            .standardizedFileURL.path + "/"
-        let bundleContentsDirectory = URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents", isDirectory: true)
-            .standardizedFileURL.path + "/"
-        if inventory.contains(where: {
-            $0.pid != currentPID
-                && $0.name == preset.mainProcessName
-                && $0.executablePath?.hasPrefix(mainExecutableDirectory) == true
-        }) {
-            runningNames.insert(preset.mainProcessName)
-        }
-        let helperNames = Set(preset.helperProcessNames)
-        runningNames.formUnion(inventory.lazy.filter {
-            $0.pid != self.currentPID
-                && $0.executablePath?.hasPrefix(bundleContentsDirectory) == true
-        }.map(\.name).filter { helperNames.contains($0) })
-        let protectedNames = Set(preset.protectedProcessNames)
-        runningNames.formUnion(inventory.lazy.filter { $0.pid != self.currentPID }.map(\.name).filter {
-            protectedNames.contains($0)
-        })
-        return WatchedAppSnapshot(preset: preset, runningNames: runningNames)
+        snapshotBuilder.snapshot(for: preset, in: inventory)
     }
 
     func applyCurrentDisplayLimit() {
@@ -837,92 +708,10 @@ final class ProcessManager: ObservableObject {
 
     @discardableResult
     private func runAction(
-        kind: OperationKind,
+        kind: ProcessOperationGate.Kind,
         _ operation: () async -> Void
     ) async -> Bool {
-        guard await acquireOperationSlot(for: kind) else {
-            if !Task.isCancelled {
-                operationState = .coalesced
-            }
-            return false
-        }
-        guard !Task.isCancelled else {
-            releaseOperationSlot()
-            return false
-        }
-
-        isWorking = true
-        operationState = kind.isMutation ? .runningMutation : .runningRefresh
-        defer {
-            isWorking = false
-            releaseOperationSlot()
-        }
-
-        await operation()
-        return true
-    }
-
-    private func acquireOperationSlot(for kind: OperationKind) async -> Bool {
-        guard !Task.isCancelled else { return false }
-        if activeOperation == nil {
-            activeOperation = kind
-            return true
-        }
-
-        if case .read(let requestedRead) = kind {
-            let activeMatches = activeOperation == .read(requestedRead)
-            let queuedMatches = operationWaiters.contains { $0.kind == .read(requestedRead) }
-            if activeMatches || queuedMatches {
-                return false
-            }
-        }
-
-        let waiterID = UUID()
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                guard !Task.isCancelled else {
-                    continuation.resume(returning: false)
-                    return
-                }
-                operationWaiters.append(
-                    OperationWaiter(
-                        id: waiterID,
-                        kind: kind,
-                        continuation: continuation
-                    )
-                )
-                operationState = .queued
-            }
-        } onCancel: {
-            Task { @MainActor [weak self] in
-                self?.cancelOperationWaiter(id: waiterID)
-            }
-        }
-    }
-
-    private func cancelOperationWaiter(id: UUID) {
-        guard let index = operationWaiters.firstIndex(where: { $0.id == id }) else {
-            return
-        }
-        let waiter = operationWaiters.remove(at: index)
-        waiter.continuation.resume(returning: false)
-        if operationWaiters.isEmpty, let activeOperation {
-            operationState = activeOperation.isMutation
-                ? .runningMutation
-                : .runningRefresh
-        }
-    }
-
-    private func releaseOperationSlot() {
-        if operationWaiters.isEmpty {
-            activeOperation = nil
-            operationState = .idle
-        } else {
-            let nextIndex = operationWaiters.firstIndex { $0.kind.isMutation } ?? 0
-            let next = operationWaiters.remove(at: nextIndex)
-            activeOperation = next.kind
-            next.continuation.resume(returning: true)
-        }
+        await operationGate.run(kind: kind, operation)
     }
 
     var watchedAppsProvider: (() -> [WatchedAppPreset])?

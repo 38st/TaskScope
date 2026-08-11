@@ -196,6 +196,28 @@ final class LoginItemManagerTests: XCTestCase {
         XCTAssertEqual(manager.state, .enabled)
         XCTAssertEqual(manager.message, "Launch at Login is on.")
     }
+
+    func testRefreshObservesApprovalGrantedInSystemSettings() {
+        let service = FakeLoginItemService(state: .requiresApproval)
+        let manager = LoginItemManager(service: service)
+
+        service.state = .enabled
+        manager.refresh()
+
+        XCTAssertTrue(manager.isEnabled)
+        XCTAssertEqual(manager.message, "Launch at Login is on.")
+    }
+
+    func testActivationRefreshUpdatesLoginAndNotificationState() async {
+        var events: [String] = []
+
+        await TaskScopeExternalStateRefresh.perform(
+            refreshLoginItem: { events.append("login") },
+            refreshNotificationAuthorization: { events.append("notifications") }
+        )
+
+        XCTAssertEqual(events, ["login", "notifications"])
+    }
 }
 
 private final class FakeLoginItemService: LoginItemServicing {

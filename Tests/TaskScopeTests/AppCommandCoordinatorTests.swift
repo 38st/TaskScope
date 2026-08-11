@@ -46,10 +46,10 @@ final class AppCommandCoordinatorTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            try TaskScopeURLParser.command(
-                from: XCTUnwrap(URL(string: "taskscope://refresh/"))
-            ).get(),
-            .refresh
+            TaskScopeURLParser.command(
+                from: try XCTUnwrap(URL(string: "taskscope://refresh/"))
+            ),
+            .failure(.invalidRefreshURL)
         )
         XCTAssertEqual(
             TaskScopeURLParser.command(
@@ -100,6 +100,68 @@ final class AppCommandCoordinatorTests: XCTestCase {
         XCTAssertTrue(missing.message.contains("Missing"))
     }
 
+    func testExplicitRefreshPublishesJoinedSilentRefreshResult() async {
+        let inventory = CoordinatorBlockingInventory()
+        let manager = ProcessManager(
+            processInventory: inventory,
+            processSignaler: NoopSignaler(),
+            lifecycle: NoopLifecycle(),
+            settleAfterProcessChange: {}
+        )
+        let coordinator = AppCommandCoordinator(
+            processManager: manager,
+            presets: { [] }
+        )
+
+        let silentRefresh = Task {
+            await manager.refreshWatchedStatus(showMessage: false)
+        }
+        await inventory.waitForLoad()
+        let explicitRefresh = Task { await coordinator.perform(.refresh) }
+        await Task.yield()
+
+        XCTAssertEqual(manager.message, "Idle.")
+        await inventory.finish()
+        await silentRefresh.value
+        let result = await explicitRefresh.value
+
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertEqual(result.message, manager.message)
+        XCTAssertNotEqual(result.message, "Idle.")
+    }
+
+    func testEntityCommandRejectsReplacementPresetWithSameDisplayName() async {
+        let selectedID = UUID()
+        let replacement = WatchedAppPreset(
+            id: UUID(),
+            displayName: "Example",
+            mainProcessName: "ReplacementProcess",
+            helperProcessNames: [],
+            protectedProcessNames: [],
+            appPath: "/Applications/Replacement.app"
+        )
+        let manager = ProcessManager(
+            processInventory: EmptyInventory(),
+            processSignaler: NoopSignaler(),
+            lifecycle: NoopLifecycle(),
+            settleAfterProcessChange: {}
+        )
+        let coordinator = AppCommandCoordinator(
+            processManager: manager,
+            presets: { [replacement] }
+        )
+
+        let result = await coordinator.perform(
+            .stopPresetEntity(
+                WatchedPresetCommandTarget(id: selectedID, displayName: "Example")
+            )
+        )
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(result.message.contains("Example"))
+        XCTAssertNil(manager.lifecycleReport)
+    }
+
     func testStartupVerificationRejectsAllExplicitCommands() async {
         let manager = ProcessManager(
             processInventory: EmptyInventory(),
@@ -148,6 +210,30 @@ final class AppCommandCoordinatorTests: XCTestCase {
 private struct EmptyInventory: ProcessInventoryProviding {
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         .success([])
+    }
+}
+
+private actor CoordinatorBlockingInventory: ProcessInventoryProviding {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var didStart = false
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        didStart = true
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+        await withCheckedContinuation { continuation = $0 }
+        return .success([])
+    }
+
+    func waitForLoad() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func finish() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 

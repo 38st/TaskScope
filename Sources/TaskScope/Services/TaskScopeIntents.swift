@@ -21,6 +21,10 @@ struct WatchedPresetEntity: AppEntity {
     var displayRepresentation: DisplayRepresentation {
         DisplayRepresentation(title: "\(displayName)")
     }
+
+    var commandTarget: WatchedPresetCommandTarget {
+        WatchedPresetCommandTarget(id: id, displayName: displayName)
+    }
 }
 
 struct WatchedPresetCatalog: Sendable {
@@ -137,7 +141,7 @@ struct StopWatchedAppIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = await AppCommandBus.shared.submit(.stopPreset(app.displayName))
+        let result = await AppCommandBus.shared.submit(.stopPresetEntity(app.commandTarget))
         let message = try TaskScopeIntentDialog.successMessage(
             for: result,
             action: "stop \(app.displayName)"
@@ -157,7 +161,7 @@ struct OpenWatchedAppIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = await AppCommandBus.shared.submit(.openPreset(app.displayName))
+        let result = await AppCommandBus.shared.submit(.openPresetEntity(app.commandTarget))
         let message = try TaskScopeIntentDialog.successMessage(
             for: result,
             action: "open \(app.displayName)"

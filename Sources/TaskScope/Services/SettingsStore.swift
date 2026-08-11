@@ -32,8 +32,7 @@ final class SettingsStore: ObservableObject {
     }
     @Published private(set) var recoveryMessage: String?
 
-    private let userDefaults: UserDefaults
-    private let key: String
+    private let persistence: RecoveringCodableStorage<CodableSettings>
     private var isNormalizing = false
     private var allowsPersistence: Bool
 
@@ -41,25 +40,24 @@ final class SettingsStore: ObservableObject {
         userDefaults: UserDefaults = .standard,
         key: String = "TaskScope.settings.v1"
     ) {
-        self.userDefaults = userDefaults
-        self.key = key
-        let result = Self.load(userDefaults: userDefaults, key: key)
+        let persistence = RecoveringCodableStorage<CodableSettings>(
+            userDefaults: userDefaults,
+            key: key
+        )
+        self.persistence = persistence
+        let result = persistence.load()
         let decoded: CodableSettings
-        switch result {
-        case .missing:
+        if persistence.rawData == nil {
             decoded = .defaults
             recoveryMessage = nil
             allowsPersistence = true
-        case .loaded(let settings):
+        } else if let settings = result.value {
             decoded = settings.normalized()
             recoveryMessage = nil
             allowsPersistence = true
-        case .corrupt(let data):
+        } else {
             decoded = .defaults
-            let backupKey = "\(key).corruptBackup"
-            if userDefaults.data(forKey: backupKey) == nil {
-                userDefaults.set(data, forKey: backupKey)
-            }
+            let backupKey = result.backupKey ?? "\(key).corruptBackup"
             recoveryMessage = "Settings were unreadable. The first unreadable payload is preserved as \(backupKey), and the current primary remains untouched until reset."
             allowsPersistence = false
         }
@@ -130,18 +128,10 @@ final class SettingsStore: ObservableObject {
     }
 
     private func save() {
-        guard allowsPersistence,
-              !isNormalizing,
-              let data = try? JSONEncoder().encode(currentSettings.normalized()) else {
+        guard allowsPersistence, !isNormalizing else {
             return
         }
-        userDefaults.set(data, forKey: key)
-    }
-
-    private enum LoadResult {
-        case missing
-        case loaded(CodableSettings)
-        case corrupt(Data)
+        persistence.save(currentSettings.normalized())
     }
 
     private struct CodableSettings: Codable, Equatable {
@@ -267,12 +257,4 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    private static func load(userDefaults: UserDefaults, key: String) -> LoadResult {
-        guard let data = userDefaults.data(forKey: key) else { return .missing }
-        do {
-            return .loaded(try JSONDecoder().decode(CodableSettings.self, from: data))
-        } catch {
-            return .corrupt(data)
-        }
-    }
 }

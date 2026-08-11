@@ -22,8 +22,18 @@ struct ProcessRow: View {
                     .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
             }
             .buttonStyle(.borderless)
-            .accessibilityLabel(isSelected ? "Remove \(process.name) from selection" : "Add \(process.name) to selection")
-            .accessibilityHint("Changes the batch action selection")
+            .disabled(isCurrentProcess)
+            .help(isCurrentProcess ? "TaskScope cannot select its own process" : "Toggle Selection")
+            .accessibilityLabel(
+                isCurrentProcess
+                    ? "TaskScope cannot be selected"
+                    : (isSelected ? "Remove \(process.name) from selection" : "Add \(process.name) to selection")
+            )
+            .accessibilityHint(
+                isCurrentProcess
+                    ? "TaskScope protects its own process"
+                    : "Changes the batch action selection"
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
