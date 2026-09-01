@@ -462,8 +462,12 @@ final class ProcessManager: ObservableObject {
     /// system service (or nothing) remains.
     func enforceKeptOffPresets(force: Bool = false) async {
         for preset in keptOffPresetsProvider?() ?? [] {
-            let current = snapshot(for: preset)
-            guard force || current.isMainRunning || current.hasHelpers else { continue }
+            if !force {
+                guard case .success(let current) = await currentSnapshot(for: preset),
+                      current.isMainRunning || current.hasHelpers else {
+                    continue
+                }
+            }
             _ = await keepOff(preset, recordIntent: false)
         }
     }

@@ -7,6 +7,17 @@ enum LifecycleJobState: String, Equatable, Sendable {
     case changed
     case failed
     case verified
+
+    var displayName: String {
+        switch self {
+        case .missing: "Missing"
+        case .alreadyLoaded: "Already loaded"
+        case .alreadyUnloaded: "Already unloaded"
+        case .changed: "Changed"
+        case .failed: "Failed"
+        case .verified: "Verified"
+        }
+    }
 }
 
 enum ProcessTerminationOutcome: Equatable, Sendable {

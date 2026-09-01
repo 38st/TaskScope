@@ -701,6 +701,34 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(lifecycle.calls, ["agents.disable"])
     }
 
+    func testRoutineKeepOffEnforcementChecksFreshProcessState() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .changed, detail: "disabled")
+        ])
+        let preset = lifecyclePreset()
+        let running = process(pid: 42, name: "Example")
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .success([running]),
+                .success([running]),
+                .success([])
+            ]),
+            lifecycle: lifecycle
+        )
+        manager.keptOffPresetsProvider = { [preset] }
+        manager.watchedAppsProvider = { [preset] }
+
+        await manager.enforceKeptOffPresets()
+
+        XCTAssertEqual(lifecycle.calls, [
+            "agents.disable",
+            "terminate:Example",
+            "terminate.helper:ExampleHelper",
+            "settle"
+        ])
+    }
+
     func testExpandedMetricConsumersEnableCollectionAndRefreshLoadedList() async {
         let target = process(pid: 42, name: "Example")
         let inventory = FakeProcessInventory(results: [.success([target])])

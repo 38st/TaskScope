@@ -1,6 +1,12 @@
 import Foundation
 
 enum ProcessLifecycleController {
+    /// GlobalProtect's current per-user PanGPS agent declares an ExitTimeOut of
+    /// 20 seconds. Give launchd enough time to honor that contract before the
+    /// command runner cancels bootout and an immediate inspection reports a
+    /// false "remained loaded" failure.
+    private static let launchAgentBootoutTimeout: TimeInterval = 30
+
     enum LaunchJobInspection: Equatable {
         case loaded
         case notLoaded
@@ -118,7 +124,7 @@ enum ProcessLifecycleController {
             }
 
             let command = "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))"
-            let result = await runtime.runCommand(command, 15)
+            let result = await runtime.runCommand(command, launchAgentBootoutTimeout)
             let after = await inspectLaunchJob(target, runtime: runtime)
             let didUnload = after == .notLoaded
             results.append(LifecycleJobResult(
@@ -187,7 +193,7 @@ enum ProcessLifecycleController {
             case .loaded:
                 let bootout = await runtime.runCommand(
                     "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))",
-                    15
+                    launchAgentBootoutTimeout
                 )
                 let after = await inspectLaunchJob(target, runtime: runtime)
                 let didUnload = after == .notLoaded

@@ -24,10 +24,15 @@ struct WatchedSnapshotBuilder: Sendable {
             .appendingPathComponent("Contents", isDirectory: true)
             .standardizedFileURL.path + "/"
 
-        if inventory.contains(where: {
-            $0.pid != excludedPID
-                && $0.name == preset.mainProcessName
-                && $0.executablePath?.hasPrefix(mainExecutableDirectory) == true
+        if inventory.contains(where: { process in
+            guard process.pid != excludedPID,
+                  let executablePath = process.executablePath,
+                  executablePath.hasPrefix(mainExecutableDirectory) else {
+                return false
+            }
+            return process.name == preset.mainProcessName
+                || URL(fileURLWithPath: executablePath).lastPathComponent
+                    == preset.mainProcessName
         }) {
             runningNames.insert(preset.mainProcessName)
         }
@@ -39,8 +44,16 @@ struct WatchedSnapshotBuilder: Sendable {
                     $0.pid != excludedPID
                         && $0.executablePath?.hasPrefix(bundleContentsDirectory) == true
                 }
-                .map(\.name)
-                .filter { helperNames.contains($0) }
+                .compactMap { process -> String? in
+                    if helperNames.contains(process.name) {
+                        return process.name
+                    }
+                    guard let executablePath = process.executablePath else {
+                        return nil
+                    }
+                    let executableName = URL(fileURLWithPath: executablePath).lastPathComponent
+                    return helperNames.contains(executableName) ? executableName : nil
+                }
         )
 
         let protectedNames = Set(preset.protectedProcessNames)

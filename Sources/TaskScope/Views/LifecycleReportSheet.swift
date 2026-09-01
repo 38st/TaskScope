@@ -16,7 +16,7 @@ struct LifecycleReportSheet: View {
                         Text(job.label)
                             .fontWeight(.medium)
                         Spacer()
-                        Text(job.state.rawValue.capitalized)
+                        Text(job.state.displayName)
                             .foregroundStyle(job.succeeded ? Color.secondary : Color.red)
                     }
                     Text(job.detail)

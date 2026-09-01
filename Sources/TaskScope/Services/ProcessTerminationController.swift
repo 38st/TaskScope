@@ -118,10 +118,21 @@ enum ProcessTerminationController {
         excludingPID: Int32,
         in inventory: [AppProcess]
     ) -> [AppProcess] {
-        matchingProcesses(named: name, in: inventory).filter { process in
+        inventory.filter { process in
             guard process.pid != excludingPID else { return false }
-            guard let expectedExecutableDirectory else { return true }
-            return process.executablePath?.hasPrefix(expectedExecutableDirectory) == true
+            guard let expectedExecutableDirectory else {
+                return process.name == name
+            }
+            guard let executablePath = process.executablePath,
+                  executablePath.hasPrefix(expectedExecutableDirectory) else {
+                return false
+            }
+
+            // `ps comm` is presentation-oriented and may be truncated or otherwise
+            // differ from the executable name. For scoped lifecycle actions the
+            // separately kernel-resolved vnode path is the stronger identity.
+            return process.name == name
+                || URL(fileURLWithPath: executablePath).lastPathComponent == name
         }
     }
 

@@ -65,6 +65,24 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
     }
 
+    func testScopedTerminationUsesKernelExecutableNameWhenProcessNameIsTruncated() {
+        var target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        target.command = "/Applications/Ex"
+
+        XCTAssertEqual(
+            ProcessLifecycleController.terminationTargets(
+                named: "Example",
+                expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+                excludingPID: 99,
+                in: [target]
+            ).map(\.pid),
+            [10]
+        )
+    }
+
     func testPresetOpenVerificationRequiresExecutablePathFromLivePSSchema() async {
         let expectedDirectory = "/Applications/Example.app/Contents/MacOS/"
         let validRuntime = LifecycleRuntimeHarness(
@@ -346,6 +364,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertTrue(batch.succeeded)
         XCTAssertTrue(batch.jobs[0].detail.contains("still unloaded and verified"))
         XCTAssertTrue(harness.commands.contains { $0.contains("launchctl bootout") })
+        XCTAssertEqual(harness.timeouts, [15, 30, 15])
         XCTAssertEqual(harness.sleepDurations, [300_000_000])
     }
 
@@ -686,6 +705,7 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
     private let executablePathsAtSignal: [Int32: String]
     private var signalResults: [Bool]
     private var recordedCommands: [String] = []
+    private var recordedTimeouts: [TimeInterval] = []
     private var recordedSleepDurations: [UInt64] = []
     private var recordedSignals: [(Int32, Int32)] = []
 
@@ -718,9 +738,10 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
             launchAgentLabel: { [self] path in
                 launchAgentLabels[path]
             },
-            runCommand: { [self] command, _ in
+            runCommand: { [self] command, timeout in
                 lock.withLock {
                     recordedCommands.append(command)
+                    recordedTimeouts.append(timeout)
                     guard !commandResults.isEmpty else {
                         return ShellCommandResult(
                             command: command,
@@ -765,6 +786,10 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
 
     var commands: [String] {
         lock.withLock { recordedCommands }
+    }
+
+    var timeouts: [TimeInterval] {
+        lock.withLock { recordedTimeouts }
     }
 
     var sleepDurations: [UInt64] {

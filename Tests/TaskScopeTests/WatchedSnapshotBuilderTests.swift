@@ -22,6 +22,33 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(snapshot.runningNames, ["Example", "Example Helper"])
     }
 
+    func testKernelExecutableNamesRecoverTruncatedProcessNames() {
+        let preset = WatchedAppPreset(
+            displayName: "Example",
+            mainProcessName: "Example",
+            helperProcessNames: ["Example Helper"],
+            protectedProcessNames: [],
+            appPath: "/Applications/Example.app"
+        )
+        var main = process(
+            pid: 10,
+            name: "Example",
+            path: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        main.command = "/Applications/Ex"
+        var helper = process(
+            pid: 11,
+            name: "Example Helper",
+            path: "/Applications/Example.app/Contents/Helpers/Example Helper"
+        )
+        helper.command = "/Applications/Ex"
+
+        let snapshot = WatchedSnapshotBuilder(excludedPID: 99)
+            .snapshot(for: preset, in: [main, helper])
+
+        XCTAssertEqual(snapshot.runningNames, ["Example", "Example Helper"])
+    }
+
     func testProtectedNameMatchingRemainsOutsideBundleScope() {
         let preset = WatchedAppPreset(
             displayName: "Example",
