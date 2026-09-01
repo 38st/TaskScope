@@ -24,7 +24,19 @@ struct AutoStopRuleEditorSheet: View {
             TextField("Process name", text: $draft.processName)
                 .textFieldStyle(.roundedBorder)
 
-            Stepper(value: $draft.runtimeMinutes, in: 1...1440) {
+            TextField(
+                "Executable path (required for Auto Stop)",
+                text: Binding(
+                    get: { draft.executablePath ?? "" },
+                    set: { draft.executablePath = $0 }
+                )
+            )
+            .textFieldStyle(.roundedBorder)
+
+            Stepper(
+                value: $draft.runtimeMinutes,
+                in: 1...AutoStopRulesStore.maximumRuntimeMinutes
+            ) {
                 Text("Runtime: \(draft.runtimeMinutes) minute\(draft.runtimeMinutes == 1 ? "" : "s")")
             }
 

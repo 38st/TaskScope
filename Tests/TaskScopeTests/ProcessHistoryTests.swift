@@ -84,6 +84,23 @@ final class ProcessHistoryTests: XCTestCase {
         XCTAssertEqual(history.state, .paused)
     }
 
+    func testSamplingStartsOnlyWhileAConsumerIsVisible() async {
+        let inventory = CountingHistoryInventory()
+        let history = ProcessHistory(inventory: inventory)
+
+        for _ in 0..<10 { await Task.yield() }
+        let initialLoadCount = await inventory.loadCount()
+        XCTAssertEqual(initialLoadCount, 0)
+
+        history.beginSampling(cadence: 60)
+        await inventory.waitForLoad()
+        let visibleLoadCount = await inventory.loadCount()
+        XCTAssertEqual(visibleLoadCount, 1)
+
+        history.endSampling()
+        XCTAssertEqual(history.state, .paused)
+    }
+
     private func process(pid: Int32, cpu: Double, memory: Double) -> AppProcess {
         AppProcess(
             pid: pid,
@@ -98,6 +115,25 @@ final class ProcessHistoryTests: XCTestCase {
             diskReadBlocks: nil,
             diskWriteBlocks: nil
         )
+    }
+}
+
+private actor CountingHistoryInventory: ProcessInventoryProviding {
+    private var count = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        count += 1
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+        return .success([])
+    }
+
+    func loadCount() -> Int { count }
+
+    func waitForLoad() async {
+        guard count == 0 else { return }
+        await withCheckedContinuation { waiters.append($0) }
     }
 }
 

@@ -1,17 +1,12 @@
 import XCTest
 @testable import TaskScope
 
-/// P8 — "a stop that signals nothing reports success".
-///
-/// `ProcessLifecycleController.terminateProcess` (:144-147, :157-160) returns Void silently when
-/// `loadProcessInventory()` fails, so no SIGTERM/SIGKILL is ever sent. `ProcessManager`'s stop
-/// paths then fall back to the stale/empty snapshot (:625-627, :650-657, :637-639) and reach
-/// the "No watched processes found." / `.completed` branch (:518-520). `processLoadError` is set
-/// but never consulted by any quit path.
+/// Regression coverage for P8 — a stop that signals nothing must not report
+/// success when its fresh inventory gate is unavailable.
 @MainActor
 final class P8SilentStopReportsSuccessTests: XCTestCase {
 
-    // MARK: - P8 proof: an unreadable process list is reported as "nothing to do", successfully
+    // MARK: - An unreadable process list fails closed
 
     func testStopWithUnreadableProcessListIsNotReportedAsSuccess() async {
         let harness = P8LifecycleRuntimeHarness(inventoryResult: .failure(.commandFailed("ps timed out")))
@@ -26,15 +21,14 @@ final class P8SilentStopReportsSuccessTests: XCTestCase {
 
         // The preset has no launch-agent jobs, so the agent batch is `.notNeeded` and succeeded.
         XCTAssertNil(manager.lifecycleReport)
-        // Proof that nothing was signalled: `terminateProcess` was entered once per killable name
-        // and bailed at the inventory guard before the SIGTERM -> settle -> SIGKILL sequence.
-        // The only recorded sleep is `quitAllKillable`'s own explicit settle.
-        XCTAssertEqual(harness.inventoryLoadCount, preset.killableNames.count)
-        XCTAssertEqual(harness.sleepDurations, [300_000_000])
+        // The manager fails closed before entering any lifecycle mutation or
+        // settle delay; its own fresh inventory gate is the only read attempted.
+        XCTAssertEqual(harness.inventoryLoadCount, 0)
+        XCTAssertEqual(harness.sleepDurations, [])
         // The manager knows the read failed...
         XCTAssertEqual(manager.processLoadError, "ps timed out")
 
-        // ...yet reports success.
+        // The failure must not be converted into a successful "nothing to do."
         XCTAssertNotEqual(
             result.status,
             .completed,
@@ -45,7 +39,7 @@ final class P8SilentStopReportsSuccessTests: XCTestCase {
 
     // MARK: - P8 proof: stale snapshot from a successful refresh that predates the failure
 
-    func testStopFalselySucceedsWhenStaleSnapshotPredatesTheReadFailure() async {
+    func testStopFailsWhenStaleSnapshotPredatesTheReadFailure() async {
         let harness = P8LifecycleRuntimeHarness(inventoryResult: .failure(.commandFailed("ps timed out")))
         let preset = presetWithoutLaunchAgentJobs()
         let manager = makeManager(
@@ -72,11 +66,8 @@ final class P8SilentStopReportsSuccessTests: XCTestCase {
         )
     }
 
-    // MARK: - Adversarial control: when the stale snapshot shows the app running, no false success
+    // MARK: - Adversarial control: stale running state still yields an explicit read failure
 
-    /// This one is expected to PASS. It narrows P8: the false `.completed` only occurs when the
-    /// last good snapshot (or the absence of one) says nothing is running. If the stale snapshot
-    /// says the app IS running, `quitAllKillable` falls through to `.failed` "may still run".
     func testStaleSnapshotShowingAppRunningYieldsFailureNotFalseSuccess() async {
         let harness = P8LifecycleRuntimeHarness(inventoryResult: .failure(.commandFailed("ps timed out")))
         let preset = presetWithoutLaunchAgentJobs()

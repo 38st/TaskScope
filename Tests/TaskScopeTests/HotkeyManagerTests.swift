@@ -58,4 +58,21 @@ final class HotkeyManagerTests: XCTestCase {
             "That shortcut is unavailable. No global hotkey is currently active."
         )
     }
+
+    func testHandlerFailureMessagePreservesPreviousShortcutTruthfully() {
+        XCTAssertEqual(
+            HotkeyManager.RegistrationStatus.handlerUnavailable(
+                OSStatus(eventNotHandledErr),
+                previousShortcutRemainsActive: true
+            ).message,
+            "TaskScope could not activate the new hotkey handler. The previous shortcut remains active."
+        )
+        XCTAssertEqual(
+            HotkeyManager.RegistrationStatus.handlerUnavailable(
+                OSStatus(eventNotHandledErr),
+                previousShortcutRemainsActive: false
+            ).message,
+            "TaskScope could not activate the global hotkey handler."
+        )
+    }
 }

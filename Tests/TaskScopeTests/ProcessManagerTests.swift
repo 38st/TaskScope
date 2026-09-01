@@ -153,9 +153,12 @@ final class ProcessManagerTests: XCTestCase {
         let manager = makeManager(inventory: inventory)
 
         await manager.loadProcessList()
+        let lastSuccess = manager.lastSuccessfulInventoryAt
         await manager.loadProcessList()
 
         XCTAssertEqual(manager.processes, [original])
+        XCTAssertNotNil(lastSuccess)
+        XCTAssertEqual(manager.lastSuccessfulInventoryAt, lastSuccess)
         XCTAssertEqual(manager.processLoadError, "temporary failure")
         XCTAssertEqual(manager.message, "Could not load processes: temporary failure")
     }
@@ -239,6 +242,20 @@ final class ProcessManagerTests: XCTestCase {
     func testTerminateRejectsReusedPIDBeforeSignaling() async {
         let original = process(pid: 42, startTime: "start-a", name: "Original")
         let replacement = process(pid: 42, startTime: "start-b", name: "Replacement")
+        let inventory = FakeProcessInventory(results: [.success([replacement])])
+        let signaler = FakeProcessSignaler(alivePids: [42])
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        await manager.terminate(original)
+
+        XCTAssertTrue(signaler.sent.isEmpty)
+        XCTAssertEqual(manager.message, "Original is no longer the same running process.")
+    }
+
+    func testTerminateRejectsExecutableChangeBeforeSignaling() async {
+        let original = process(pid: 42, startTime: "start-a", name: "Original")
+        var replacement = original
+        replacement.executablePath = "/tmp/Original"
         let inventory = FakeProcessInventory(results: [.success([replacement])])
         let signaler = FakeProcessSignaler(alivePids: [42])
         let manager = makeManager(inventory: inventory, signaler: signaler)
@@ -432,6 +449,52 @@ final class ProcessManagerTests: XCTestCase {
             "wait"
         ])
         XCTAssertEqual(manager.message, "Opened Example.")
+    }
+
+    func testOpenFailsClosedWhenFreshInventoryIsUnavailable() async {
+        let lifecycle = FakeLifecycleService()
+        let preset = lifecyclePreset()
+        let running = process(pid: 42, name: "Example")
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .success([running]),
+                .failure(.commandFailed("inventory unavailable"))
+            ]),
+            lifecycle: lifecycle
+        )
+        manager.watchedAppsProvider = { [preset] }
+
+        await manager.refreshWatchedStatus(showMessage: false)
+        let result = await manager.openApp(preset)
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("nothing was opened"))
+        XCTAssertEqual(lifecycle.calls, ["exists"])
+        XCTAssertEqual(manager.processLoadError, "inventory unavailable")
+    }
+
+    func testOpenReportsFailureWhenFinalInventoryCannotBeVerified() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .success([]),
+                .failure(.commandFailed("final inventory unavailable"))
+            ]),
+            lifecycle: lifecycle
+        )
+
+        let result = await manager.openApp(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("could not verify its final state"))
+        XCTAssertEqual(lifecycle.calls, [
+            "exists",
+            "daemon",
+            "agents.load",
+            "open",
+            "wait"
+        ])
+        XCTAssertEqual(manager.processLoadError, "final inventory unavailable")
     }
 
     func testMissingAppBundleCausesNoLifecycleMutation() async {

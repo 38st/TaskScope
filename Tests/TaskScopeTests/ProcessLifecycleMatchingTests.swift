@@ -432,16 +432,11 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
     }
 
-    func testLoadedAgentStillRetriesEnableAndKickstart() async {
+    func testLoadedAgentIsLeftRunningWithoutRestart() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
             launchAgentLabels: ["/agents/example.plist": "example.agent"],
-            commandResults: [
-                result(stdout: "pid = 42", exitCode: 0),
-                result(exitCode: 0),
-                result(exitCode: 0),
-                result(stdout: "pid = 42", exitCode: 0)
-            ]
+            commandResults: [result(stdout: "pid = 42", exitCode: 0)]
         )
 
         let batch = await ProcessLifecycleController.bootstrapUserLaunchAgents(
@@ -449,10 +444,11 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             runtime: harness.runtime
         )
 
-        XCTAssertEqual(batch.jobs.first?.state, .changed)
+        XCTAssertEqual(batch.jobs.first?.state, .alreadyLoaded)
+        XCTAssertEqual(batch.jobs.first?.detail, "Already loaded; no restart needed.")
         XCTAssertFalse(harness.commands.contains { $0.contains("bootstrap") })
-        XCTAssertTrue(harness.commands.contains { $0.contains(" enable ") })
-        XCTAssertTrue(harness.commands.contains { $0.contains("kickstart") })
+        XCTAssertFalse(harness.commands.contains { $0.contains(" enable ") })
+        XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
     }
 
     func testUnrelatedPortListenerCannotSatisfyDaemonReadiness() async {

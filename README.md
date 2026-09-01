@@ -133,13 +133,18 @@ be exported from Settings when their stored data is readable. See
   Monitor.
 - Review immutable targets before sending Stop (`SIGTERM`) or explicit Force
   Stop (`SIGKILL`).
-- Save selections using durable command/name matching and preview recall
-  results.
+- Save selections using durable kernel executable-path matching, with legacy
+  command/name fallback and preview recall results. A path-backed selection
+  never downgrades to the legacy fallback.
 - Create, edit, reorder, import, and export watched-app presets with optional
-  user launch-agent jobs. Custom presets cannot configure privileged system
-  launch daemons.
+  user launch-agent jobs. Exports use a versioned archive; import accepts the
+  legacy array format and shows a non-mutating field review before committing.
+  A lifecycle dry run lists later Open/Close operations without performing
+  them. Custom presets cannot configure privileged system launch daemons.
 - Open or close watched apps through one lifecycle path with per-job reporting.
-- Create Prompt, Auto Stop, or Log Only runtime rules with event history.
+- Create Prompt, Auto Stop, or Log Only runtime rules with event history. Auto
+  Stop requires a trusted executable path; legacy name-only Auto Stop rules
+  load disabled until reviewed.
 - View sampled process CPU and RSS history with Live, Paused, and Unavailable
   states.
 - Opt into watched-process notifications.
@@ -189,12 +194,15 @@ ad-hoc signature is insufficient for App Intents execution.
 
 - Activity Monitor integration requests Accessibility permission only when
   exact PID selection is requested. Denial does not prevent Activity Monitor
-  from opening, and TaskScope reports the recovery path.
+  from opening, and TaskScope reports the recovery path. TaskScope temporarily
+  adjusts the search, process scope, or PID column only when needed and restores
+  the prior Activity Monitor state after the handoff.
 - Notifications are off on a new install and are requested only after opt-in.
 - Launch at Login is optional and managed from Settings.
 - Some process details and extended network/disk counters can be unavailable;
   TaskScope reports them as unavailable rather than fabricating zeroes.
-- Auto Stop is destructive. Use Prompt or Log Only while validating a rule.
+- Auto Stop is destructive and path-bound. Use Prompt or Log Only while
+  validating a rule.
 - The immutable built-in GlobalProtect definition can request administrator
   approval to restore its fixed protected daemon. Custom presets cannot define
   or alter privileged system-daemon jobs, and TaskScope does not bypass macOS

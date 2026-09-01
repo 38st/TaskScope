@@ -32,8 +32,9 @@ TaskScope uses standard macOS preferences for:
   GlobalProtect definition also contains its fixed protected-daemon fields;
 - saved selections, including process names, executable/command paths, and the
   PID captured when saved;
-- auto-stop rules and up to 200 recent event records, which can include process
-  name, PID, time, outcome, and result detail;
+- auto-stop rules, including an optional executable path (required for enabled
+  automatic stopping), and up to 200 recent event records, which can include
+  process name, PID, time, outcome, and result detail;
 - global hotkey and onboarding state;
 - preserved `.corruptBackup` payloads created when stored data cannot be read.
 
@@ -65,7 +66,9 @@ screenshot to a public issue.
 - **Notifications:** requested only after the user opts in. macOS controls
   delivery and stores displayed notifications.
 - **Accessibility:** requested for exact PID selection in Activity Monitor.
-  TaskScope does not need it for ordinary process monitoring.
+  TaskScope does not need it for ordinary process monitoring. When selection
+  requires a temporary search, process-scope, or PID-column change, TaskScope
+  restores the prior Activity Monitor state after the handoff delay.
 - **Administrator authorization:** requested only to restore the fixed protected
   daemon in the immutable built-in GlobalProtect definition. Custom presets
   cannot add privileged daemon jobs, and TaskScope does not store the password.

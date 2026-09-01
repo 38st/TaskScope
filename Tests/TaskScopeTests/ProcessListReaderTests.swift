@@ -5,15 +5,14 @@ final class ProcessListReaderTests: XCTestCase {
     func testProductionSchemaKeepsDisplayCommandSeparateFromTrustedExecutablePath() throws {
         XCTAssertEqual(
             ProcessListReader.processListCommand,
-            "/bin/ps -acwwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
+            "/bin/ps -awwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
         )
-        XCTAssertTrue(ProcessListReader.processListCommand.contains(" -ac"))
+        XCTAssertFalse(ProcessListReader.processListCommand.contains(" -ac"))
 
-        // This is the production macOS schema: `-c` makes `comm` a basename.
-        let liveShapedLine = "42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 Example"[...]
+        let liveShapedLine = "42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 /Applications/Example.app/Contents/MacOS/Example"[...]
         var processes = [try XCTUnwrap(ProcessListReader.parseProcessLine(liveShapedLine))]
 
-        XCTAssertEqual(processes[0].command, "Example")
+        XCTAssertEqual(processes[0].command, "/Applications/Example.app/Contents/MacOS/Example")
         XCTAssertNil(processes[0].executablePath)
 
         ProcessListReader.attachExecutablePaths(
@@ -22,12 +21,12 @@ final class ProcessListReaderTests: XCTestCase {
             validatedStartTimes: [42: "Sat Jul 26 11:20:17 2026"]
         )
 
-        XCTAssertEqual(processes[0].command, "Example")
+        XCTAssertEqual(processes[0].command, "/Applications/Example.app/Contents/MacOS/Example")
         XCTAssertEqual(
             processes[0].executablePath,
             "/Applications/Example.app/Contents/MacOS/Example"
         )
-        XCTAssertEqual(processes[0].displayCommand, "Example")
+        XCTAssertEqual(processes[0].displayCommand, "/Applications/Example.app/Contents/MacOS/Example")
     }
 
     func testExecutablePathEnrichmentFailsClosedWhenPIDStartTimeChanges() throws {

@@ -213,8 +213,8 @@ struct TaskScopeApp: App {
     @StateObject private var settings = SettingsStore()
     @StateObject private var watchedApps: WatchedAppsStore
     @StateObject private var savedSelections = SavedSelectionsStore()
-    @StateObject private var autoStopRules = AutoStopRulesStore()
-    @StateObject private var processHistory = ProcessHistory()
+    @StateObject private var autoStopRules: AutoStopRulesStore
+    @StateObject private var processHistory: ProcessHistory
 
     @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "TaskScope.onboarded.v1")
     @State private var didBootstrapRuntime = false
@@ -223,8 +223,15 @@ struct TaskScopeApp: App {
     @State private var notificationEnablement = NotificationEnablementCoordinator()
 
     init() {
-        let processManager = ProcessManager()
+        let systemInventory = SystemProcessInventory()
+        let sharedInventory = CoalescingProcessInventory(upstream: systemInventory)
+        let processManager = ProcessManager(
+            processInventory: sharedInventory,
+            verificationInventory: systemInventory
+        )
         let watchedApps = WatchedAppsStore()
+        let autoStopRules = AutoStopRulesStore(inventory: sharedInventory)
+        let processHistory = ProcessHistory(inventory: sharedInventory)
         let coordinator = AppCommandCoordinator(
             processManager: processManager,
             presets: { watchedApps.presets },
@@ -240,6 +247,8 @@ struct TaskScopeApp: App {
 
         _processManager = StateObject(wrappedValue: processManager)
         _watchedApps = StateObject(wrappedValue: watchedApps)
+        _autoStopRules = StateObject(wrappedValue: autoStopRules)
+        _processHistory = StateObject(wrappedValue: processHistory)
         _commandCoordinator = State(initialValue: coordinator)
     }
 
@@ -359,7 +368,7 @@ struct TaskScopeApp: App {
         }
         .onChange(of: settings.refreshIntervalSeconds) { _, _ in
             configurePolling()
-            processHistory.start(cadence: settings.refreshIntervalSeconds)
+            processHistory.updateConsumerCadence(settings.refreshIntervalSeconds)
         }
         .onChange(of: settings.autoRefreshProcessList) { _, _ in
             configurePolling()
@@ -423,7 +432,6 @@ struct TaskScopeApp: App {
             showTaskScopeWindow()
         }
         configurePolling()
-        processHistory.start(cadence: settings.refreshIntervalSeconds)
         autoStopRules.start(cadence: 10) { rule, process in
             return await processManager.terminate(
                 process,

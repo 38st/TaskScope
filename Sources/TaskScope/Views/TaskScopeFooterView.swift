@@ -34,6 +34,7 @@ struct TaskScopeFooterView: View {
             }
             .buttonStyle(.borderless)
             .help("Quit TaskScope")
+            .accessibilityLabel("Quit TaskScope")
         }
         .font(.caption)
         .padding(.horizontal, 16)

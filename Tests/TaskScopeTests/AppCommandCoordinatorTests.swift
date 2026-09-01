@@ -68,11 +68,12 @@ final class AppCommandCoordinatorTests: XCTestCase {
     }
 
     func testColdLaunchCommandIsDeliveredExactlyOnceAfterInstall() async {
-        let pending = Task { await AppCommandBus.shared.submit(.openPreset("Example")) }
+        let bus = AppCommandBus()
+        let pending = Task { await bus.submit(.openPreset("Example")) }
         await Task.yield()
         var received: [TaskScopeCommand] = []
 
-        AppCommandBus.shared.install { command in
+        bus.install { command in
             received.append(command)
             return TaskScopeCommandResult(status: .completed, message: "done")
         }
@@ -80,6 +81,25 @@ final class AppCommandCoordinatorTests: XCTestCase {
         let result = await pending.value
         XCTAssertEqual(received, [.openPreset("Example")])
         XCTAssertEqual(result, TaskScopeCommandResult(status: .completed, message: "done"))
+    }
+
+    func testColdLaunchCommandsDrainInSubmissionOrder() async {
+        let bus = AppCommandBus()
+        let first = Task { await bus.submit(.openPreset("First")) }
+        await Task.yield()
+        let second = Task { await bus.submit(.openPreset("Second")) }
+        await Task.yield()
+        var received: [TaskScopeCommand] = []
+
+        bus.install { command in
+            received.append(command)
+            await Task.yield()
+            return TaskScopeCommandResult(status: .completed, message: "done")
+        }
+
+        _ = await first.value
+        _ = await second.value
+        XCTAssertEqual(received, [.openPreset("First"), .openPreset("Second")])
     }
 
     func testCoordinatorReturnsMeaningfulMissingPresetResult() async {

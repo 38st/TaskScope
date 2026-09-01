@@ -52,10 +52,12 @@ enum ShellCommandRunner {
         private let outputCapture = PipeCapture()
         private let errorCapture = PipeCapture()
         private let stateLock = NSLock()
+        private let ioQueue = DispatchQueue(label: "TaskScope.ShellCommandRunner.IO")
 
         private var continuation: CheckedContinuation<ShellCommandResult, Never>?
         private var pendingResult: ShellCommandResult?
         private var completed = false
+        private var completionScheduled = false
         private var processStarted = false
         private var processIdentifier: pid_t?
         private var childExitCode: Int32?
@@ -63,6 +65,8 @@ enum ShellCommandRunner {
         private var terminalOverride: (message: String, exitCode: Int32)?
         private var timeoutTask: Task<Void, Never>?
         private var killFallbackTask: Task<Void, Never>?
+        private var outputSource: DispatchSourceRead?
+        private var errorSource: DispatchSourceRead?
 
         init(command: String, timeout: TimeInterval) {
             self.command = command
@@ -74,33 +78,17 @@ enum ShellCommandRunner {
             self.continuation = continuation
             let alreadyCompleted = completed
             let pendingResult = self.pendingResult
-            stateLock.unlock()
-
             if alreadyCompleted, let pendingResult {
+                stateLock.unlock()
                 continuation.resume(returning: pendingResult)
                 return
             }
-
-            standardOutput.fileHandleForReading.readabilityHandler = { [outputCapture] handle in
-                let data = handle.availableData
-                if !data.isEmpty {
-                    outputCapture.append(data)
-                }
-            }
-
-            standardError.fileHandleForReading.readabilityHandler = { [errorCapture] handle in
-                let data = handle.availableData
-                if !data.isEmpty {
-                    errorCapture.append(data)
-                }
-            }
-
-            stateLock.lock()
-            guard !completed else {
+            guard !completionScheduled else {
                 stateLock.unlock()
                 return
             }
 
+            configureReadSources()
             let spawnResult = spawnContainedShell()
             switch spawnResult {
             case let .success(pid):
@@ -140,8 +128,7 @@ enum ShellCommandRunner {
                 }
             case let .failure(errorCode):
                 stateLock.unlock()
-                closePipeWriters()
-                finish(
+                scheduleImmediateFinish(
                     ShellCommandResult(
                         command: command,
                         stdout: "",
@@ -176,7 +163,7 @@ enum ShellCommandRunner {
             stateLock.unlock()
 
             guard didStart else {
-                finish(
+                scheduleImmediateFinish(
                     ShellCommandResult(
                         command: command,
                         stdout: outputCapture.string,
@@ -275,36 +262,63 @@ enum ShellCommandRunner {
         }
 
         private func finishAfterTermination(exitCode: Int32) {
-            standardOutput.fileHandleForReading.readabilityHandler = nil
-            standardError.fileHandleForReading.readabilityHandler = nil
-            drainAvailableData(from: standardOutput, into: outputCapture)
-            drainAvailableData(from: standardError, into: errorCapture)
-            closePipeReaders()
-
             stateLock.lock()
+            guard !completed, !completionScheduled else {
+                stateLock.unlock()
+                return
+            }
+            completionScheduled = true
             let terminalOverride = self.terminalOverride
             stateLock.unlock()
-            let capturedError = errorCapture.string.trimmingCharacters(in: .whitespacesAndNewlines)
-            let reportedError: String
-            if let terminalOverride {
-                reportedError = capturedError.isEmpty
-                    ? terminalOverride.message
-                    : "\(capturedError)\n\(terminalOverride.message)"
-            } else {
-                reportedError = capturedError
-            }
 
-            finish(
-                ShellCommandResult(
-                    command: command,
-                    stdout: outputCapture.string.trimmingCharacters(in: .whitespacesAndNewlines),
-                    stderr: reportedError,
-                    exitCode: terminalOverride?.exitCode ?? exitCode
+            ioQueue.async { [self] in
+                drainAvailableData(from: standardOutput, into: outputCapture)
+                drainAvailableData(from: standardError, into: errorCapture)
+                cancelReadSources()
+
+                let capturedError = errorCapture.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                let reportedError: String
+                if let terminalOverride {
+                    reportedError = capturedError.isEmpty
+                        ? terminalOverride.message
+                        : "\(capturedError)\n\(terminalOverride.message)"
+                } else {
+                    reportedError = capturedError
+                }
+
+                finishState(
+                    ShellCommandResult(
+                        command: command,
+                        stdout: outputCapture.string.trimmingCharacters(in: .whitespacesAndNewlines),
+                        stderr: reportedError,
+                        exitCode: terminalOverride?.exitCode ?? exitCode
+                    )
                 )
-            )
+            }
         }
 
-        private func finish(_ result: ShellCommandResult) {
+        private func scheduleImmediateFinish(_ result: ShellCommandResult) {
+            stateLock.lock()
+            guard !completed, !completionScheduled else {
+                stateLock.unlock()
+                return
+            }
+            completionScheduled = true
+            stateLock.unlock()
+
+            ioQueue.async { [self] in
+                // A cancellation can win before `start` configures nonblocking
+                // readers or spawns the child. Close the writers first so an
+                // otherwise blocking drain observes EOF immediately.
+                closePipeWriters()
+                drainAvailableData(from: standardOutput, into: outputCapture)
+                drainAvailableData(from: standardError, into: errorCapture)
+                cancelReadSources()
+                finishState(result)
+            }
+        }
+
+        private func finishState(_ result: ShellCommandResult) {
             stateLock.lock()
             guard !completed else {
                 stateLock.unlock()
@@ -322,11 +336,44 @@ enum ShellCommandRunner {
 
             timeoutTask?.cancel()
             killFallbackTask?.cancel()
-            standardOutput.fileHandleForReading.readabilityHandler = nil
-            standardError.fileHandleForReading.readabilityHandler = nil
             closePipeWriters()
-            closePipeReaders()
             continuation?.resume(returning: result)
+        }
+
+        private func configureReadSources() {
+            let outputHandle = standardOutput.fileHandleForReading
+            let errorHandle = standardError.fileHandleForReading
+            let outputDescriptor = outputHandle.fileDescriptor
+            let errorDescriptor = errorHandle.fileDescriptor
+            makeNonBlocking(outputDescriptor)
+            makeNonBlocking(errorDescriptor)
+
+            let outputSource = DispatchSource.makeReadSource(
+                fileDescriptor: outputDescriptor,
+                queue: ioQueue
+            )
+            outputSource.setEventHandler { [outputCapture] in
+                Self.drain(descriptor: outputDescriptor, into: outputCapture)
+            }
+            outputSource.setCancelHandler {
+                try? outputHandle.close()
+            }
+
+            let errorSource = DispatchSource.makeReadSource(
+                fileDescriptor: errorDescriptor,
+                queue: ioQueue
+            )
+            errorSource.setEventHandler { [errorCapture] in
+                Self.drain(descriptor: errorDescriptor, into: errorCapture)
+            }
+            errorSource.setCancelHandler {
+                try? errorHandle.close()
+            }
+
+            self.outputSource = outputSource
+            self.errorSource = errorSource
+            outputSource.resume()
+            errorSource.resume()
         }
 
         private func spawnContainedShell() -> SpawnResult {
@@ -334,9 +381,6 @@ enum ShellCommandRunner {
             let outputWrite = standardOutput.fileHandleForWriting.fileDescriptor
             let errorRead = standardError.fileHandleForReading.fileDescriptor
             let errorWrite = standardError.fileHandleForWriting.fileDescriptor
-
-            makeNonBlocking(outputRead)
-            makeNonBlocking(errorRead)
 
             var fileActions: posix_spawn_file_actions_t?
             var attributes: posix_spawnattr_t?
@@ -393,7 +437,10 @@ enum ShellCommandRunner {
         }
 
         private func drainAvailableData(from pipe: Pipe, into capture: PipeCapture) {
-            let descriptor = pipe.fileHandleForReading.fileDescriptor
+            Self.drain(descriptor: pipe.fileHandleForReading.fileDescriptor, into: capture)
+        }
+
+        private static func drain(descriptor: Int32, into capture: PipeCapture) {
             var buffer = [UInt8](repeating: 0, count: 16_384)
             while true {
                 let count = Darwin.read(descriptor, &buffer, buffer.count)
@@ -402,14 +449,24 @@ enum ShellCommandRunner {
             }
         }
 
+        private func cancelReadSources() {
+            if let outputSource {
+                outputSource.cancel()
+                self.outputSource = nil
+            } else {
+                try? standardOutput.fileHandleForReading.close()
+            }
+            if let errorSource {
+                errorSource.cancel()
+                self.errorSource = nil
+            } else {
+                try? standardError.fileHandleForReading.close()
+            }
+        }
+
         private func closePipeWriters() {
             try? standardOutput.fileHandleForWriting.close()
             try? standardError.fileHandleForWriting.close()
-        }
-
-        private func closePipeReaders() {
-            try? standardOutput.fileHandleForReading.close()
-            try? standardError.fileHandleForReading.close()
         }
 
         private static func exitCode(fromWaitStatus status: Int32) -> Int32 {

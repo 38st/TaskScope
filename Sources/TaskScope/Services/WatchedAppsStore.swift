@@ -2,9 +2,59 @@ import Foundation
 
 @MainActor
 final class WatchedAppsStore: ObservableObject {
+    nonisolated static let maximumPresetArchiveBytes = 1_000_000
+
+    struct PresetArchive: Codable, Equatable {
+        static let currentSchemaVersion = 1
+
+        var schemaVersion: Int
+        var presets: [WatchedAppPreset]
+
+        init(
+            schemaVersion: Int = PresetArchive.currentSchemaVersion,
+            presets: [WatchedAppPreset]
+        ) {
+            self.schemaVersion = schemaVersion
+            self.presets = presets
+        }
+    }
+
+    enum PresetArchiveError: LocalizedError, Equatable {
+        case exceedsMaximumSize
+        case unsupportedSchemaVersion(Int)
+        case unreadable
+
+        var errorDescription: String? {
+            switch self {
+            case .exceedsMaximumSize:
+                "Preset archives must be 1 MB or smaller."
+            case .unsupportedSchemaVersion(let version):
+                "Preset schema version \(version) is not supported by this TaskScope build."
+            case .unreadable:
+                "The file is not a recognized TaskScope preset archive."
+            }
+        }
+    }
+
     struct ImportResult: Equatable {
         var importedCount: Int
         var rejectedCount: Int
+    }
+
+    struct ImportPreviewItem: Identifiable, Equatable {
+        var id: Int
+        var preset: WatchedAppPreset
+        var normalizedPreset: WatchedAppPreset?
+        var rejectionReason: String?
+
+        var isAccepted: Bool { normalizedPreset != nil }
+    }
+
+    struct ImportPreview: Equatable {
+        var items: [ImportPreviewItem]
+
+        var importableCount: Int { items.filter(\.isAccepted).count }
+        var rejectedCount: Int { items.count - importableCount }
     }
 
     nonisolated static let defaultPersistenceKey = "TaskScope.watchedPresets.v1"
@@ -147,19 +197,98 @@ final class WatchedAppsStore: ObservableObject {
     }
 
     func importPresets(_ candidates: [WatchedAppPreset]) -> ImportResult {
-        var seenIDs = Set(presets.map(\.id))
-        var imported = 0
-        var rejected = 0
+        guard !rejectIfReadOnly() else {
+            return ImportResult(importedCount: 0, rejectedCount: candidates.count)
+        }
+        let preview = previewImport(candidates)
+        let accepted = preview.items.compactMap(\.normalizedPreset)
+        presets.append(contentsOf: accepted)
+        validationError = preview.rejectedCount == 0
+            ? nil
+            : "\(preview.rejectedCount) preset\(preview.rejectedCount == 1 ? " was" : "s were") rejected by validation."
 
-        for preset in candidates {
-            guard seenIDs.insert(preset.id).inserted, add(preset) else {
-                rejected += 1
-                continue
-            }
-            imported += 1
+        return ImportResult(
+            importedCount: accepted.count,
+            rejectedCount: preview.rejectedCount
+        )
+    }
+
+    func previewImport(_ candidates: [WatchedAppPreset]) -> ImportPreview {
+        guard allowsPersistence else {
+            return ImportPreview(items: candidates.enumerated().map { offset, preset in
+                ImportPreviewItem(
+                    id: offset,
+                    preset: preset,
+                    normalizedPreset: nil,
+                    rejectionReason: "Preset storage is in recovery mode."
+                )
+            })
         }
 
-        return ImportResult(importedCount: imported, rejectedCount: rejected)
+        var workingPresets = presets
+        var seenIDs = Set(presets.map(\.id))
+        var items: [ImportPreviewItem] = []
+        for (offset, candidate) in candidates.enumerated() {
+            let validation = Self.validateAndNormalizePreset(candidate)
+            guard let normalized = validation.preset else {
+                items.append(ImportPreviewItem(
+                    id: offset,
+                    preset: candidate,
+                    normalizedPreset: nil,
+                    rejectionReason: validation.error ?? "Invalid preset."
+                ))
+                continue
+            }
+            guard seenIDs.insert(normalized.id).inserted else {
+                items.append(ImportPreviewItem(
+                    id: offset,
+                    preset: candidate,
+                    normalizedPreset: nil,
+                    rejectionReason: "A preset with this identity already exists."
+                ))
+                continue
+            }
+            guard !Self.hasSemanticDuplicate(normalized, in: workingPresets) else {
+                items.append(ImportPreviewItem(
+                    id: offset,
+                    preset: candidate,
+                    normalizedPreset: nil,
+                    rejectionReason: "A preset with the same name, process, or app path already exists."
+                ))
+                continue
+            }
+            workingPresets.append(normalized)
+            items.append(ImportPreviewItem(
+                id: offset,
+                preset: candidate,
+                normalizedPreset: normalized,
+                rejectionReason: nil
+            ))
+        }
+        return ImportPreview(items: items)
+    }
+
+    func encodedPresetArchive() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return try encoder.encode(PresetArchive(presets: presets))
+    }
+
+    nonisolated static func decodePresetArchive(_ data: Data) throws -> [WatchedAppPreset] {
+        guard data.count <= maximumPresetArchiveBytes else {
+            throw PresetArchiveError.exceedsMaximumSize
+        }
+        let decoder = JSONDecoder()
+        if let archive = try? decoder.decode(PresetArchive.self, from: data) {
+            guard archive.schemaVersion == PresetArchive.currentSchemaVersion else {
+                throw PresetArchiveError.unsupportedSchemaVersion(archive.schemaVersion)
+            }
+            return archive.presets
+        }
+        if let legacy = try? decoder.decode([WatchedAppPreset].self, from: data) {
+            return legacy
+        }
+        throw PresetArchiveError.unreadable
     }
 
     private func validateAndNormalize(_ preset: WatchedAppPreset) -> WatchedAppPreset? {
@@ -173,7 +302,6 @@ final class WatchedAppsStore: ObservableObject {
     ) -> (presets: [WatchedAppPreset], rejectedCount: Int) {
         var accepted: [WatchedAppPreset] = []
         var seenIDs: Set<UUID> = []
-        var semanticKeys: Set<String> = []
         var rejected = 0
 
         for candidate in candidates {
@@ -181,14 +309,11 @@ final class WatchedAppsStore: ObservableObject {
                 rejected += 1
                 continue
             }
-            let keys = [preset.displayName, preset.mainProcessName, preset.appPath]
-                .map { $0.lowercased() }
             guard seenIDs.insert(preset.id).inserted,
-                  semanticKeys.isDisjoint(with: keys) else {
+                  !hasSemanticDuplicate(preset, in: accepted) else {
                 rejected += 1
                 continue
             }
-            semanticKeys.formUnion(keys)
             accepted.append(preset)
         }
         return (accepted, rejected)
@@ -211,6 +336,27 @@ final class WatchedAppsStore: ObservableObject {
               URL(fileURLWithPath: value.appPath).pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
             return (nil, "App path must be an absolute .app bundle path.")
         }
+        value.appPath = URL(fileURLWithPath: value.appPath).standardizedFileURL.path
+        value.userLaunchAgentJobs = value.userLaunchAgentJobs.map {
+            let path = $0.plistPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            return UserLaunchAgentJob(
+                label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
+                plistPath: path.hasPrefix("/")
+                    ? URL(fileURLWithPath: path).standardizedFileURL.path
+                    : path
+            )
+        }
+        value.systemLaunchDaemonJobs = value.systemLaunchDaemonJobs.map {
+            let path = $0.plistPath.trimmingCharacters(in: .whitespacesAndNewlines)
+            return SystemLaunchDaemonJob(
+                label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
+                plistPath: path.hasPrefix("/")
+                    ? URL(fileURLWithPath: path).standardizedFileURL.path
+                    : path,
+                processName: $0.processName.trimmingCharacters(in: .whitespacesAndNewlines),
+                servicePort: $0.servicePort
+            )
+        }
         let killable = Set(([value.mainProcessName] + value.helperProcessNames).map { $0.lowercased() })
         let protected = Set(value.protectedProcessNames.map { $0.lowercased() })
         guard killable.isDisjoint(with: protected) else {
@@ -230,20 +376,30 @@ final class WatchedAppsStore: ObservableObject {
     }
 
     nonisolated private static func jobsValidationError(_ preset: WatchedAppPreset) -> String? {
+        var labels: Set<String> = []
+        var paths: Set<String> = []
         for job in preset.userLaunchAgentJobs {
-            guard !job.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            guard !job.label.isEmpty,
                   job.plistPath.hasPrefix("/"),
-                  URL(fileURLWithPath: job.plistPath).pathExtension == "plist" else {
+                  URL(fileURLWithPath: job.plistPath).pathExtension.caseInsensitiveCompare("plist") == .orderedSame else {
                 return "Every launch agent requires a label and absolute .plist path."
+            }
+            guard labels.insert(job.label.lowercased()).inserted,
+                  paths.insert(job.plistPath.lowercased()).inserted else {
+                return "Launch job labels and plist paths must be unique."
             }
         }
         for job in preset.systemLaunchDaemonJobs {
-            guard !job.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                  !job.processName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            guard !job.label.isEmpty,
+                  !job.processName.isEmpty,
                   job.plistPath.hasPrefix("/"),
-                  URL(fileURLWithPath: job.plistPath).pathExtension == "plist",
+                  URL(fileURLWithPath: job.plistPath).pathExtension.caseInsensitiveCompare("plist") == .orderedSame,
                   job.servicePort.map({ (1...65_535).contains($0) }) ?? true else {
                 return "Every daemon requires valid label, process, plist path, and optional port."
+            }
+            guard labels.insert(job.label.lowercased()).inserted,
+                  paths.insert(job.plistPath.lowercased()).inserted else {
+                return "Launch job labels and plist paths must be unique."
             }
         }
         return nil
@@ -262,17 +418,25 @@ final class WatchedAppsStore: ObservableObject {
         _ preset: WatchedAppPreset,
         excluding id: UUID? = nil
     ) -> Bool {
-        let duplicate = presets.contains {
+        let duplicate = Self.hasSemanticDuplicate(preset, in: presets, excluding: id)
+        if duplicate {
+            validationError = "A preset with the same name, process, or app path already exists."
+        }
+        return duplicate
+    }
+
+    nonisolated private static func hasSemanticDuplicate(
+        _ preset: WatchedAppPreset,
+        in candidates: [WatchedAppPreset],
+        excluding id: UUID? = nil
+    ) -> Bool {
+        candidates.contains {
             $0.id != id && (
                 $0.displayName.caseInsensitiveCompare(preset.displayName) == .orderedSame
                 || $0.mainProcessName.caseInsensitiveCompare(preset.mainProcessName) == .orderedSame
                 || $0.appPath.caseInsensitiveCompare(preset.appPath) == .orderedSame
             )
         }
-        if duplicate {
-            validationError = "A preset with the same name, process, or app path already exists."
-        }
-        return duplicate
     }
 
     private func persistIfAllowed() {

@@ -46,7 +46,9 @@ unavailable independently of the basic process list.
 
 Allow TaskScope in **System Settings > Privacy & Security > Accessibility**, then
 retry. If access is intentionally denied, Activity Monitor can still open but
-exact selection is unavailable.
+exact selection is unavailable. When exact selection temporarily changes the
+Activity Monitor search, process scope, or PID column, TaskScope restores the
+prior state after a short handoff delay.
 
 ### Notifications do not appear
 
@@ -68,6 +70,9 @@ TaskScope preserves unreadable payloads under a preference key ending in
 data. Preserve the named backup before selecting a destructive reset. Do not
 export an empty fallback list as a backup. Reset resumes persistence with the
 currently recovered in-memory state where supported.
+
+Legacy name-only Auto Stop rules are retained but disabled. Add and verify the
+intended absolute executable path before enabling automatic stopping.
 
 ### A watched-app lifecycle partially fails
 

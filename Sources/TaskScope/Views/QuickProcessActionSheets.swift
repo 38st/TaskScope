@@ -104,7 +104,11 @@ struct QuickAutoStopRuleSheet: View {
             Form {
                 TextField("Process name", text: $form.processName)
 
-                Stepper(value: $form.runtimeMinutes, in: 1...240, step: 1) {
+                Stepper(
+                    value: $form.runtimeMinutes,
+                    in: 1...AutoStopRulesStore.maximumRuntimeMinutes,
+                    step: 1
+                ) {
                     HStack {
                         Text("Runtime minutes")
                         Spacer()

@@ -9,6 +9,7 @@ final class AutoStopRulesStore: ObservableObject {
             normalizeRules()
             cancelUnauthorizedActions()
             saveRules()
+            updateEnginePolling()
         }
     }
     @Published private(set) var pendingPrompts: [AutoStopPrompt] = []
@@ -40,6 +41,7 @@ final class AutoStopRulesStore: ObservableObject {
     private var isNormalizing = false
     private var allowsRulesPersistence: Bool
     private var allowsEventsPersistence: Bool
+    private var engineCadence: TimeInterval = 10
 
     init(
         userDefaults: UserDefaults = .standard,
@@ -231,9 +233,8 @@ final class AutoStopRulesStore: ObservableObject {
         self.actionHandler = actionHandler
         guard !isEngineRunning else { return }
         isEngineRunning = true
-        pollingController.restart(interval: cadence, performImmediately: true) { [weak self] in
-            await self?.evaluateNow()
-        }
+        engineCadence = max(2, cadence)
+        updateEnginePolling()
     }
 
     func restart(
@@ -249,6 +250,18 @@ final class AutoStopRulesStore: ObservableObject {
         inFlightActions.values.forEach { $0.cancel() }
         inFlightActions.removeAll()
         isEngineRunning = false
+    }
+
+    private func updateEnginePolling() {
+        guard isEngineRunning else { return }
+        guard rules.contains(where: { $0.isEnabled }) else {
+            pollingController.stop()
+            engineError = nil
+            return
+        }
+        pollingController.restart(interval: engineCadence, performImmediately: true) { [weak self] in
+            await self?.evaluateNow()
+        }
     }
 
     func evaluateNow() async {
@@ -383,7 +396,12 @@ final class AutoStopRulesStore: ObservableObject {
                         }
                     }
                 case .silent:
-                    if !record(prompt, outcome: .logged, detail: "Runtime threshold reached.") {
+                    if !record(
+                        prompt,
+                        outcome: .logged,
+                        detail: "Runtime threshold reached.",
+                        requiresDurability: true
+                    ) {
                         // A log-only occurrence has not completed until its event is
                         // durably recorded. Retry after the event recovery gate is reset.
                         handledOccurrences.remove(occurrence)
@@ -410,31 +428,41 @@ final class AutoStopRulesStore: ObservableObject {
     private func record(
         _ prompt: AutoStopPrompt,
         outcome: AutoStopEvent.Outcome,
-        detail: String
+        detail: String,
+        requiresDurability: Bool = false
     ) -> Bool {
-        events.insert(
-            AutoStopEvent(
-                timestamp: now(),
-                processName: prompt.process.name,
-                pid: prompt.process.pid,
-                ruleID: prompt.rule.id,
-                outcome: outcome,
-                detail: detail
-            ),
-            at: 0
+        guard !requiresDurability || allowsEventsPersistence else { return false }
+        let event = AutoStopEvent(
+            timestamp: now(),
+            processName: prompt.process.name,
+            pid: prompt.process.pid,
+            ruleID: prompt.rule.id,
+            outcome: outcome,
+            detail: detail
         )
+        events.insert(event, at: 0)
         if events.count > eventLimit {
             events.removeLast(events.count - eventLimit)
         }
         // Keep truthful in-memory history while preserving an unreadable primary
         // payload. The recovery banner makes its non-durable state visible, and an
         // explicit reset commits the recovered session history.
-        saveEvents()
+        let persisted = saveEvents()
+        if requiresDurability, !persisted {
+            events.removeAll { $0.id == event.id }
+            return false
+        }
         return true
     }
 
     private func matches(_ rule: AutoStopRule, process: AppProcess) -> Bool {
-        rule.processName.caseInsensitiveCompare(process.name) == .orderedSame
+        guard rule.processName.caseInsensitiveCompare(process.name) == .orderedSame else {
+            return false
+        }
+        guard let rulePath = rule.executablePath else { return true }
+        guard let processPath = process.executablePath else { return false }
+        return URL(fileURLWithPath: rulePath).standardizedFileURL.path
+            == URL(fileURLWithPath: processPath).standardizedFileURL.path
     }
 
     private func cancelUnauthorizedActions() {
@@ -505,9 +533,10 @@ final class AutoStopRulesStore: ObservableObject {
         rulesPersistence.save(rules)
     }
 
-    private func saveEvents() {
-        guard allowsEventsPersistence else { return }
-        eventsPersistence.save(events)
+    @discardableResult
+    private func saveEvents() -> Bool {
+        guard allowsEventsPersistence else { return false }
+        return eventsPersistence.save(events)
     }
 
 }

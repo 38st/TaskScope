@@ -5,30 +5,43 @@ final class SavedSelectionsStore: ObservableObject {
     struct SavedProcess: Codable, Equatable, Identifiable {
         var pid: Int32
         var command: String
+        var executablePath: String?
         var executableName: String
 
         var id: String {
-            "\(command)|\(executableName)|\(pid)"
+            "\(executablePath ?? command)|\(executableName)|\(pid)"
         }
 
-        init(pid: Int32, command: String, executableName: String) {
+        init(
+            pid: Int32,
+            command: String,
+            executableName: String,
+            executablePath: String? = nil
+        ) {
             self.pid = pid
             self.command = command
+            self.executablePath = executablePath
             self.executableName = executableName
         }
 
         init(process: AppProcess) {
-            self.init(pid: process.pid, command: process.command, executableName: process.name)
+            self.init(
+                pid: process.pid,
+                command: process.command,
+                executableName: process.name,
+                executablePath: process.executablePath
+            )
         }
 
         private enum CodingKeys: String, CodingKey {
-            case pid, command, executableName
+            case pid, command, executablePath, executableName
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             pid = try container.decode(Int32.self, forKey: .pid)
             command = try container.decode(String.self, forKey: .command)
+            executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
             executableName = try container.decodeIfPresent(String.self, forKey: .executableName)
                 ?? URL(fileURLWithPath: command).lastPathComponent
         }
@@ -207,12 +220,24 @@ final class SavedSelectionsStore: ObservableObject {
         var claimedIdentities: Set<ProcessIdentity> = []
 
         for saved in selection.processes {
-            let exactCommand = processes.filter { $0.command == saved.command }
-            let candidates = exactCommand.isEmpty
-                ? processes.filter {
-                    $0.name.caseInsensitiveCompare(saved.executableName) == .orderedSame
+            let candidates: [AppProcess]
+            if let savedPath = saved.executablePath {
+                // A selection captured with a kernel executable path must never
+                // degrade to the spoofable display command or basename.
+                candidates = processes.filter {
+                    guard let processPath = $0.executablePath else { return false }
+                    return standardizedPath(processPath) == standardizedPath(savedPath)
                 }
-                : exactCommand
+            } else {
+                // Legacy payloads predate executable-path capture. Keep their
+                // documented command/name fallback, with ambiguity surfaced.
+                let exactCommand = processes.filter { $0.command == saved.command }
+                candidates = exactCommand.isEmpty
+                    ? processes.filter {
+                        $0.name.caseInsensitiveCompare(saved.executableName) == .orderedSame
+                    }
+                    : exactCommand
+            }
 
             let unclaimed = candidates.filter { !claimedIdentities.contains($0.identity) }
             if unclaimed.count == 1, let match = unclaimed.first {
@@ -254,6 +279,10 @@ final class SavedSelectionsStore: ObservableObject {
         selections.contains {
             $0.id != id && $0.name.caseInsensitiveCompare(name) == .orderedSame
         }
+    }
+
+    private func standardizedPath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
     }
 
     private func saveToDefaults() {

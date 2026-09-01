@@ -75,7 +75,10 @@ final class P11UnguardedWritebackTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: "\(eventsKey).corruptBackup"), corruptEvents, "precondition: backup taken")
 
         await store.evaluateNow()
-        XCTAssertEqual(store.events.count, 1, "sanity: the engine recorded an outcome")
+        XCTAssertTrue(
+            store.events.isEmpty,
+            "Log Only must stay retryable until its event can be durably recorded"
+        )
 
         XCTAssertEqual(
             defaults.data(forKey: eventsKey),

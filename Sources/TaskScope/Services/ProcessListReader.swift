@@ -26,9 +26,10 @@ struct SystemProcessInventory: ProcessInventoryProviding {
 }
 
 enum ProcessListReader {
-    // `comm` is intentionally a short display/accounting name. It is argv-backed
-    // without `-c`, so it must never be treated as a trustworthy executable path.
-    static let processListCommand = "/bin/ps -acwwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
+    // `comm` supplies a useful display path when available. It remains argv-backed,
+    // so lifecycle and destructive matching must use the separately resolved kernel
+    // executable path rather than trusting this value.
+    static let processListCommand = "/bin/ps -awwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
     static let identityValidationCommand = "/bin/ps -awwwxo pid=,lstart="
 
     static func currentProcessList(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {

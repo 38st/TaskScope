@@ -7,6 +7,7 @@ import XCTest
 /// permanently handled.
 @MainActor
 final class AutoStopRuleLifecycleTests: XCTestCase {
+    private let examplePath = "/Applications/Example.app/Contents/MacOS/Example"
     private let suiteName = "TaskScope.AutoStopRuleLifecycleTests"
     private let key = "auto-stop-rules-lifecycle-tests"
     private let eventsKey = "auto-stop-events-lifecycle-tests"
@@ -68,7 +69,12 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
             appProcess(pid: 41, elapsed: "10:00"),
             appProcess(pid: 42, elapsed: "10:00")
         ])
-        store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill))
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
         let stored = store.rules[0]
 
         var handled: [Int32] = []
@@ -94,7 +100,12 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
     /// must not flood the log with one failure per tick while it keeps failing.
     func testUnattemptedStopIsRetriedButLoggedOnlyOnce() async {
         let store = makeStore(processes: [appProcess(pid: 41, elapsed: "10:00")])
-        store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill))
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
 
         var attempts = 0
         store.start(cadence: 3_600) { _, _ in
@@ -128,7 +139,12 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
     /// The counterpart: once the stop succeeds, the occurrence is done.
     func testSuccessfulStopIsRecordedAndNotRetried() async {
         let store = makeStore(processes: [appProcess(pid: 41, elapsed: "10:00")])
-        store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill))
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
 
         var attempts = 0
         store.start(cadence: 3_600) { _, _ in
@@ -167,6 +183,7 @@ private func appProcess(pid: Int32, elapsed: String) -> AppProcess {
         cpu: 1,
         memoryMB: 1,
         command: "Example",
+        executablePath: "/Applications/Example.app/Contents/MacOS/Example",
         elapsedTime: elapsed,
         startTime: "start-\(pid)",
         netInKB: nil,

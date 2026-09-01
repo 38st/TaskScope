@@ -35,7 +35,12 @@ final class AutoStopRulesStoreTests: XCTestCase {
 
     func testRealRuntimeImmediatelyQualifiesAfterColdStart() {
         let store = makeStore()
-        let rule = AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill)
+        let rule = AutoStopRule(
+            processName: "Example",
+            executablePath: "/Applications/Example.app/Example",
+            runtimeMinutes: 1,
+            action: .kill
+        )
         let process = appProcess(pid: 42, elapsed: "10:00")
         store.add(rule)
 
@@ -86,8 +91,18 @@ final class AutoStopRulesStoreTests: XCTestCase {
             appProcess(pid: 42, command: "/Other", elapsed: "03:00", startTime: "two")
         ])
         let store = makeStore(inventory: inventory)
-        store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .kill))
-        store.add(AutoStopRule(processName: "Other", runtimeMinutes: 1, action: .kill))
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: "/Example",
+            runtimeMinutes: 1,
+            action: .kill
+        ))
+        store.add(AutoStopRule(
+            processName: "Other",
+            executablePath: "/Other",
+            runtimeMinutes: 1,
+            action: .kill
+        ))
         var actionOrder: [Int32] = []
         store.start(cadence: 60) { _, process in
             actionOrder.append(process.pid)
@@ -121,7 +136,12 @@ final class AutoStopRulesStoreTests: XCTestCase {
         let store = makeStore()
         let first = AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt)
         XCTAssertTrue(store.add(first))
-        XCTAssertFalse(store.add(AutoStopRule(processName: " example ", runtimeMinutes: 2, action: .kill)))
+        XCTAssertFalse(store.add(AutoStopRule(
+            processName: " example ",
+            executablePath: "/Applications/Example.app/Example",
+            runtimeMinutes: 2,
+            action: .kill
+        )))
         XCTAssertNotNil(store.validationError)
 
         var updated = first
@@ -139,6 +159,115 @@ final class AutoStopRulesStoreTests: XCTestCase {
         XCTAssertEqual(appProcess(pid: 1, elapsed: "02:03:04").runtimeSeconds, 7_384)
         XCTAssertEqual(appProcess(pid: 1, elapsed: "2-03:04:05").runtimeSeconds, 183_845)
         XCTAssertNil(appProcess(pid: 1, elapsed: "invalid").runtimeSeconds)
+        XCTAssertNil(appProcess(pid: 1, elapsed: "xx:01:02").runtimeSeconds)
+        XCTAssertNil(appProcess(pid: 1, elapsed: "-01:02").runtimeSeconds)
+        XCTAssertNil(appProcess(pid: 1, elapsed: "1-24:00:00").runtimeSeconds)
+    }
+
+    func testAutomaticStopMatchesTheTrustedExecutablePath() {
+        let store = makeStore()
+        let rule = AutoStopRule(
+            processName: "Example",
+            executablePath: "/Applications/Example.app/Contents/MacOS/Example",
+            runtimeMinutes: 1,
+            action: .kill
+        )
+        XCTAssertTrue(store.add(rule))
+        let trusted = appProcess(
+            pid: 41,
+            command: "/Applications/Example.app/Contents/MacOS/Example",
+            elapsed: "10:00",
+            executablePath: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let impostor = appProcess(
+            pid: 42,
+            command: "/tmp/Example",
+            elapsed: "10:00",
+            executablePath: "/tmp/Example"
+        )
+        var matchedPIDs: [Int32] = []
+
+        store.evaluate(runningProcesses: [impostor, trusted]) { _, process in
+            matchedPIDs.append(process.pid)
+        }
+
+        XCTAssertEqual(matchedPIDs, [41])
+    }
+
+    func testEnabledAutomaticStopRequiresAnExecutablePath() {
+        let store = makeStore()
+
+        XCTAssertFalse(store.add(AutoStopRule(
+            processName: "Example",
+            runtimeMinutes: 1,
+            action: .kill
+        )))
+        XCTAssertEqual(store.rules, [])
+        XCTAssertNotNil(store.validationError)
+
+        XCTAssertFalse(store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: "relative/Example",
+            runtimeMinutes: 1,
+            action: .prompt
+        )))
+        XCTAssertTrue(store.validationError?.contains("absolute") == true)
+    }
+
+    func testLegacyNameOnlyAutomaticStopIsLoadedDisabledForReview() throws {
+        let legacy = AutoStopRule(
+            processName: "Example",
+            runtimeMinutes: 1,
+            action: .kill
+        )
+        userDefaults.set(try JSONEncoder().encode([legacy]), forKey: key)
+
+        let store = makeStore()
+
+        XCTAssertEqual(store.rules.count, 1)
+        XCTAssertEqual(store.rules.first?.action, .kill)
+        XCTAssertFalse(store.rules.first?.isEnabled ?? true)
+        XCTAssertNil(store.rules.first?.executablePath)
+        XCTAssertFalse(store.isRulesReadOnlyAfterRecovery)
+    }
+
+    func testEngineDoesNotPollUntilThereIsAnEnabledRule() async {
+        let inventory = CountingAutoStopInventory()
+        let sleeper = ControlledAutoStopSleeper()
+        let pollingController = ProcessPollingController { interval in
+            await sleeper.sleep(interval: interval)
+        }
+        let store = AutoStopRulesStore(
+            userDefaults: userDefaults,
+            key: key,
+            eventsKey: eventsKey,
+            inventory: inventory,
+            now: { self.currentDate },
+            pollingController: pollingController
+        )
+
+        store.start(cadence: 60) { _, _ in .rejected }
+        for _ in 0..<10 { await Task.yield() }
+        let initialInventoryCount = await inventory.loadCount()
+        let initialSleepCount = await sleeper.requestCount()
+        XCTAssertEqual(initialInventoryCount, 0)
+        XCTAssertEqual(initialSleepCount, 0)
+
+        XCTAssertTrue(store.add(AutoStopRule(
+            processName: "Example",
+            runtimeMinutes: 1,
+            action: .prompt
+        )))
+        await inventory.waitForLoad()
+        await sleeper.waitForRequest()
+        let enabledInventoryCount = await inventory.loadCount()
+        let enabledSleepCount = await sleeper.requestCount()
+        XCTAssertEqual(enabledInventoryCount, 1)
+        XCTAssertEqual(enabledSleepCount, 1)
+
+        XCTAssertTrue(store.remove(store.rules[0]))
+        store.stop()
+        await sleeper.resume(returning: false)
     }
 
     func testCorruptRulesAndEventsAreBackedUp() {
@@ -174,7 +303,8 @@ final class AutoStopRulesStoreTests: XCTestCase {
         pid: Int32,
         command: String = "/Applications/Example.app/Example",
         elapsed: String,
-        startTime: String = "start"
+        startTime: String = "start",
+        executablePath: String? = nil
     ) -> AppProcess {
         AppProcess(
             pid: pid,
@@ -182,6 +312,7 @@ final class AutoStopRulesStoreTests: XCTestCase {
             cpu: 0,
             memoryMB: 0,
             command: command,
+            executablePath: executablePath ?? command,
             elapsedTime: elapsed,
             startTime: startTime,
             netInKB: 0,
@@ -208,5 +339,49 @@ private struct StubInventory: ProcessInventoryProviding {
 
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         .success(processes)
+    }
+}
+
+private actor CountingAutoStopInventory: ProcessInventoryProviding {
+    private var count = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        count += 1
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+        return .success([])
+    }
+
+    func loadCount() -> Int { count }
+
+    func waitForLoad() async {
+        guard count == 0 else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
+private actor ControlledAutoStopSleeper {
+    private var count = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func sleep(interval: TimeInterval) async -> Bool {
+        count += 1
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+        return await withCheckedContinuation { continuation = $0 }
+    }
+
+    func requestCount() -> Int { count }
+
+    func waitForRequest() async {
+        guard count == 0 else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func resume(returning value: Bool) {
+        continuation?.resume(returning: value)
+        continuation = nil
     }
 }

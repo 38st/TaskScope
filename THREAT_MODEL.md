@@ -68,13 +68,17 @@ displayed row can become stale at any suspension point.
 Required invariants:
 
 - operate only on visible processes and signal only where macOS permits;
-- capture a process identity, including start evidence, before confirmation;
+- capture a process identity, including start evidence and the kernel-resolved
+  executable path when available, before confirmation;
 - re-read and compare identity immediately before sending a signal;
 - distinguish “not present,” “identity changed,” and “could not verify”;
 - never turn an unreadable inventory into a success or stale-target claim;
 - never signal TaskScope itself;
 - require a separate, explicit Force Stop confirmation for `SIGKILL`;
 - bind queued prompts and batch reports to immutable captured targets.
+- require enabled automatic-stop authority to include a trusted executable path
+  and match that path again in the final inventory immediately before signal.
+- never downgrade a path-backed saved selection to legacy command/name matching.
 
 ### Watched presets and imported configuration
 
@@ -88,6 +92,8 @@ them.
 Required invariants:
 
 - importing parses and validates data but performs no lifecycle action;
+- bound imported file size, recognize an explicit archive schema version, and
+  show every lifecycle field plus rejection reason before import is committed;
 - require absolute `.app` and `.plist` paths and valid non-empty labels/names;
 - reject duplicate identities, invalid mappings, and any privileged daemon
   fields on a noncanonical preset;
@@ -101,9 +107,10 @@ Required invariants:
 - keep protected process names out of the normal killable-name set.
 
 Residual risk: a syntactically valid custom preset can intentionally point at
-the wrong local app or user launch agent. Until a signed preset format or
-mandatory dry-run preview exists, users must trust and inspect its source. This
-risk cannot create a custom privileged system-daemon operation.
+the wrong local app or user launch agent. The mandatory import preview exposes
+those fields but cannot decide whether the user intended them, so users must
+still trust and inspect the source. This risk cannot create a custom privileged
+system-daemon operation.
 
 ### Privileged daemon restoration
 
@@ -201,9 +208,10 @@ Required invariants:
 | --- | --- |
 | Browser opens `taskscope://stop/...` | Reject without a process action. |
 | PID exits and is reused after confirmation | Identity revalidation prevents the signal and reports the changed target. |
+| Process changes executable after confirmation | Executable-path identity revalidation prevents the signal. |
 | Process inventory fails | Report verification failure; do not claim stopped or stale. |
 | Imported custom preset contains a relative plist path or any system-daemon job | Reject that preset without executing it. |
-| Valid-looking custom preset points at an unintended user launch agent | Require user review; residual risk remains until dry run is implemented. |
+| Valid-looking custom preset points at an unintended user launch agent | Show the field and later-operation summary before import; require the user to reject an unintended path. |
 | Preferences contain malformed JSON | Preserve backup, enter read-only recovery state, require explicit reset. |
 | Privileged bootstrap fails or is denied | Report failure and leave the managed files intact. |
 | Ad-hoc bundle is presented as a production binary | Release gate rejects the claim and artifact. |

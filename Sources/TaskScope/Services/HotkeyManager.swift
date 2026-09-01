@@ -7,6 +7,7 @@ final class HotkeyManager: ObservableObject {
         case disabled
         case registered
         case conflict(OSStatus, previousShortcutRemainsActive: Bool)
+        case handlerUnavailable(OSStatus, previousShortcutRemainsActive: Bool)
         case unsupported
 
         var message: String {
@@ -17,6 +18,10 @@ final class HotkeyManager: ObservableObject {
                 previousShortcutRemainsActive
                     ? "That shortcut is unavailable. The previous shortcut remains active."
                     : "That shortcut is unavailable. No global hotkey is currently active."
+            case .handlerUnavailable(_, let previousShortcutRemainsActive):
+                previousShortcutRemainsActive
+                    ? "TaskScope could not activate the new hotkey handler. The previous shortcut remains active."
+                    : "TaskScope could not activate the global hotkey handler."
             case .unsupported: "Choose a supported key with at least one modifier."
             }
         }
@@ -183,8 +188,15 @@ final class HotkeyManager: ObservableObject {
     }
 
     private func registerCandidate(keyCode: UInt32, modifiers: UInt32) -> Bool {
-        installEventHandlerIfNeeded()
         let previousShortcutRemainsActive = hotkeyRef != nil
+        let handlerStatus = installEventHandlerIfNeeded()
+        guard handlerStatus == noErr else {
+            registrationStatus = .handlerUnavailable(
+                handlerStatus,
+                previousShortcutRemainsActive: previousShortcutRemainsActive
+            )
+            return false
+        }
         let identifier = EventHotKeyID(signature: OSType(0x54534350), id: nextRegistrationID)
         nextRegistrationID &+= 1
         var candidate: EventHotKeyRef?
@@ -229,15 +241,15 @@ final class HotkeyManager: ObservableObject {
         ], forKey: defaultsKey)
     }
 
-    private func installEventHandlerIfNeeded() {
-        guard eventHandler == nil else { return }
+    private func installEventHandlerIfNeeded() -> OSStatus {
+        guard eventHandler == nil else { return noErr }
         var eventSpec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),
             eventKind: UInt32(kEventHotKeyPressed)
         )
         let pointer = Unmanaged.passUnretained(self).toOpaque()
 
-        InstallEventHandler(
+        let status = InstallEventHandler(
             GetApplicationEventTarget(),
             { _, _, userData in
                 guard let userData else { return noErr }
@@ -252,5 +264,10 @@ final class HotkeyManager: ObservableObject {
             pointer,
             &eventHandler
         )
+        guard status == noErr, eventHandler != nil else {
+            eventHandler = nil
+            return status == noErr ? OSStatus(eventNotHandledErr) : status
+        }
+        return noErr
     }
 }

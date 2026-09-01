@@ -65,6 +65,7 @@ struct TaskScopeHeaderView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Open TaskScope Window")
+                .accessibilityLabel("Open TaskScope Window")
             }
 
             SettingsLink {
@@ -72,6 +73,7 @@ struct TaskScopeHeaderView: View {
             }
             .buttonStyle(.borderless)
             .help("Settings")
+            .accessibilityLabel("Open TaskScope Settings")
 
             Button {
                 refreshAction()
@@ -80,6 +82,7 @@ struct TaskScopeHeaderView: View {
             }
             .buttonStyle(.borderless)
             .help("Refresh")
+            .accessibilityLabel("Refresh TaskScope")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
@@ -98,6 +101,8 @@ struct TaskScopeHeaderView: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(.quaternary, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Status: \(status.title)")
     }
 
     private var statusColor: Color {

@@ -27,6 +27,7 @@ final class ProcessManager: ObservableObject {
 
     @Published private(set) var selectedPids: Set<Int32> = []
     @Published private(set) var processLoadError: String?
+    @Published private(set) var lastSuccessfulInventoryAt: Date?
     @Published private(set) var lifecycleReport: LifecycleReport?
     @Published private(set) var batchActionReport: ProcessBatchActionReport?
 
@@ -45,6 +46,7 @@ final class ProcessManager: ObservableObject {
 
     private let currentPID: Int32
     private let processInventory: any ProcessInventoryProviding
+    private let verificationInventory: any ProcessInventoryProviding
     private let processSignaler: any ProcessSignaling
     private let batchTerminator: ProcessBatchTerminator
     private let lifecycle: any ProcessLifecycleServicing
@@ -57,9 +59,11 @@ final class ProcessManager: ObservableObject {
     private var fullProcessInventory: [AppProcess] = []
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
     private var extendedMetricsConsumers = 0
+    private let now: () -> Date
 
     init(
         processInventory: any ProcessInventoryProviding = SystemProcessInventory(),
+        verificationInventory: (any ProcessInventoryProviding)? = nil,
         processSignaler: any ProcessSignaling = DarwinProcessSignaler(),
         lifecycle: any ProcessLifecycleServicing = SystemProcessLifecycleService(),
         settleAfterProcessChange: @escaping () async -> Void = {
@@ -67,13 +71,15 @@ final class ProcessManager: ObservableObject {
         },
         currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
         pollingController: ProcessPollingController? = nil,
-        detailReader: any ProcessDetailReading = SystemProcessDetailReader()
+        detailReader: any ProcessDetailReading = SystemProcessDetailReader(),
+        now: @escaping () -> Date = Date.init
     ) {
         self.currentPID = currentPID
         self.processInventory = processInventory
+        self.verificationInventory = verificationInventory ?? processInventory
         self.processSignaler = processSignaler
         batchTerminator = ProcessBatchTerminator(
-            inventory: processInventory,
+            inventory: verificationInventory ?? processInventory,
             signaler: processSignaler,
             settleAfterProcessChange: settleAfterProcessChange,
             currentPID: currentPID
@@ -82,6 +88,7 @@ final class ProcessManager: ObservableObject {
         self.detailReader = detailReader
         self.settleAfterProcessChange = settleAfterProcessChange
         self.pollingController = pollingController ?? ProcessPollingController()
+        self.now = now
         snapshotBuilder = WatchedSnapshotBuilder(excludedPID: currentPID)
         operationGateCancellable = operationGate.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -199,9 +206,8 @@ final class ProcessManager: ObservableObject {
             switch await currentSnapshots() {
             case .success(let watched):
                 apply(watched)
-                processLoadError = nil
             case .failure(let error):
-                processLoadError = error.localizedDescription
+                recordInventoryFailure(error)
             }
         }
         // An equivalent refresh may have been coalesced with a silent polling
@@ -220,16 +226,16 @@ final class ProcessManager: ObservableObject {
         await runAction(kind: .read(.processList)) {
             switch await processInventory.load(fetchExtendedStats: fetchExtendedStats) {
             case .success(let inventory):
+                recordInventorySuccess(clearsProcessLoadError: true)
                 fullProcessInventory = inventory
                 apply(snapshots(from: inventory))
                 publishDisplayProcesses()
                 hasLoadedProcessList = true
-                processLoadError = nil
                 if showMessage {
                     message = "Loaded \(processes.count) of \(inventory.count) processes."
                 }
             case .failure(let error):
-                processLoadError = error.localizedDescription
+                recordInventoryFailure(error)
                 if showMessage {
                     message = "Could not load processes: \(error.localizedDescription)"
                 }
@@ -246,6 +252,12 @@ final class ProcessManager: ObservableObject {
         await runAction(kind: .mutation) {
             guard lifecycle.appBundleExists(at: preset.appPath) else {
                 message = "Could not open \(preset.displayName): app bundle is missing at \(preset.appPath)."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
+            }
+
+            guard case .success(let beforeOpen) = await currentSnapshot(for: preset) else {
+                message = "Could not verify whether \(preset.displayName) is already running; nothing was opened."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -279,7 +291,6 @@ final class ProcessManager: ObservableObject {
                     jobs: serviceJobs
                 )
 
-            let beforeOpen = await currentSnapshot(for: preset)
             let didOpen: Bool
             if beforeOpen.isMainRunning {
                 didOpen = true
@@ -301,9 +312,12 @@ final class ProcessManager: ObservableObject {
                     timeoutSeconds: 5
                 )
             }
-            await refreshAfterMutation()
+            let refreshed = await refreshAfterMutation()
 
-            if verified || snapshot(for: preset).isMainRunning {
+            if !refreshed {
+                message = "\(preset.displayName) was launched, but TaskScope could not verify its final state."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if verified || snapshot(for: preset).isMainRunning {
                 let restored = daemonResult.didChangeState || agentResult.didChangeState
                 message = restored
                     ? "Opened \(preset.displayName) after restoring required services."
@@ -324,7 +338,11 @@ final class ProcessManager: ObservableObject {
             message: "Quit did not complete."
         )
         await runAction(kind: .mutation) {
-            let before = await currentSnapshot(for: preset)
+            guard case .success(let before) = await currentSnapshot(for: preset) else {
+                message = "Could not read the process list; \(preset.displayName) was not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
+            }
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             lifecycleReport = agentResult.jobs.isEmpty
                 ? nil
@@ -334,7 +352,7 @@ final class ProcessManager: ObservableObject {
                 )
             let termination = await lifecycle.terminateMainProcess(for: preset)
             await lifecycle.settleAfterProcessChange()
-            await refreshAfterMutation()
+            let refreshed = await refreshAfterMutation()
 
             if termination == .inventoryUnavailable {
                 message = "Could not read the process list; \(preset.displayName) was not stopped."
@@ -347,6 +365,9 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Quit \(preset.displayName), but relaunch jobs failed: \(agentResult.failureSummary ?? "unknown failure")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if !refreshed {
+                message = "Stop was requested, but TaskScope could not verify the final \(preset.displayName) state."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
                 message = "No \(preset.displayName) app found."
@@ -371,7 +392,11 @@ final class ProcessManager: ObservableObject {
             message: "Helper stop did not complete."
         )
         await runAction(kind: .mutation) {
-            let before = await currentSnapshot(for: preset)
+            guard case .success(let before) = await currentSnapshot(for: preset) else {
+                message = "Could not read the process list; user helpers were not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
+            }
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             lifecycleReport = agentResult.jobs.isEmpty
                 ? nil
@@ -385,7 +410,7 @@ final class ProcessManager: ObservableObject {
                 terminationOutcomes.append(outcome)
             }
             await lifecycle.settleAfterProcessChange()
-            await refreshAfterMutation()
+            let refreshed = await refreshAfterMutation()
 
             let nowHelpers = snapshot(for: preset).helpersRunning
             if terminationOutcomes.contains(.inventoryUnavailable) {
@@ -399,6 +424,9 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Helper stop was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if !refreshed {
+                message = "Helper stop was requested, but TaskScope could not verify the final state."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
                 message = "No user helpers found."
@@ -423,7 +451,11 @@ final class ProcessManager: ObservableObject {
             message: "Close did not complete."
         )
         await runAction(kind: .mutation) {
-            let before = await currentSnapshot(for: preset)
+            guard case .success(let before) = await currentSnapshot(for: preset) else {
+                message = "Could not read the process list; \(preset.displayName) was not stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
+            }
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
             lifecycleReport = agentResult.jobs.isEmpty
                 ? nil
@@ -439,7 +471,7 @@ final class ProcessManager: ObservableObject {
                 terminationOutcomes.append(outcome)
             }
             await lifecycle.settleAfterProcessChange()
-            await refreshAfterMutation()
+            let refreshed = await refreshAfterMutation()
 
             let nowSnap = snapshot(for: preset)
             if terminationOutcomes.contains(.inventoryUnavailable) {
@@ -453,6 +485,9 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Close was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if !refreshed {
+                message = "Close was requested, but TaskScope could not verify the final \(preset.displayName) state."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.hasAny && !nowSnap.hasAny {
                 message = "No watched processes found."
@@ -486,18 +521,19 @@ final class ProcessManager: ObservableObject {
 
         var result: ProcessActionResult = .rejected
         await runAction(kind: .mutation) {
-            let verificationResult = await processInventory.load(fetchExtendedStats: false)
+            let verificationResult = await verificationInventory.load(fetchExtendedStats: false)
             // An unreadable process list says nothing about this target. Treating it
             // as an identity change both lied to the user and wiped the whole
             // selection by reconciling against an empty inventory.
             guard case .success(let currentProcesses) = verificationResult else {
                 if case .failure(let error) = verificationResult {
-                    processLoadError = error.localizedDescription
+                    recordInventoryFailure(error)
                 }
                 message = "Could not verify \(process.name); nothing was stopped."
                 result = .rejected
                 return
             }
+            recordInventorySuccess()
             guard currentProcesses.contains(where: { $0.identity == process.identity }) else {
                 message = "\(process.name) is no longer the same running process."
                 reconcileSelection(with: currentProcesses)
@@ -551,17 +587,20 @@ final class ProcessManager: ObservableObject {
         return map
     }
 
-    private func refreshAfterMutation() async {
-        switch await processInventory.load(fetchExtendedStats: hasLoadedProcessList && fetchExtendedStats) {
+    @discardableResult
+    private func refreshAfterMutation() async -> Bool {
+        switch await verificationInventory.load(fetchExtendedStats: hasLoadedProcessList && fetchExtendedStats) {
         case .success(let inventory):
+            recordInventorySuccess(clearsProcessLoadError: hasLoadedProcessList)
             apply(snapshots(from: inventory))
-            processLoadError = nil
             if hasLoadedProcessList {
                 fullProcessInventory = inventory
                 publishDisplayProcesses()
             }
+            return true
         case .failure(let error):
-            processLoadError = error.localizedDescription
+            recordInventoryFailure(error)
+            return false
         }
     }
 
@@ -572,19 +611,36 @@ final class ProcessManager: ObservableObject {
     private func currentSnapshots() async -> Result<[WatchedAppSnapshot], ProcessInventoryError> {
         switch await processInventory.load(fetchExtendedStats: false) {
         case .success(let inventory):
+            recordInventorySuccess()
             return .success(snapshots(from: inventory))
         case .failure(let error):
+            recordInventoryFailure(error)
             return .failure(error)
         }
     }
 
-    private func currentSnapshot(for preset: WatchedAppPreset) async -> WatchedAppSnapshot {
-        switch await processInventory.load(fetchExtendedStats: false) {
+    private func currentSnapshot(
+        for preset: WatchedAppPreset
+    ) async -> Result<WatchedAppSnapshot, ProcessInventoryError> {
+        switch await verificationInventory.load(fetchExtendedStats: false) {
         case .success(let inventory):
-            return snapshot(for: preset, inventory: inventory)
-        case .failure:
-            return snapshot(for: preset)
+            recordInventorySuccess()
+            return .success(snapshot(for: preset, inventory: inventory))
+        case .failure(let error):
+            recordInventoryFailure(error)
+            return .failure(error)
         }
+    }
+
+    private func recordInventorySuccess(clearsProcessLoadError: Bool = false) {
+        if clearsProcessLoadError {
+            processLoadError = nil
+        }
+        lastSuccessfulInventoryAt = now()
+    }
+
+    private func recordInventoryFailure(_ error: ProcessInventoryError) {
+        processLoadError = error.localizedDescription
     }
 
     private func snapshots(from inventory: [AppProcess]) -> [WatchedAppSnapshot] {

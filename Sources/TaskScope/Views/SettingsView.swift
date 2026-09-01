@@ -11,6 +11,7 @@ struct SettingsView: View {
 
     @StateObject private var presetForm = WatchedPresetFormState()
     @State private var newRuleName = ""
+    @State private var newRuleExecutablePath = ""
     @State private var newRuleMinutes = 5
     @State private var newRuleAction: AutoStopRule.Action = .prompt
     @State private var editingRule: AutoStopRule?
@@ -19,6 +20,9 @@ struct SettingsView: View {
     @State private var presetValidationError: String?
     @State private var showImporter = false
     @State private var showPresetEditor = false
+    @State private var showImportPreview = false
+    @State private var importPreview: WatchedAppsStore.ImportPreview?
+    @State private var dryRunPreset: WatchedAppPreset?
 
     var body: some View {
         TabView {
@@ -49,6 +53,12 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showPresetEditor) {
             presetEditorSheet
+        }
+        .sheet(isPresented: $showImportPreview) {
+            importPreviewSheet
+        }
+        .sheet(item: $dryRunPreset) { preset in
+            lifecycleDryRunSheet(for: preset)
         }
     }
 
@@ -111,7 +121,12 @@ struct SettingsView: View {
                                 Text("Built-in")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
-                            } else {
+                            }
+                            Button("Dry Run") {
+                                dryRunPreset = preset
+                            }
+                            .buttonStyle(.borderless)
+                            if preset.id != WatchedAppPreset.globalProtectID {
                                 Button("Edit") {
                                     prepareToEdit(preset)
                                 }
@@ -218,6 +233,152 @@ struct SettingsView: View {
         .frame(width: 620, height: 560)
     }
 
+    @ViewBuilder
+    private var importPreviewSheet: some View {
+        if let preview = importPreview {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Preset Import Preview")
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                Text("Preview only — no app, process, launch agent, or privileged operation runs during import.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                List(preview.items) { item in
+                    let displayedPreset = item.normalizedPreset ?? item.preset
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(displayedPreset.displayName)
+                                .fontWeight(.semibold)
+                            Spacer()
+                            Text(item.isAccepted ? "Ready" : "Rejected")
+                                .font(.caption)
+                                .foregroundStyle(item.isAccepted ? Color.green : Color.red)
+                        }
+                        Text("Main process: \(displayedPreset.mainProcessName)")
+                        Text("App path: \(displayedPreset.appPath)")
+                        if !displayedPreset.helperProcessNames.isEmpty {
+                            Text("Helpers: \(displayedPreset.helperProcessNames.joined(separator: ", "))")
+                        }
+                        if !displayedPreset.protectedProcessNames.isEmpty {
+                            Text("Protected: \(displayedPreset.protectedProcessNames.joined(separator: ", "))")
+                        }
+                        ForEach(Array(displayedPreset.userLaunchAgentJobs.enumerated()), id: \.offset) { _, job in
+                            Text("Launch agent: \(job.label) — \(job.plistPath)")
+                        }
+                        ForEach(Array(displayedPreset.systemLaunchDaemonJobs.enumerated()), id: \.offset) { _, job in
+                            Text("Fixed daemon: \(job.label) — \(job.plistPath)")
+                        }
+                        if let reason = item.rejectionReason {
+                            Text(reason)
+                                .foregroundStyle(.red)
+                        } else {
+                            Text("Import writes configuration only. Potential later operations:")
+                                .foregroundStyle(.secondary)
+                            ForEach(Self.lifecycleDryRunOperations(for: displayedPreset), id: \.self) { operation in
+                                Text("• \(operation)")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .padding(.vertical, 4)
+                }
+
+                Text("\(preview.importableCount) ready, \(preview.rejectedCount) rejected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("Cancel") {
+                        showImportPreview = false
+                        importPreview = nil
+                    }
+                    .keyboardShortcut(.cancelAction)
+                    Spacer()
+                    Button("Import \(preview.importableCount) Preset\(preview.importableCount == 1 ? "" : "s")") {
+                        let result = watchedApps.importPresets(preview.items.map(\.preset))
+                        importError = result.rejectedCount == 0
+                            ? nil
+                            : "\(result.rejectedCount) preset\(result.rejectedCount == 1 ? " was" : "s were") rejected by validation."
+                        showImportPreview = false
+                        importPreview = nil
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(preview.importableCount == 0)
+                }
+            }
+            .padding(20)
+            .frame(width: 680, height: 560)
+        } else {
+            Text("No import preview is available.")
+                .padding()
+        }
+    }
+
+    private func lifecycleDryRunSheet(for preset: WatchedAppPreset) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Lifecycle Dry Run")
+                .font(.title2)
+                .fontWeight(.semibold)
+            Text(preset.displayName)
+                .font(.headline)
+            Text("No process is signaled, app is opened, launch job is changed, or authorization is requested by this report.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            List(Self.lifecycleDryRunOperations(for: preset), id: \.self) { operation in
+                Text(operation)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Spacer()
+                Button("Close") { dryRunPreset = nil }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 640, height: 460)
+    }
+
+    static func lifecycleDryRunOperations(for preset: WatchedAppPreset) -> [String] {
+        var operations = [
+            "Every lifecycle action first requires a fresh process inventory; an unavailable inventory stops the action."
+        ]
+        operations.append(contentsOf: preset.systemLaunchDaemonJobs.map { job in
+            "Open: inspect fixed daemon \(job.label) at \(job.plistPath); if absent, request administrator approval to bootstrap it and verify \(job.processName)."
+        })
+        operations.append(contentsOf: preset.userLaunchAgentJobs.map { job in
+            "Open: inspect user launch agent \(job.label) at \(job.plistPath); load, enable, start, and verify it only when not already loaded."
+        })
+        operations.append(
+            "Open: open \(preset.appPath) only when \(preset.mainProcessName) is not already running, then verify it."
+        )
+        if !preset.userLaunchAgentJobs.isEmpty {
+            operations.append(
+                "Quit App, Quit Helpers, or Close All: unload and verify the configured user launch agents before signaling processes."
+            )
+        }
+        operations.append(
+            "Quit App: signal \(preset.mainProcessName) gracefully, escalating only if it remains running."
+        )
+        if !preset.helperProcessNames.isEmpty {
+            operations.append(
+                "Quit Helpers: signal only these app-scoped helpers: \(preset.helperProcessNames.joined(separator: ", "))."
+            )
+        }
+        operations.append(
+            "Close All: run the Quit App and Quit Helpers targets above; protected names are excluded."
+        )
+        if !preset.protectedProcessNames.isEmpty {
+            operations.append(
+                "Never signal protected processes through ordinary close: \(preset.protectedProcessNames.joined(separator: ", "))."
+            )
+        }
+        return operations
+    }
+
     private var autoStopTab: some View {
         VStack(alignment: .leading, spacing: 12) {
             ForEach(autoStopRules.recoveryMessages, id: \.self) { message in
@@ -252,6 +413,12 @@ struct SettingsView: View {
                                 Text(rule.processName).fontWeight(.medium)
                                 Text("After \(rule.runtimeMinutes) min — \(rule.action.label)")
                                     .font(.caption).foregroundStyle(.secondary)
+                                if let path = rule.executablePath {
+                                    Text(path)
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(1)
+                                }
                             }
                             Spacer()
                             Button("Edit") {
@@ -312,7 +479,15 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Add Rule").font(.headline)
                 TextFieldRow(label: "Process name", text: $newRuleName)
-                Stepper(value: $newRuleMinutes, in: 1...240, step: 1) {
+                TextFieldRow(label: "Executable path", text: $newRuleExecutablePath)
+                Text("Required for Auto Stop; optional for Prompt and Log Only.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Stepper(
+                    value: $newRuleMinutes,
+                    in: 1...AutoStopRulesStore.maximumRuntimeMinutes,
+                    step: 1
+                ) {
                     HStack {
                         Text("Runtime minutes")
                         Spacer()
@@ -325,10 +500,12 @@ struct SettingsView: View {
                 Button("Add Rule") {
                     if autoStopRules.add(AutoStopRule(
                         processName: newRuleName,
+                        executablePath: newRuleExecutablePath,
                         runtimeMinutes: newRuleMinutes,
                         action: newRuleAction
                     )) {
                         newRuleName = ""
+                        newRuleExecutablePath = ""
                         newRuleMinutes = 5
                     }
                 }
@@ -405,13 +582,14 @@ struct SettingsView: View {
                 + "Recover the backup noted above before resetting."
             return
         }
-        guard let data = try? JSONEncoder().encode(watchedApps.presets) else { return }
+        guard let data = try? watchedApps.encodedPresetArchive() else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
         panel.nameFieldStringValue = "TaskScope-presets.json"
         if panel.runModal() == .OK, let url = panel.url {
             do {
-                try data.write(to: url)
+                try data.write(to: url, options: .atomic)
+                exportError = nil
             } catch {
                 exportError = error.localizedDescription
             }
@@ -419,15 +597,28 @@ struct SettingsView: View {
     }
 
     private func importPresets(from url: URL) {
-        guard let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([WatchedAppPreset].self, from: data) else {
-            importError = "Could not read presets from file."
+        let hasSecurityScope = url.startAccessingSecurityScopedResource()
+        defer {
+            if hasSecurityScope {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            let resourceValues = try url.resourceValues(forKeys: [.fileSizeKey])
+            guard (resourceValues.fileSize ?? 0) <= WatchedAppsStore.maximumPresetArchiveBytes else {
+                importError = "Preset archives must be 1 MB or smaller."
+                return
+            }
+            let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+            let decoded = try WatchedAppsStore.decodePresetArchive(data)
+            importPreview = watchedApps.previewImport(decoded)
+            importError = nil
+            showImportPreview = true
+        } catch {
+            importError = (error as? LocalizedError)?.errorDescription
+                ?? "Could not read presets from file."
             return
         }
-        let result = watchedApps.importPresets(decoded)
-        importError = result.rejectedCount == 0
-            ? nil
-            : "\(result.rejectedCount) imported preset\(result.rejectedCount == 1 ? " was" : "s were") rejected by validation."
     }
 }
 

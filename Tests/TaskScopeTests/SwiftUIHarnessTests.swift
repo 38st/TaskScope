@@ -5,6 +5,29 @@ import XCTest
 
 @MainActor
 final class SwiftUIHarnessTests: XCTestCase {
+    func testLifecycleDryRunListsConfiguredTargetsWithoutPerformingActions() {
+        let preset = WatchedAppPreset(
+            displayName: "Example",
+            mainProcessName: "Example",
+            helperProcessNames: ["ExampleHelper"],
+            protectedProcessNames: ["ExampleDaemon"],
+            appPath: "/Applications/Example.app",
+            userLaunchAgentJobs: [
+                UserLaunchAgentJob(
+                    label: "example.agent",
+                    plistPath: "/Library/LaunchAgents/example.agent.plist"
+                )
+            ]
+        )
+
+        let operations = SettingsView.lifecycleDryRunOperations(for: preset)
+
+        XCTAssertTrue(operations.contains { $0.contains("/Applications/Example.app") })
+        XCTAssertTrue(operations.contains { $0.contains("example.agent") })
+        XCTAssertTrue(operations.contains { $0.contains("ExampleHelper") })
+        XCTAssertTrue(operations.contains { $0.contains("Never signal") && $0.contains("ExampleDaemon") })
+    }
+
     func testQuickPresetPrefersTrustedExecutablePathOverReportedCommand() {
         var process = process(pid: 70, parentPID: 1, name: "Example")
         process.command = "/Applications/Forged.app/Contents/MacOS/Forged"

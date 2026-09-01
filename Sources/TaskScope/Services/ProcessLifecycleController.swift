@@ -180,10 +180,14 @@ enum ProcessLifecycleController {
             }
 
             let target = "gui/\(uid)/\(job.label)"
-            var wasAlreadyLoaded = false
             switch await inspectLaunchJob(target, runtime: runtime) {
             case .loaded:
-                wasAlreadyLoaded = true
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .alreadyLoaded,
+                    detail: "Already loaded; no restart needed."
+                ))
+                continue
             case .failed(let detail):
                 results.append(LifecycleJobResult(
                     label: job.label,
@@ -195,19 +199,17 @@ enum ProcessLifecycleController {
                 break
             }
 
-            if !wasAlreadyLoaded {
-                let bootstrap = await runtime.runCommand(
-                    "/bin/launchctl bootstrap \(ShellCommandRunner.shellQuoted("gui/\(uid)")) \(ShellCommandRunner.shellQuoted(job.plistPath))",
-                    15
-                )
-                guard bootstrap.succeeded else {
-                    results.append(LifecycleJobResult(
-                        label: job.label,
-                        state: .failed,
-                        detail: commandFailure(bootstrap, fallback: "Bootstrap failed.")
-                    ))
-                    continue
-                }
+            let bootstrap = await runtime.runCommand(
+                "/bin/launchctl bootstrap \(ShellCommandRunner.shellQuoted("gui/\(uid)")) \(ShellCommandRunner.shellQuoted(job.plistPath))",
+                15
+            )
+            guard bootstrap.succeeded else {
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .failed,
+                    detail: commandFailure(bootstrap, fallback: "Bootstrap failed.")
+                ))
+                continue
             }
 
             let enable = await runtime.runCommand(
@@ -231,7 +233,7 @@ enum ProcessLifecycleController {
                 label: job.label,
                 state: kickstart.succeeded && verified ? .changed : .failed,
                 detail: kickstart.succeeded && verified
-                    ? (wasAlreadyLoaded ? "Re-enabled, restarted, and verified." : "Loaded and verified.")
+                    ? "Loaded and verified."
                     : commandFailure(kickstart, fallback: "Job could not be verified.")
             ))
         }

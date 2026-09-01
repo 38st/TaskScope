@@ -31,6 +31,8 @@ final class ProcessHistory: ObservableObject {
     private let maxSamples: Int
     private var samplingTask: Task<Void, Never>?
     private var samplingGeneration = 0
+    private var consumerCount = 0
+    private var consumerCadence: TimeInterval = 10
 
     init(
         inventory: any ProcessInventoryProviding = SystemProcessInventory(),
@@ -60,6 +62,27 @@ final class ProcessHistory: ObservableObject {
                     break
                 }
             }
+        }
+    }
+
+    func beginSampling(cadence: TimeInterval) {
+        consumerCount += 1
+        consumerCadence = max(2, cadence)
+        guard consumerCount == 1 else { return }
+        start(cadence: consumerCadence)
+    }
+
+    func endSampling() {
+        consumerCount = max(0, consumerCount - 1)
+        if consumerCount == 0 {
+            stop()
+        }
+    }
+
+    func updateConsumerCadence(_ cadence: TimeInterval) {
+        consumerCadence = max(2, cadence)
+        if consumerCount > 0 {
+            start(cadence: consumerCadence)
         }
     }
 

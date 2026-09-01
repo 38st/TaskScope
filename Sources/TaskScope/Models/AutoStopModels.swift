@@ -3,6 +3,7 @@ import Foundation
 struct AutoStopRule: Codable, Identifiable, Equatable {
     var id: UUID = UUID()
     var processName: String
+    var executablePath: String?
     var runtimeMinutes: Int
     var action: Action
     var isEnabled: Bool = true
@@ -24,18 +25,20 @@ struct AutoStopRule: Codable, Identifiable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, processName, runtimeMinutes, action, isEnabled
+        case id, processName, executablePath, runtimeMinutes, action, isEnabled
     }
 
     init(
         id: UUID = UUID(),
         processName: String,
+        executablePath: String? = nil,
         runtimeMinutes: Int,
         action: Action,
         isEnabled: Bool = true
     ) {
         self.id = id
         self.processName = processName
+        self.executablePath = executablePath
         self.runtimeMinutes = runtimeMinutes
         self.action = action
         self.isEnabled = isEnabled
@@ -45,6 +48,7 @@ struct AutoStopRule: Codable, Identifiable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
         processName = try container.decode(String.self, forKey: .processName)
+        executablePath = try container.decodeIfPresent(String.self, forKey: .executablePath)
         runtimeMinutes = try container.decode(Int.self, forKey: .runtimeMinutes)
         action = try container.decode(Action.self, forKey: .action)
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true

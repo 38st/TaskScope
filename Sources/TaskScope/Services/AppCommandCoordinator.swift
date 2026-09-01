@@ -116,29 +116,37 @@ final class AppCommandBus {
 
     private var handler: ((TaskScopeCommand) async -> TaskScopeCommandResult)?
     private var pending: [PendingCommand] = []
+    private var drainTask: Task<Void, Never>?
 
-    private init() {}
+    init() {}
 
     func install(
         handler: @escaping (TaskScopeCommand) async -> TaskScopeCommandResult
     ) {
         self.handler = handler
-        let queued = pending
-        pending.removeAll()
-        for item in queued {
-            Task {
-                item.continuation.resume(returning: await handler(item.command))
-            }
-        }
+        startDrainingIfNeeded()
     }
 
     func submit(_ command: TaskScopeCommand) async -> TaskScopeCommandResult {
-        if let handler {
-            return await handler(command)
-        }
-
         return await withCheckedContinuation { continuation in
             pending.append(PendingCommand(command: command, continuation: continuation))
+            startDrainingIfNeeded()
         }
+    }
+
+    private func startDrainingIfNeeded() {
+        guard handler != nil, drainTask == nil, !pending.isEmpty else { return }
+        drainTask = Task { @MainActor [weak self] in
+            await self?.drainPendingCommands()
+        }
+    }
+
+    private func drainPendingCommands() async {
+        while let handler, !pending.isEmpty {
+            let item = pending.removeFirst()
+            item.continuation.resume(returning: await handler(item.command))
+        }
+        drainTask = nil
+        startDrainingIfNeeded()
     }
 }

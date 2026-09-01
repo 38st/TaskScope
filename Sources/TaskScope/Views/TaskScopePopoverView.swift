@@ -96,11 +96,13 @@ struct TaskScopePopoverView: View {
         .onAppear {
             guard isExpandedWindow, !registeredExtendedMetrics else { return }
             registeredExtendedMetrics = true
+            history.beginSampling(cadence: settings.refreshIntervalSeconds)
             Task { await processManager.beginExtendedMetrics() }
         }
         .onDisappear {
             guard registeredExtendedMetrics else { return }
             registeredExtendedMetrics = false
+            history.endSampling()
             processManager.endExtendedMetrics()
         }
         .onChange(of: processManager.processes) { _, newProcesses in
@@ -402,6 +404,7 @@ struct TaskScopePopoverView: View {
                     .buttonStyle(.borderless)
                     .foregroundStyle(.secondary)
                     .help("Clear Search")
+                    .accessibilityLabel("Clear process search")
                 }
             }
             .padding(.horizontal, 10)
@@ -440,6 +443,8 @@ struct TaskScopePopoverView: View {
                 }
                 .toggleStyle(.button)
                 .help("Tree View")
+                .accessibilityLabel("Tree view")
+                .accessibilityValue(treeMode ? "On" : "Off")
 
                 Menu {
                     if let recoveryMessage = savedSelections.recoveryMessage {
@@ -480,7 +485,7 @@ struct TaskScopePopoverView: View {
                     if !processManager.selectedPids.isEmpty {
                         Button("Save Current Selection…") {
                             saveSelectionName = ""
-            showSaveSelectionSheet = true
+                            showSaveSelectionSheet = true
                         }
                     }
                 } label: {
@@ -488,6 +493,7 @@ struct TaskScopePopoverView: View {
                         .labelStyle(.iconOnly)
                 }
                 .help("Saved Selections")
+                .accessibilityLabel("Saved selections")
 
                 if !processManager.selectedPids.isEmpty {
                     Menu {
@@ -509,6 +515,9 @@ struct TaskScopePopoverView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
                     .controlSize(.small)
+                    .accessibilityLabel(
+                        "Actions for \(processManager.selectedPids.count) selected processes"
+                    )
 
                     Button {
                         processManager.clearSelection()
@@ -522,6 +531,32 @@ struct TaskScopePopoverView: View {
                 Spacer()
             }
             .padding(.horizontal, 16)
+
+            if processManager.hasLoadedProcessList,
+               let processLoadError = processManager.processLoadError {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Process list is stale")
+                            .font(.caption)
+                            .fontWeight(.semibold)
+                        Text(staleProcessListDetail(error: processLoadError))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button("Retry") {
+                        Task { await processManager.loadProcessList() }
+                    }
+                    .controlSize(.small)
+                }
+                .padding(10)
+                .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                .padding(.horizontal, 16)
+                .accessibilityElement(children: .combine)
+            }
 
             HStack {
                 Text(processCountTitle)
@@ -858,9 +893,22 @@ struct TaskScopePopoverView: View {
             },
             copyCommandAction: {
                 NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(process.command, forType: .string)
+                NSPasteboard.general.setString(
+                    process.executablePath ?? process.command,
+                    forType: .string
+                )
             }
         )
+    }
+
+    private func staleProcessListDetail(error: String) -> String {
+        let lastUpdated: String
+        if let date = processManager.lastSuccessfulInventoryAt {
+            lastUpdated = "Last updated \(date.formatted(date: .omitted, time: .standard))."
+        } else {
+            lastUpdated = "The last successful update time is unavailable."
+        }
+        return "\(lastUpdated) Refresh failed: \(error) Actions will be revalidated before signaling."
     }
 
     @ViewBuilder
@@ -889,7 +937,10 @@ struct TaskScopePopoverView: View {
         }
         Button("Copy Command") {
             NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(process.command, forType: .string)
+            NSPasteboard.general.setString(
+                process.executablePath ?? process.command,
+                forType: .string
+            )
         }
         Divider()
         Button("Open in Activity Monitor") {
@@ -955,6 +1006,7 @@ struct TaskScopePopoverView: View {
     ) -> String? {
         let trimmedName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedName.isEmpty else { return "Process name is required." }
+        let observedExecutablePath = quickAutoStopProcess?.executablePath
 
         if let existing = autoStopRules.rules.first(where: {
             $0.processName.caseInsensitiveCompare(trimmedName) == .orderedSame
@@ -962,6 +1014,7 @@ struct TaskScopePopoverView: View {
             guard autoStopRules.update(AutoStopRule(
                 id: existing.id,
                 processName: trimmedName,
+                executablePath: observedExecutablePath ?? existing.executablePath,
                 runtimeMinutes: runtimeMinutes,
                 action: action,
                 isEnabled: existing.isEnabled
@@ -973,6 +1026,7 @@ struct TaskScopePopoverView: View {
             guard autoStopRules.add(
                 AutoStopRule(
                     processName: trimmedName,
+                    executablePath: observedExecutablePath,
                     runtimeMinutes: runtimeMinutes,
                     action: action
                 )

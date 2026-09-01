@@ -39,7 +39,10 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
                     },
                     copyCommandAction: {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(node.process.command, forType: .string)
+                        NSPasteboard.general.setString(
+                            node.process.executablePath ?? node.process.command,
+                            forType: .string
+                        )
                     }
                 )
 

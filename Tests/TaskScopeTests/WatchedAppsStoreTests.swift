@@ -74,6 +74,52 @@ final class WatchedAppsStoreTests: XCTestCase {
         XCTAssertNotNil(store.validationError)
     }
 
+    func testCrossFieldNamesRemainValidAfterPersistenceRoundTrip() {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertTrue(store.remove(at: IndexSet(store.presets.indices)))
+        let first = WatchedAppPreset(
+            displayName: "Alpha",
+            mainProcessName: "Beta",
+            helperProcessNames: [],
+            protectedProcessNames: [],
+            appPath: "/Applications/Alpha.app"
+        )
+        let second = WatchedAppPreset(
+            displayName: "Beta",
+            mainProcessName: "Gamma",
+            helperProcessNames: [],
+            protectedProcessNames: [],
+            appPath: "/Applications/Beta.app"
+        )
+
+        XCTAssertTrue(store.add(first))
+        XCTAssertTrue(store.add(second))
+
+        let reloaded = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertEqual(reloaded.presets.map(\.displayName), ["Alpha", "Beta"])
+        XCTAssertFalse(reloaded.isReadOnlyAfterCorruption)
+        XCTAssertNil(reloaded.persistenceIssue)
+    }
+
+    func testDuplicateLaunchJobLabelsAndPathsAreRejected() {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertTrue(store.remove(at: IndexSet(store.presets.indices)))
+        var duplicateLabel = validPreset(name: "Labels")
+        duplicateLabel.userLaunchAgentJobs = [
+            UserLaunchAgentJob(label: "example.agent", plistPath: "/agents/first.plist"),
+            UserLaunchAgentJob(label: "EXAMPLE.AGENT", plistPath: "/agents/second.plist")
+        ]
+        XCTAssertFalse(store.add(duplicateLabel))
+
+        var duplicatePath = validPreset(name: "Paths")
+        duplicatePath.userLaunchAgentJobs = [
+            UserLaunchAgentJob(label: "first.agent", plistPath: "/agents/../agents/shared.plist"),
+            UserLaunchAgentJob(label: "second.agent", plistPath: "/agents/shared.plist")
+        ]
+        XCTAssertFalse(store.add(duplicatePath))
+        XCTAssertTrue(store.validationError?.contains("must be unique") == true)
+    }
+
     func testDirectoryOnlyAppPathAndInvalidPortAreRejected() {
         let store = WatchedAppsStore(userDefaults: defaults, key: key)
         XCTAssertTrue(store.remove(at: IndexSet(store.presets.indices)))
@@ -91,6 +137,13 @@ final class WatchedAppsStoreTests: XCTestCase {
             )
         ]
         XCTAssertFalse(store.add(invalidPort))
+
+        var relativeAgent = validPreset(name: "Relative Agent")
+        relativeAgent.userLaunchAgentJobs = [
+            UserLaunchAgentJob(label: "relative.agent", plistPath: "relative/agent.plist")
+        ]
+        XCTAssertFalse(store.add(relativeAgent))
+        XCTAssertTrue(store.validationError?.contains("absolute .plist") == true)
     }
 
     func testImportRejectsRepeatedIDsWithinTheSamePayload() {
@@ -105,6 +158,81 @@ final class WatchedAppsStoreTests: XCTestCase {
         XCTAssertEqual(result, .init(importedCount: 1, rejectedCount: 1))
         XCTAssertEqual(store.presets.map(\.displayName), ["First"])
         XCTAssertEqual(Set(store.presets.map(\.id)).count, store.presets.count)
+    }
+
+    func testImportPreviewDoesNotMutateAndCommitUsesTheSameValidation() {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertTrue(store.remove(at: IndexSet(store.presets.indices)))
+        let valid = validPreset(name: "Valid")
+        var invalid = validPreset(name: "Invalid")
+        invalid.appPath = "relative/Invalid.app"
+
+        let preview = store.previewImport([valid, invalid])
+
+        XCTAssertTrue(store.presets.isEmpty)
+        XCTAssertEqual(preview.importableCount, 1)
+        XCTAssertEqual(preview.rejectedCount, 1)
+        XCTAssertEqual(preview.items[1].rejectionReason, "App path must be an absolute .app bundle path.")
+
+        let result = store.importPresets(preview.items.map(\.preset))
+        XCTAssertEqual(result, .init(importedCount: 1, rejectedCount: 1))
+        XCTAssertEqual(store.presets.map(\.displayName), ["Valid"])
+    }
+
+    func testVersionedArchiveRoundTripsAndLegacyArrayStillImports() throws {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        let archiveData = try store.encodedPresetArchive()
+
+        XCTAssertEqual(
+            try WatchedAppsStore.decodePresetArchive(archiveData),
+            store.presets
+        )
+
+        let legacy = [validPreset(name: "Legacy")]
+        XCTAssertEqual(
+            try WatchedAppsStore.decodePresetArchive(JSONEncoder().encode(legacy)),
+            legacy
+        )
+    }
+
+    func testUnsupportedArchiveVersionIsRejected() throws {
+        let archive = WatchedAppsStore.PresetArchive(
+            schemaVersion: 999,
+            presets: [validPreset(name: "Future")]
+        )
+        let data = try JSONEncoder().encode(archive)
+
+        XCTAssertThrowsError(try WatchedAppsStore.decodePresetArchive(data)) { error in
+            XCTAssertEqual(
+                error as? WatchedAppsStore.PresetArchiveError,
+                .unsupportedSchemaVersion(999)
+            )
+        }
+    }
+
+    func testMalformedArchiveIsRejected() {
+        XCTAssertThrowsError(
+            try WatchedAppsStore.decodePresetArchive(Data("not json".utf8))
+        ) { error in
+            XCTAssertEqual(
+                error as? WatchedAppsStore.PresetArchiveError,
+                .unreadable
+            )
+        }
+    }
+
+    func testOversizedArchiveIsRejectedBeforeDecoding() {
+        let data = Data(
+            repeating: 0x20,
+            count: WatchedAppsStore.maximumPresetArchiveBytes + 1
+        )
+
+        XCTAssertThrowsError(try WatchedAppsStore.decodePresetArchive(data)) { error in
+            XCTAssertEqual(
+                error as? WatchedAppsStore.PresetArchiveError,
+                .exceedsMaximumSize
+            )
+        }
     }
 
     func testCustomPrivilegedDaemonsAndProcessRoleOverlapsAreRejected() {

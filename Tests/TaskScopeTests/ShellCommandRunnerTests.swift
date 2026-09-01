@@ -132,7 +132,7 @@ final class ShellCommandRunnerTests: XCTestCase {
     }
 
     func testCancellationNearChildExitCompletesExactlyOnce() async {
-        for _ in 0..<20 {
+        for _ in 0..<40 {
             let task = Task {
                 await ShellCommandRunner.run(
                     "/bin/sleep 0.01; /usr/bin/printf done",

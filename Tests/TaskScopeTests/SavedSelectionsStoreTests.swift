@@ -32,6 +32,52 @@ final class SavedSelectionsStoreTests: XCTestCase {
         XCTAssertTrue(result.ambiguous.isEmpty)
     }
 
+    func testTrustedExecutablePathWinsOverSpoofableCommand() {
+        let store = makeStore()
+        let original = process(
+            pid: 10,
+            command: "Example",
+            executablePath: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let unrelated = process(
+            pid: 20,
+            command: "Example",
+            executablePath: "/tmp/Example"
+        )
+        let restarted = process(
+            pid: 99,
+            command: "Example",
+            executablePath: original.executablePath
+        )
+        XCTAssertTrue(store.save(name: "Example", processes: [original]))
+
+        let result = store.resolve(store.selections[0], in: [unrelated, restarted])
+
+        XCTAssertEqual(result.matched, [restarted])
+        XCTAssertTrue(result.ambiguous.isEmpty)
+    }
+
+    func testTrustedExecutablePathNeverFallsBackToSpoofableCommand() {
+        let store = makeStore()
+        let original = process(
+            pid: 10,
+            command: "Example",
+            executablePath: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let unrelated = process(
+            pid: 20,
+            command: "Example",
+            executablePath: "/tmp/Example"
+        )
+        XCTAssertTrue(store.save(name: "Example", processes: [original]))
+
+        let result = store.resolve(store.selections[0], in: [unrelated])
+
+        XCTAssertTrue(result.matched.isEmpty)
+        XCTAssertEqual(result.unmatched.count, 1)
+        XCTAssertTrue(result.ambiguous.isEmpty)
+    }
+
     func testNameFallbackOnlyMatchesWhenUnique() {
         let store = makeStore()
         let original = process(pid: 10, command: "Example")
@@ -86,13 +132,18 @@ final class SavedSelectionsStoreTests: XCTestCase {
         SavedSelectionsStore(userDefaults: defaults, key: key)
     }
 
-    private func process(pid: Int32, command: String) -> AppProcess {
+    private func process(
+        pid: Int32,
+        command: String,
+        executablePath: String? = nil
+    ) -> AppProcess {
         AppProcess(
             pid: pid,
             parentPID: 1,
             cpu: 0,
             memoryMB: 0,
             command: command,
+            executablePath: executablePath,
             elapsedTime: "00:10",
             startTime: "start-\(pid)",
             netInKB: nil,

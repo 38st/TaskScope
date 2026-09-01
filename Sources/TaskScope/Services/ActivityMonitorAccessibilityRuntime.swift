@@ -38,9 +38,29 @@ struct SystemActivityMonitorProcessSelector: ActivityMonitorProcessSelecting {
 }
 
 @MainActor
-struct SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibilityRuntime {
+final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibilityRuntime {
     private static let activityMonitorBundleIdentifier = "com.apple.ActivityMonitor"
     private static let maximumTreeDepth = 12
+    private static let restorationDelayNanoseconds: UInt64 = 4_000_000_000
+
+    private struct PreparedProcessTableState {
+        var searchField: AXUIElement?
+        var searchValue = ""
+        var allProcessesItem: AXUIElement?
+        var previousProcessScopeItem: AXUIElement?
+        var processScopeChanged = false
+        var processIDItem: AXUIElement?
+        var processIDWasVisible = true
+        var processIDWasShown = false
+        var searchWasChanged = false
+
+        var hasChanges: Bool {
+            processScopeChanged || processIDWasShown || searchWasChanged
+        }
+    }
+
+    private var preparedState: PreparedProcessTableState?
+    private var restorationTask: Task<Void, Never>?
 
     func isProcessTrusted(prompt: Bool) -> Bool {
         guard prompt else {
@@ -157,45 +177,46 @@ struct SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibilityRu
         in application: AXUIElement,
         targetPID: Int32
     ) {
-        _ = selectAllProcesses(in: application)
-        _ = showPIDColumn(in: application)
-        _ = filterProcessTable(in: application, targetPID: targetPID)
-    }
+        var state = preparedState ?? captureProcessTableState(in: application)
 
-    private func filterProcessTable(
-        in application: AXUIElement,
-        targetPID: Int32
-    ) -> Bool {
-        guard let processName = processName(for: targetPID) else {
-            return false
-        }
-        guard let windows = elements(application, attribute: kAXWindowsAttribute) else {
-            return false
+        if !state.processScopeChanged,
+           let allProcessesItem = state.allProcessesItem,
+           let previousProcessScopeItem = state.previousProcessScopeItem,
+           AXUIElementPerformAction(
+               allProcessesItem,
+               kAXPressAction as CFString
+           ) == .success {
+            state.previousProcessScopeItem = previousProcessScopeItem
+            state.processScopeChanged = true
         }
 
-        for window in windows {
-            guard let searchField = firstDescendant(
-                of: window,
-                subrole: kAXSearchFieldSubrole,
-                remainingDepth: Self.maximumTreeDepth
-            ),
-            let currentValue = string(searchField, attribute: kAXValueAttribute),
-            currentValue != processName else {
-                continue
-            }
+        if !state.processIDWasVisible,
+           !state.processIDWasShown,
+           let processIDItem = state.processIDItem,
+           AXUIElementPerformAction(
+               processIDItem,
+               kAXPressAction as CFString
+           ) == .success {
+            state.processIDWasShown = true
+        }
 
-            guard AXUIElementSetAttributeValue(
-                searchField,
-                kAXValueAttribute as CFString,
-                processName as CFString
-            ) == .success else {
-                return false
-            }
+        if !state.searchWasChanged,
+           let processName = processName(for: targetPID),
+           let searchField = state.searchField,
+           state.searchValue != processName,
+           AXUIElementSetAttributeValue(
+               searchField,
+               kAXValueAttribute as CFString,
+               processName as CFString
+           ) == .success {
             _ = AXUIElementPerformAction(searchField, kAXConfirmAction as CFString)
-            return true
+            state.searchWasChanged = true
         }
 
-        return false
+        preparedState = state.hasChanges ? state : nil
+        if state.hasChanges {
+            scheduleProcessTableRestoration()
+        }
     }
 
     private func processName(for pid: Int32) -> String? {
@@ -220,42 +241,89 @@ struct SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibilityRu
         return name.isEmpty ? nil : name
     }
 
-    private func selectAllProcesses(in application: AXUIElement) -> Bool {
-        guard let viewMenuItems = activityMonitorViewMenuItems(in: application),
-              viewMenuItems.indices.contains(4) else {
-            return false
+    private func captureProcessTableState(
+        in application: AXUIElement
+    ) -> PreparedProcessTableState {
+        var state = PreparedProcessTableState()
+
+        if let window = elements(application, attribute: kAXWindowsAttribute)?.first,
+           let searchField = firstDescendant(
+               of: window,
+               subrole: kAXSearchFieldSubrole,
+               remainingDepth: Self.maximumTreeDepth
+           ) {
+            state.searchField = searchField
+            state.searchValue = string(searchField, attribute: kAXValueAttribute) ?? ""
         }
 
-        let allProcessesItem = viewMenuItems[4]
-        if let mark = string(allProcessesItem, attribute: kAXMenuItemMarkCharAttribute),
-           !mark.isEmpty {
-            return false
+        guard let viewMenuItems = activityMonitorViewMenuItems(in: application) else {
+            return state
         }
 
-        return AXUIElementPerformAction(
-            allProcessesItem,
-            kAXPressAction as CFString
-        ) == .success
+        if viewMenuItems.indices.contains(4) {
+            let allProcessesItem = viewMenuItems[4]
+            state.allProcessesItem = allProcessesItem
+            let allProcessesIsSelected = isMarked(allProcessesItem)
+            if !allProcessesIsSelected {
+                let upperBound = min(viewMenuItems.count, 13)
+                state.previousProcessScopeItem = viewMenuItems[4..<upperBound]
+                    .first(where: isMarked)
+            }
+        }
+
+        if let columnsMenu = viewMenuItems.first,
+           let submenu = elements(columnsMenu, attribute: kAXChildrenAttribute)?.first,
+           let processIDItem = elements(
+               submenu,
+               attribute: kAXChildrenAttribute
+           )?.first {
+            state.processIDItem = processIDItem
+            state.processIDWasVisible = isMarked(processIDItem)
+        }
+
+        return state
     }
 
-    private func showPIDColumn(in application: AXUIElement) -> Bool {
-        guard let viewMenuItems = activityMonitorViewMenuItems(in: application),
-              let columnsMenu = viewMenuItems.first,
-              let submenu = elements(columnsMenu, attribute: kAXChildrenAttribute)?.first,
-              let columnItems = elements(submenu, attribute: kAXChildrenAttribute),
-              let processIDItem = columnItems.first else {
+    private func scheduleProcessTableRestoration() {
+        restorationTask?.cancel()
+        restorationTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.restorationDelayNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.restorePreparedProcessTableState()
+        }
+    }
+
+    private func restorePreparedProcessTableState() {
+        guard let state = preparedState else { return }
+        preparedState = nil
+        restorationTask = nil
+
+        if state.searchWasChanged, let searchField = state.searchField {
+            if AXUIElementSetAttributeValue(
+                searchField,
+                kAXValueAttribute as CFString,
+                state.searchValue as CFString
+            ) == .success {
+                _ = AXUIElementPerformAction(searchField, kAXConfirmAction as CFString)
+            }
+        }
+        if state.processScopeChanged, let item = state.previousProcessScopeItem {
+            _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
+        }
+        if state.processIDWasShown, let item = state.processIDItem {
+            _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
+        }
+    }
+
+    private func isMarked(_ element: AXUIElement) -> Bool {
+        guard let mark = string(element, attribute: kAXMenuItemMarkCharAttribute) else {
             return false
         }
-
-        if let mark = string(processIDItem, attribute: kAXMenuItemMarkCharAttribute),
-           !mark.isEmpty {
-            return false
-        }
-
-        return AXUIElementPerformAction(
-            processIDItem,
-            kAXPressAction as CFString
-        ) == .success
+        return !mark.isEmpty
     }
 
     private func activityMonitorViewMenuItems(in application: AXUIElement) -> [AXUIElement]? {

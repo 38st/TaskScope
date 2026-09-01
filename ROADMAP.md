@@ -71,15 +71,18 @@ the compatibility job before 2026-11-02 rather than waiting for CI to fail.
 
 ### Versioned preset imports and dry run
 
-- Add an explicit preset schema version with migration and round-trip fixtures.
-- Show an import preview containing custom app path, process names, user
-  launch-agent plist paths and labels, duplicates, and rejected fields. Display
-  the immutable built-in GlobalProtect service fields separately as fixed.
-- Guarantee import performs no lifecycle action.
-- Add a dry-run report that lists every proposed local operation and the fixed
-  built-in GlobalProtect privileged restoration, without signaling a process,
-  launching an app, or requesting authorization.
-- Test malformed, oversized, duplicate, legacy, and adversarial preset files.
+Implemented baseline: exports carry schema version 1, legacy array imports
+remain supported, archives are size-bounded, and a mandatory non-mutating
+preview shows app/process/job fields, fixed daemon fields, duplicates, and
+rejection reasons. Import performs no lifecycle action. Settings and the import
+preview also provide a dry-run list of the later Open, Quit App, Quit Helpers,
+Close All, launch-job, and protected-process behavior without performing it.
+
+Remaining work:
+
+- Add explicit migration functions when schema version 2 is designed.
+- Extend fixtures with additional adversarial archives as new schema versions
+  are introduced.
 
 ### Permission and installation health
 

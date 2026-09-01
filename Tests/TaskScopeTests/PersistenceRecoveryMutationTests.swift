@@ -124,7 +124,7 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
         XCTAssertEqual(defaults.data(forKey: eventsKey), corruptEvents)
 
         await store.evaluateNow()
-        XCTAssertEqual(store.events.map(\.outcome), [.logged])
+        XCTAssertTrue(store.events.isEmpty)
         XCTAssertEqual(defaults.data(forKey: eventsKey), corruptEvents)
 
         store.resetEventsAfterCorruption()

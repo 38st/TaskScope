@@ -10,7 +10,7 @@ struct LifecycleReportSheet: View {
                 .font(.title2)
                 .fontWeight(.semibold)
 
-            List(report.jobs, id: \.label) { job in
+            List(Array(report.jobs.enumerated()), id: \.offset) { _, job in
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text(job.label)

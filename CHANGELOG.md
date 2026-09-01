@@ -5,6 +5,41 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ## [Unreleased]
 
+### Added
+
+- Added versioned preset archives with legacy import compatibility, bounded
+  file reads, and a field-by-field, non-mutating import preview.
+- Added stale process-inventory status with the last successful observation and
+  a visible retry path.
+
+### Security
+
+- Bound new automatic-stop rules and durable saved selections to
+  kernel-resolved executable paths, and included that path in final pre-signal
+  identity validation. Legacy name-only automatic stops load disabled for
+  review.
+- Made watched-app open/close actions fail closed when a fresh inventory cannot
+  be read, without replacing failure with cached process state.
+- Required Log Only outcomes to reach durable event storage before an
+  occurrence is treated as handled.
+- Normalized and rejected duplicate launch-job labels and plist paths across
+  imported and persisted preset data.
+
+### Fixed
+
+- Removed a pipe-reader teardown race in command execution and strengthened
+  cancellation near child exit.
+- Preserved full executable paths in the process display schema and saved
+  selection recall while keeping destructive matching on kernel paths.
+- Drained cold-launch app commands in FIFO order.
+- Avoided restarting an already-loaded user launch agent during ordinary Open.
+- Coalesced recent observer inventory reads, suspended history when no metrics
+  view is visible, and suspended auto-stop polling with no enabled rules.
+- Restored Activity Monitor search, process scope, and PID-column state after a
+  temporary exact-PID handoff.
+- Tightened elapsed-runtime parsing, hotkey-handler error reporting, lifecycle
+  report row identity, and icon-only accessibility labels.
+
 ## [1.0.0] - 2026-08-08
 
 First source/development release. Build metadata is `1.0.0 (2)`. This release
