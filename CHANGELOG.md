@@ -15,6 +15,11 @@ All notable changes to TaskScope are documented in this file. The project uses
   per-user `pangpa` and optional `pangps` launch agents. Open explicitly clears
   the disable state; protected system daemons remain untouched.
 
+### Changed
+
+- Removed hosted GitHub Actions CI and scheduled Dependabot update jobs. The
+  complete build, test, and packaging gate remains available locally.
+
 ### Security
 
 - Bound new automatic-stop rules and durable saved selections to

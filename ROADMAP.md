@@ -51,22 +51,6 @@ Acceptance criteria for remaining source-only:
 - If a network update check is added, disclose its endpoint, data, cadence,
   retention, failure behavior, and user control before shipping.
 
-### Hosted-runner continuity before 2026-11-02
-
-The tracked `macos-14` GitHub-hosted runner is scheduled for retirement. Migrate
-the compatibility job before 2026-11-02 rather than waiting for CI to fail.
-
-- Track the migration in a repository issue with an owner and completion date.
-- Select an available hosted image or a maintained self-hosted runner and record
-  its macOS, Xcode, Swift, and CPU architecture.
-- Preserve macOS 14 compatibility evidence through an appropriate machine/VM or
-  explicitly narrow the claim; a newer runner compiling a macOS 14 deployment
-  target is not runtime evidence.
-- Prove the replacement workflow on a pull request before making its check
-  required, then update branch rules without locking out maintenance.
-- Remove the retired runner reference and archive the final successful old/new
-  toolchain evidence.
-
 ## 1.1: Safer lifecycle configuration and support
 
 ### Versioned preset imports and dry run
