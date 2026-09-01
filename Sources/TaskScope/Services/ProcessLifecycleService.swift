@@ -14,6 +14,18 @@ protocol ProcessTerminating: Sendable {
 protocol UserLaunchAgentControlling: Sendable {
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
+    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
+    func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
+}
+
+extension UserLaunchAgentControlling {
+    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        .notNeeded
+    }
+
+    func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        .notNeeded
+    }
 }
 
 protocol SystemLaunchDaemonControlling: Sendable {
@@ -87,6 +99,14 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
 
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         await ProcessLifecycleController.bootstrapUserLaunchAgents(for: preset)
+    }
+
+    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        await ProcessLifecycleController.disableUserLaunchAgents(for: preset)
+    }
+
+    func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        await ProcessLifecycleController.enableUserLaunchAgents(for: preset)
     }
 
     func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {

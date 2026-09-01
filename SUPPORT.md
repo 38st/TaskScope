@@ -82,6 +82,16 @@ policy apply only to the immutable built-in GlobalProtect daemon-restoration
 path. Do not repeat that privileged operation blindly; use the organization's
 managed installer or IT support when its protected service cannot be restored.
 
+### GlobalProtect keeps reopening
+
+Use **Keep GlobalProtect Off** on the built-in preset instead of repeatedly
+killing its window. The control disables and unloads the known per-user
+`pangpa` and, when installed, `pangps` launch agents. It persists across login.
+Choosing **Open** or turning the control off re-enables those user agents. A
+protected system `PanGPS` launch daemon remains outside this control; if policy
+or management software restores user agents, consult the organization managing
+the Mac.
+
 ## Export and upgrade precautions
 
 Export readable watched presets before a risky upgrade. The current development

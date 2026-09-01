@@ -314,6 +314,32 @@ final class WatchedAppsStoreTests: XCTestCase {
         XCTAssertTrue(store.validationError?.contains("cannot be modified") == true)
     }
 
+    func testPreviousGlobalProtectAgentDefinitionMigratesToCurrentOptionalAgentSet() throws {
+        var legacy = WatchedAppPreset.globalProtect
+        legacy.userLaunchAgentJobs = WatchedAppPreset.legacyGlobalProtectUserLaunchAgentJobs
+        legacy.notificationsEnabled = false
+        defaults.set(try JSONEncoder().encode([legacy]), forKey: key)
+
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+
+        XCTAssertFalse(store.isReadOnlyAfterCorruption)
+        XCTAssertNil(store.persistenceIssue)
+        XCTAssertEqual(store.presets.count, 1)
+        XCTAssertEqual(
+            store.presets[0].userLaunchAgentJobs,
+            WatchedAppPreset.globalProtectUserLaunchAgentJobs
+        )
+        XCTAssertFalse(store.presets[0].notificationsEnabled)
+        let persisted = try JSONDecoder().decode(
+            [WatchedAppPreset].self,
+            from: XCTUnwrap(defaults.data(forKey: key))
+        )
+        XCTAssertEqual(
+            persisted[0].userLaunchAgentJobs,
+            WatchedAppPreset.globalProtectUserLaunchAgentJobs
+        )
+    }
+
     private func validPreset(name: String) -> WatchedAppPreset {
         WatchedAppPreset(
             displayName: name,

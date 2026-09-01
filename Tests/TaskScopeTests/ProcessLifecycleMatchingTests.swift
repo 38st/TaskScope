@@ -451,6 +451,73 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
     }
 
+    func testKeepOffDisablesAndBootsOutLoadedUserAgent() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            commandResults: [
+                result(exitCode: 0),
+                result(stdout: "pid = 42", exitCode: 0),
+                result(exitCode: 0),
+                result(stderr: "Could not find service", exitCode: 113)
+            ]
+        )
+
+        let batch = await ProcessLifecycleController.disableUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            runtime: harness.runtime
+        )
+
+        XCTAssertTrue(batch.succeeded)
+        XCTAssertEqual(batch.jobs.first?.state, .changed)
+        XCTAssertEqual(
+            harness.commands,
+            [
+                "/bin/launchctl disable 'gui/501/example.agent'",
+                "/bin/launchctl print 'gui/501/example.agent'",
+                "/bin/launchctl bootout 'gui/501/example.agent'",
+                "/bin/launchctl print 'gui/501/example.agent'"
+            ]
+        )
+    }
+
+    func testAllowToRunClearsDisableWithoutStartingAgent() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            commandResults: [result(exitCode: 0)]
+        )
+
+        let batch = await ProcessLifecycleController.enableUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            runtime: harness.runtime
+        )
+
+        XCTAssertTrue(batch.succeeded)
+        XCTAssertEqual(
+            harness.commands,
+            ["/bin/launchctl enable 'gui/501/example.agent'"]
+        )
+        XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
+        XCTAssertFalse(harness.commands.contains { $0.contains("bootstrap") })
+    }
+
+    func testMissingOptionalAgentDoesNotBlockOpen() async {
+        var preset = presetWithAgent(plistPath: "/agents/optional.plist")
+        preset.userLaunchAgentJobs[0].isRequired = false
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: []
+        )
+
+        let batch = await ProcessLifecycleController.bootstrapUserLaunchAgents(
+            for: preset,
+            runtime: harness.runtime
+        )
+
+        XCTAssertTrue(batch.succeeded)
+        XCTAssertEqual(batch.jobs.first?.state, .alreadyUnloaded)
+        XCTAssertTrue(harness.commands.isEmpty)
+    }
+
     func testUnrelatedPortListenerCannotSatisfyDaemonReadiness() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],

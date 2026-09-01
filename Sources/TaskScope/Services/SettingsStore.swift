@@ -21,6 +21,9 @@ final class SettingsStore: ObservableObject {
     @Published var enableNotifications: Bool {
         didSet { save() }
     }
+    @Published var keepGlobalProtectOff: Bool {
+        didSet { save() }
+    }
     @Published var selectedSectionRaw: String {
         didSet { normalizeAndSave() }
     }
@@ -68,6 +71,7 @@ final class SettingsStore: ObservableObject {
         memHighlightThresholdMB = decoded.memHighlightThresholdMB
         autoRefreshProcessList = decoded.autoRefreshProcessList
         enableNotifications = decoded.enableNotifications
+        keepGlobalProtectOff = decoded.keepGlobalProtectOff
         selectedSectionRaw = decoded.selectedSectionRaw
         searchText = decoded.searchText
         sortKeyRaw = decoded.sortKeyRaw
@@ -121,6 +125,7 @@ final class SettingsStore: ObservableObject {
             memHighlightThresholdMB: memHighlightThresholdMB,
             autoRefreshProcessList: autoRefreshProcessList,
             enableNotifications: enableNotifications,
+            keepGlobalProtectOff: keepGlobalProtectOff,
             selectedSectionRaw: selectedSectionRaw,
             searchText: searchText,
             sortKeyRaw: sortKeyRaw
@@ -135,7 +140,7 @@ final class SettingsStore: ObservableObject {
     }
 
     private struct CodableSettings: Codable, Equatable {
-        static let currentSchemaVersion = 2
+        static let currentSchemaVersion = 3
         static let defaults = CodableSettings(
             schemaVersion: currentSchemaVersion,
             refreshIntervalSeconds: 10,
@@ -144,6 +149,7 @@ final class SettingsStore: ObservableObject {
             memHighlightThresholdMB: 1024,
             autoRefreshProcessList: false,
             enableNotifications: false,
+            keepGlobalProtectOff: false,
             selectedSectionRaw: TaskScopeSection.processes.rawValue,
             searchText: "",
             sortKeyRaw: ProcessSortKey.cpu.rawValue
@@ -156,6 +162,7 @@ final class SettingsStore: ObservableObject {
         var memHighlightThresholdMB: Double
         var autoRefreshProcessList: Bool
         var enableNotifications: Bool
+        var keepGlobalProtectOff: Bool
         var selectedSectionRaw: String
         var searchText: String
         var sortKeyRaw: String
@@ -168,6 +175,7 @@ final class SettingsStore: ObservableObject {
             case memHighlightThresholdMB
             case autoRefreshProcessList
             case enableNotifications
+            case keepGlobalProtectOff
             case selectedSectionRaw
             case searchText
             case sortKeyRaw
@@ -181,6 +189,7 @@ final class SettingsStore: ObservableObject {
             memHighlightThresholdMB: Double,
             autoRefreshProcessList: Bool,
             enableNotifications: Bool,
+            keepGlobalProtectOff: Bool,
             selectedSectionRaw: String,
             searchText: String,
             sortKeyRaw: String
@@ -192,6 +201,7 @@ final class SettingsStore: ObservableObject {
             self.memHighlightThresholdMB = memHighlightThresholdMB
             self.autoRefreshProcessList = autoRefreshProcessList
             self.enableNotifications = enableNotifications
+            self.keepGlobalProtectOff = keepGlobalProtectOff
             self.selectedSectionRaw = selectedSectionRaw
             self.searchText = searchText
             self.sortKeyRaw = sortKeyRaw
@@ -225,6 +235,10 @@ final class SettingsStore: ObservableObject {
                 Bool.self,
                 forKey: .enableNotifications
             ) ?? defaults.enableNotifications
+            keepGlobalProtectOff = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .keepGlobalProtectOff
+            ) ?? defaults.keepGlobalProtectOff
             selectedSectionRaw = try container.decodeIfPresent(
                 String.self,
                 forKey: .selectedSectionRaw

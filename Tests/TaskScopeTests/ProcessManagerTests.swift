@@ -599,6 +599,108 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(result.message.contains("signal was rejected"))
     }
 
+    func testKeepOffPersistsIntentDisablesAgentsAndLeavesProtectedServiceAlone() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .changed, detail: "disabled")
+        ])
+        let preset = lifecyclePreset()
+        let protected = process(pid: 44, name: "ExampleDaemon")
+        let inventory = FakeProcessInventory(results: [
+            .success([
+                process(pid: 42, name: "Example"),
+                process(pid: 43, name: "ExampleHelper"),
+                protected
+            ]),
+            .success([protected])
+        ])
+        let manager = makeManager(inventory: inventory, lifecycle: lifecycle)
+        manager.watchedAppsProvider = { [preset] }
+        var keptOff = false
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+
+        let result = await manager.keepOff(preset)
+
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertTrue(keptOff)
+        XCTAssertEqual(lifecycle.calls, [
+            "agents.disable",
+            "terminate:Example",
+            "terminate.helper:ExampleHelper",
+            "settle"
+        ])
+        XCTAssertFalse(lifecycle.calls.contains("terminate:ExampleDaemon"))
+        XCTAssertTrue(result.message.contains("Protected system service remains available"))
+    }
+
+    func testKeepOffStillDisablesRelaunchJobsWhenInventoryIsUnavailable() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .changed, detail: "disabled")
+        ])
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .failure(.commandFailed("ps unavailable"))
+            ]),
+            lifecycle: lifecycle
+        )
+        var keptOff = false
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+
+        let result = await manager.keepOff(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(keptOff)
+        XCTAssertEqual(lifecycle.calls, ["agents.disable"])
+        XCTAssertTrue(result.message.contains("running processes were not signalled"))
+    }
+
+    func testOpeningKeptOffPresetReEnablesAgentsAndClearsIntent() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentEnableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .changed, detail: "enabled")
+        ])
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+        var keptOff = true
+        manager.isPresetKeptOffProvider = { _ in keptOff }
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+
+        let result = await manager.openApp(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertFalse(keptOff)
+        XCTAssertEqual(lifecycle.calls, [
+            "exists",
+            "daemon",
+            "agents.enable",
+            "agents.load",
+            "open",
+            "wait"
+        ])
+    }
+
+    func testStartupEnforcementDisablesAgentsEvenWhenNoRunningStateIsKnown() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .changed, detail: "disabled")
+        ])
+        let preset = lifecyclePreset()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .failure(.commandFailed("ps unavailable"))
+            ]),
+            lifecycle: lifecycle
+        )
+        manager.keptOffPresetsProvider = { [preset] }
+
+        await manager.enforceKeptOffPresets(force: true)
+
+        XCTAssertEqual(lifecycle.calls, ["agents.disable"])
+    }
+
     func testExpandedMetricConsumersEnableCollectionAndRefreshLoadedList() async {
         let target = process(pid: 42, name: "Example")
         let inventory = FakeProcessInventory(results: [.success([target])])
@@ -709,6 +811,8 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     var daemonResult = LifecycleBatchResult.notNeeded
     var agentLoadResult = LifecycleBatchResult.notNeeded
     var agentUnloadResult = LifecycleBatchResult.notNeeded
+    var agentDisableResult = LifecycleBatchResult.notNeeded
+    var agentEnableResult = LifecycleBatchResult.notNeeded
     var openResult = true
     var waitResult = true
     var terminationOutcome = ProcessTerminationOutcome.signalled
@@ -746,6 +850,16 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         calls.append("agents.load")
         return agentLoadResult
+    }
+
+    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        calls.append("agents.disable")
+        return agentDisableResult
+    }
+
+    func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        calls.append("agents.enable")
+        return agentEnableResult
     }
 
     func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {

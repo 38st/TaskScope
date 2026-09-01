@@ -108,6 +108,7 @@ final class ProcessManager: ObservableObject {
         pollingController.restart(interval: interval) { [weak self] in
             guard let self else { return }
             await self.refreshWatchedStatus(showMessage: false)
+            await self.enforceKeptOffPresets()
             if includeList, self.hasLoadedProcessList {
                 await self.loadProcessList(showMessage: false)
             }
@@ -273,17 +274,35 @@ final class ProcessManager: ObservableObject {
                 return
             }
 
+            let wasKeptOff = isPresetKeptOffProvider?(preset) ?? false
+            let enableResult: LifecycleBatchResult
+            if wasKeptOff {
+                enableResult = await lifecycle.enableUserLaunchAgents(for: preset)
+                guard enableResult.succeeded else {
+                    lifecycleReport = LifecycleReport(
+                        title: "\(preset.displayName) Service Results",
+                        jobs: daemonResult.jobs + enableResult.jobs
+                    )
+                    message = "Could not allow \(preset.displayName) to run: \(enableResult.failureSummary ?? "user launch agent could not be enabled")."
+                    commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                    return
+                }
+                setPresetKeptOffHandler?(preset, false)
+            } else {
+                enableResult = .notNeeded
+            }
+
             let agentResult = await lifecycle.bootstrapUserLaunchAgents(for: preset)
             guard agentResult.succeeded else {
                 lifecycleReport = LifecycleReport(
                     title: "\(preset.displayName) Service Results",
-                    jobs: daemonResult.jobs + agentResult.jobs
+                    jobs: daemonResult.jobs + enableResult.jobs + agentResult.jobs
                 )
                 message = "Could not open \(preset.displayName): \(agentResult.failureSummary ?? "required user job failed")."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
-            let serviceJobs = daemonResult.jobs + agentResult.jobs
+            let serviceJobs = daemonResult.jobs + enableResult.jobs + agentResult.jobs
             lifecycleReport = serviceJobs.isEmpty
                 ? nil
                 : LifecycleReport(
@@ -318,7 +337,9 @@ final class ProcessManager: ObservableObject {
                 message = "\(preset.displayName) was launched, but TaskScope could not verify its final state."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if verified || snapshot(for: preset).isMainRunning {
-                let restored = daemonResult.didChangeState || agentResult.didChangeState
+                let restored = daemonResult.didChangeState
+                    || enableResult.didChangeState
+                    || agentResult.didChangeState
                 message = restored
                     ? "Opened \(preset.displayName) after restoring required services."
                     : "Opened \(preset.displayName)."
@@ -329,6 +350,122 @@ final class ProcessManager: ObservableObject {
             }
         }
         return commandResult
+    }
+
+    /// Persists the user's intent and disables the preset's per-user launch jobs
+    /// before stopping its ordinary app/helper processes. Protected system daemons
+    /// are never signalled or disabled by this path.
+    @discardableResult
+    func keepOff(
+        _ preset: WatchedAppPreset,
+        recordIntent: Bool = true
+    ) async -> TaskScopeCommandResult {
+        if recordIntent {
+            setPresetKeptOffHandler?(preset, true)
+        }
+
+        var commandResult = TaskScopeCommandResult(
+            status: .failed,
+            message: "Keep Off did not complete."
+        )
+        await runAction(kind: .mutation) {
+            let inventoryWasAvailable: Bool
+            switch await currentSnapshot(for: preset) {
+            case .success:
+                inventoryWasAvailable = true
+            case .failure:
+                inventoryWasAvailable = false
+            }
+            let disableResult = await lifecycle.disableUserLaunchAgents(for: preset)
+            lifecycleReport = disableResult.jobs.isEmpty
+                ? nil
+                : LifecycleReport(
+                    title: "\(preset.displayName) Keep Off",
+                    jobs: disableResult.jobs
+                )
+
+            guard inventoryWasAvailable else {
+                message = disableResult.succeeded
+                    ? "Keep Off disabled relaunch jobs, but the process list was unavailable; running processes were not signalled and enforcement will retry."
+                    : "Keep Off remains enabled, but TaskScope could neither verify processes nor disable relaunch jobs."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
+            }
+
+            var terminationOutcomes: [ProcessTerminationOutcome] = []
+            for (index, name) in preset.killableNames.enumerated() {
+                let outcome = index == 0
+                    ? await lifecycle.terminateMainProcess(for: preset)
+                    : await lifecycle.terminateHelperProcess(named: name, for: preset)
+                terminationOutcomes.append(outcome)
+            }
+            await lifecycle.settleAfterProcessChange()
+            let refreshed = await refreshAfterMutation()
+            let nowSnapshot = snapshot(for: preset)
+
+            if !disableResult.succeeded {
+                message = "Keep Off is enabled, but launch-agent suppression failed: \(disableResult.failureSummary ?? "unknown failure")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if terminationOutcomes.contains(.inventoryUnavailable) {
+                message = "Keep Off disabled relaunch jobs, but the process list became unavailable before app processes could be stopped."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if terminationOutcomes.contains(.signalRejected) {
+                message = "Keep Off disabled relaunch jobs, but a running process rejected the stop signal."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if terminationOutcomes.contains(.escalationUnavailable) || !refreshed {
+                message = "Keep Off is enabled, but TaskScope could not verify the final process state."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if nowSnapshot.isMainRunning || nowSnapshot.hasHelpers {
+                message = "Keep Off is enabled, but user-facing GlobalProtect processes may still run."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else {
+                message = nowSnapshot.protectedRunning.isEmpty
+                    ? "\(preset.displayName) is kept off. Its user launch agents are disabled."
+                    : "\(preset.displayName) app is kept off. Protected system service remains available."
+                commandResult = TaskScopeCommandResult(status: .completed, message: message)
+            }
+        }
+        return commandResult
+    }
+
+    /// Clears persistent user-agent suppression without launching the app. This
+    /// makes the toggle reversible while leaving explicit Open as the only action
+    /// that starts GlobalProtect through TaskScope.
+    @discardableResult
+    func allowToRun(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
+        var commandResult = TaskScopeCommandResult(
+            status: .failed,
+            message: "Could not allow \(preset.displayName) to run."
+        )
+        await runAction(kind: .mutation) {
+            let enableResult = await lifecycle.enableUserLaunchAgents(for: preset)
+            lifecycleReport = enableResult.jobs.isEmpty
+                ? nil
+                : LifecycleReport(
+                    title: "\(preset.displayName) Keep Off",
+                    jobs: enableResult.jobs
+                )
+            guard enableResult.succeeded else {
+                message = "Keep Off remains enabled: \(enableResult.failureSummary ?? "user launch agent could not be enabled")."
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
+            }
+            setPresetKeptOffHandler?(preset, false)
+            message = "\(preset.displayName) is allowed to run. Nothing was started."
+            commandResult = TaskScopeCommandResult(status: .completed, message: message)
+        }
+        return commandResult
+    }
+
+    /// Enforces persisted Keep Off intent after startup and if a user-facing job
+    /// is restored externally. Routine polling skips work once only a protected
+    /// system service (or nothing) remains.
+    func enforceKeptOffPresets(force: Bool = false) async {
+        for preset in keptOffPresetsProvider?() ?? [] {
+            let current = snapshot(for: preset)
+            guard force || current.isMainRunning || current.hasHelpers else { continue }
+            _ = await keepOff(preset, recordIntent: false)
+        }
     }
 
     @discardableResult
@@ -772,4 +909,7 @@ final class ProcessManager: ObservableObject {
 
     var watchedAppsProvider: (() -> [WatchedAppPreset])?
     var processListLimitProvider: (() -> Int)?
+    var keptOffPresetsProvider: (() -> [WatchedAppPreset])?
+    var isPresetKeptOffProvider: ((WatchedAppPreset) -> Bool)?
+    var setPresetKeptOffHandler: ((WatchedAppPreset, Bool) -> Void)?
 }

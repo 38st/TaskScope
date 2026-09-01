@@ -34,6 +34,7 @@ final class ProcessConfirmationState: ObservableObject {
         case quitApp = "Quit App"
         case quitHelpers = "Quit Helpers"
         case quitAll = "Quit All Killable"
+        case keepOff = "Keep GlobalProtect Off"
     }
 
     struct PendingPresetAction: Equatable {

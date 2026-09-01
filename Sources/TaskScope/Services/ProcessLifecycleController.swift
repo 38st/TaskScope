@@ -144,6 +144,100 @@ enum ProcessLifecycleController {
         return LifecycleBatchResult(jobs: results)
     }
 
+    /// Persistently disables configured per-user jobs and unloads any live
+    /// instances. This changes only the current user's launchd domain; protected
+    /// system launch daemons are deliberately outside its scope.
+    static func disableUserLaunchAgents(
+        for preset: WatchedAppPreset,
+        runtime: ProcessLifecycleRuntime = .live
+    ) async -> LifecycleBatchResult {
+        let jobs = preset.lifecycleUserLaunchAgentJobs
+        guard !jobs.isEmpty else { return .notNeeded }
+        let uid = runtime.userID
+        var results: [LifecycleJobResult] = []
+
+        for job in jobs.reversed() {
+            let target = "gui/\(uid)/\(job.label)"
+            let disable = await runtime.runCommand(
+                "/bin/launchctl disable \(ShellCommandRunner.shellQuoted(target))",
+                15
+            )
+            guard disable.succeeded else {
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .failed,
+                    detail: commandFailure(disable, fallback: "Could not disable the user launch agent.")
+                ))
+                continue
+            }
+
+            switch await inspectLaunchJob(target, runtime: runtime) {
+            case .notLoaded:
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .changed,
+                    detail: "Disabled persistently; already unloaded."
+                ))
+            case .failed(let detail):
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .failed,
+                    detail: "Disabled, but could not inspect the live job: \(detail)"
+                ))
+            case .loaded:
+                let bootout = await runtime.runCommand(
+                    "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))",
+                    15
+                )
+                let after = await inspectLaunchJob(target, runtime: runtime)
+                let didUnload = after == .notLoaded
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: bootout.succeeded && didUnload ? .changed : .failed,
+                    detail: bootout.succeeded && didUnload
+                        ? "Disabled persistently and unloaded."
+                        : lifecycleInspectionFailure(
+                            after,
+                            commandResult: bootout,
+                            fallback: "The disabled job remained loaded."
+                        )
+                ))
+            }
+        }
+
+        await settleAfterProcessChange(runtime: runtime)
+        return LifecycleBatchResult(jobs: results)
+    }
+
+    /// Clears the persistent per-user disable bit without starting or restarting
+    /// anything. The ordinary bootstrap path remains responsible for loading and
+    /// verifying jobs when the user explicitly opens the preset.
+    static func enableUserLaunchAgents(
+        for preset: WatchedAppPreset,
+        runtime: ProcessLifecycleRuntime = .live
+    ) async -> LifecycleBatchResult {
+        let jobs = preset.lifecycleUserLaunchAgentJobs
+        guard !jobs.isEmpty else { return .notNeeded }
+        let uid = runtime.userID
+        var results: [LifecycleJobResult] = []
+
+        for job in jobs {
+            let target = "gui/\(uid)/\(job.label)"
+            let result = await runtime.runCommand(
+                "/bin/launchctl enable \(ShellCommandRunner.shellQuoted(target))",
+                15
+            )
+            results.append(LifecycleJobResult(
+                label: job.label,
+                state: result.succeeded ? .changed : .failed,
+                detail: result.succeeded
+                    ? "Persistent disable cleared; no process was started."
+                    : commandFailure(result, fallback: "Could not re-enable the user launch agent.")
+            ))
+        }
+        return LifecycleBatchResult(jobs: results)
+    }
+
     static func bootstrapUserLaunchAgents(
         for preset: WatchedAppPreset,
         runtime: ProcessLifecycleRuntime = .live
@@ -157,8 +251,10 @@ enum ProcessLifecycleController {
             guard runtime.fileExists(job.plistPath) else {
                 results.append(LifecycleJobResult(
                     label: job.label,
-                    state: .missing,
-                    detail: "Missing plist at \(job.plistPath)."
+                    state: job.isRequired ? .missing : .alreadyUnloaded,
+                    detail: job.isRequired
+                        ? "Missing plist at \(job.plistPath)."
+                        : "Optional launch agent is not installed at \(job.plistPath)."
                 ))
                 continue
             }

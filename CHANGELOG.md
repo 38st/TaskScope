@@ -11,6 +11,9 @@ All notable changes to TaskScope are documented in this file. The project uses
   file reads, and a field-by-field, non-mutating import preview.
 - Added stale process-inventory status with the last successful observation and
   a visible retry path.
+- Added a confirmed, persistent Keep GlobalProtect Off control for the known
+  per-user `pangpa` and optional `pangps` launch agents. Open explicitly clears
+  the disable state; protected system daemons remain untouched.
 
 ### Security
 
@@ -24,6 +27,8 @@ All notable changes to TaskScope are documented in this file. The project uses
   occurrence is treated as handled.
 - Normalized and rejected duplicate launch-job labels and plist paths across
   imported and persisted preset data.
+- Migrated the built-in GlobalProtect definition to recognize both supported
+  per-user agent layouts without accepting custom privileged fields.
 
 ### Fixed
 

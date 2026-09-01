@@ -136,6 +136,28 @@ elevated effect. Managed security software can reject or undo the operation;
 TaskScope must direct users to their organization rather than escalating around
 management controls.
 
+### Persistent GlobalProtect user-agent suppression
+
+The built-in preset can persistently disable and unload the known GlobalProtect
+jobs in the current user's launchd domain. This is intentionally stronger than
+an ordinary process stop and can prevent a required VPN UI or per-user service
+from running.
+
+Required invariants:
+
+- require visible in-app confirmation before first enabling Keep Off;
+- restrict the UI and persisted preference to the immutable built-in identity;
+- operate only on the fixed per-user `pangpa` and optional `pangps` labels;
+- never disable, unload, or signal a protected system launch daemon;
+- re-enable user agents only through an explicit Open or toggle-off action;
+- clear the persistent disable before bootstrap and report each job result;
+- preserve startup enforcement across app relaunch and login without exposing a
+  destructive URL route.
+
+Residual risk: endpoint-management software can restore the jobs, and product
+versions can move `PanGPS` between user and system launchd domains. TaskScope
+handles the known user-agent variants but does not override system policy.
+
 ### URL, Shortcut, and login automation
 
 Any local app, webpage handler, or document can attempt to open a custom URL.

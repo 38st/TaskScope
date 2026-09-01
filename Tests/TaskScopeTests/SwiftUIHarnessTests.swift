@@ -26,6 +26,10 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertTrue(operations.contains { $0.contains("example.agent") })
         XCTAssertTrue(operations.contains { $0.contains("ExampleHelper") })
         XCTAssertTrue(operations.contains { $0.contains("Never signal") && $0.contains("ExampleDaemon") })
+
+        let globalProtectOperations = SettingsView.lifecycleDryRunOperations(for: .globalProtect)
+        XCTAssertTrue(globalProtectOperations.contains { $0.contains("Keep Off") })
+        XCTAssertTrue(globalProtectOperations.contains { $0.contains("do not disable") })
     }
 
     func testQuickPresetPrefersTrustedExecutablePathOverReportedCommand() {
@@ -220,6 +224,13 @@ final class SwiftUIHarnessTests: XCTestCase {
         let confirmation = ProcessConfirmationState()
         let view = makePopover(fixture: fixture, confirmationState: confirmation)
         let card = try view.inspect().find(PresetCard.self)
+
+        XCTAssertNoThrow(try card.find(text: "Keep GlobalProtect Off"))
+        XCTAssertNoThrow(
+            try card.find(
+                text: "Persistently disables its user launch agents. Open turns them back on."
+            )
+        )
 
         try card.find(button: "Quit All Killable").tap()
 

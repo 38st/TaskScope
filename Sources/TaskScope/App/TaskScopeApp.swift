@@ -210,7 +210,7 @@ struct TaskScopeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var processManager: ProcessManager
     @StateObject private var loginItemManager = LoginItemManager()
-    @StateObject private var settings = SettingsStore()
+    @StateObject private var settings: SettingsStore
     @StateObject private var watchedApps: WatchedAppsStore
     @StateObject private var savedSelections = SavedSelectionsStore()
     @StateObject private var autoStopRules: AutoStopRulesStore
@@ -225,6 +225,7 @@ struct TaskScopeApp: App {
     init() {
         let systemInventory = SystemProcessInventory()
         let sharedInventory = CoalescingProcessInventory(upstream: systemInventory)
+        let settings = SettingsStore()
         let processManager = ProcessManager(
             processInventory: sharedInventory,
             verificationInventory: systemInventory
@@ -241,11 +242,24 @@ struct TaskScopeApp: App {
         )
 
         processManager.watchedAppsProvider = { watchedApps.presets }
+        processManager.keptOffPresetsProvider = {
+            settings.keepGlobalProtectOff
+                ? watchedApps.presets.filter { $0.id == WatchedAppPreset.globalProtectID }
+                : []
+        }
+        processManager.isPresetKeptOffProvider = { preset in
+            preset.id == WatchedAppPreset.globalProtectID && settings.keepGlobalProtectOff
+        }
+        processManager.setPresetKeptOffHandler = { preset, keptOff in
+            guard preset.id == WatchedAppPreset.globalProtectID else { return }
+            settings.keepGlobalProtectOff = keptOff
+        }
         AppCommandBus.shared.install { command in
             await coordinator.perform(command)
         }
 
         _processManager = StateObject(wrappedValue: processManager)
+        _settings = StateObject(wrappedValue: settings)
         _watchedApps = StateObject(wrappedValue: watchedApps)
         _autoStopRules = StateObject(wrappedValue: autoStopRules)
         _processHistory = StateObject(wrappedValue: processHistory)
@@ -441,6 +455,7 @@ struct TaskScopeApp: App {
             )
         }
         await processManager.refreshWatchedStatus(showMessage: false)
+        await processManager.enforceKeptOffPresets(force: true)
 
         if settings.enableNotifications {
             await NotificationService.shared.requestAuthorization()

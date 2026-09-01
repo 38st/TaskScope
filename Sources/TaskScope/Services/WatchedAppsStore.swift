@@ -103,6 +103,9 @@ final class WatchedAppsStore: ObservableObject {
             } else {
                 allowsPersistence = true
                 recoveredDecodedPayload = false
+                if validated.presets != decoded {
+                    persistence.save(validated.presets)
+                }
             }
         } else {
             let backupKey = loaded.backupKey ?? "\(key).corruptBackup"
@@ -363,9 +366,12 @@ final class WatchedAppsStore: ObservableObject {
             return (nil, "Protected process names cannot also be main or helper process names.")
         }
         if value.id == WatchedAppPreset.globalProtectID {
-            guard value.hasCanonicalGlobalProtectIdentity else {
+            guard value.hasSupportedGlobalProtectIdentity else {
                 return (nil, "The built-in GlobalProtect lifecycle identity cannot be modified.")
             }
+            let notificationsEnabled = value.notificationsEnabled
+            value = .globalProtect
+            value.notificationsEnabled = notificationsEnabled
         } else if !value.systemLaunchDaemonJobs.isEmpty {
             return (nil, "Custom presets cannot configure privileged system launch daemons.")
         }

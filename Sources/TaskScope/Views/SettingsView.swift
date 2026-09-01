@@ -264,7 +264,10 @@ struct SettingsView: View {
                             Text("Protected: \(displayedPreset.protectedProcessNames.joined(separator: ", "))")
                         }
                         ForEach(Array(displayedPreset.userLaunchAgentJobs.enumerated()), id: \.offset) { _, job in
-                            Text("Launch agent: \(job.label) — \(job.plistPath)")
+                            Text(
+                                "Launch agent: \(job.label) — \(job.plistPath)"
+                                    + (job.isRequired ? "" : " (optional)")
+                            )
                         }
                         ForEach(Array(displayedPreset.systemLaunchDaemonJobs.enumerated()), id: \.offset) { _, job in
                             Text("Fixed daemon: \(job.label) — \(job.plistPath)")
@@ -344,13 +347,14 @@ struct SettingsView: View {
 
     static func lifecycleDryRunOperations(for preset: WatchedAppPreset) -> [String] {
         var operations = [
-            "Every lifecycle action first requires a fresh process inventory; an unavailable inventory stops the action."
+            "Open and ordinary quit actions first require a fresh process inventory; an unavailable inventory stops those actions."
         ]
         operations.append(contentsOf: preset.systemLaunchDaemonJobs.map { job in
             "Open: inspect fixed daemon \(job.label) at \(job.plistPath); if absent, request administrator approval to bootstrap it and verify \(job.processName)."
         })
         operations.append(contentsOf: preset.userLaunchAgentJobs.map { job in
-            "Open: inspect user launch agent \(job.label) at \(job.plistPath); load, enable, start, and verify it only when not already loaded."
+            let availability = job.isRequired ? "" : " when it is installed"
+            return "Open: inspect user launch agent \(job.label) at \(job.plistPath); load, enable, start, and verify it\(availability) only when not already loaded."
         })
         operations.append(
             "Open: open \(preset.appPath) only when \(preset.mainProcessName) is not already running, then verify it."
@@ -374,6 +378,11 @@ struct SettingsView: View {
         if !preset.protectedProcessNames.isEmpty {
             operations.append(
                 "Never signal protected processes through ordinary close: \(preset.protectedProcessNames.joined(separator: ", "))."
+            )
+        }
+        if preset.id == WatchedAppPreset.globalProtectID {
+            operations.append(
+                "Keep Off: persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; do not disable or signal a protected system launch daemon. Open explicitly re-enables the user agents."
             )
         }
         return operations

@@ -39,7 +39,10 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
         XCTAssertEqual(userReplaced.lifecycleUserLaunchAgentJobs.map(\.label), ["mine.agent"])
         XCTAssertEqual(
             WatchedAppPreset.globalProtect.lifecycleUserLaunchAgentJobs.map(\.label),
-            ["com.paloaltonetworks.gp.pangpa"]
+            [
+                "com.paloaltonetworks.gp.pangpa",
+                "com.paloaltonetworks.gp.pangps"
+            ]
         )
 
         // Out of the box the seeded preset is exactly this shape.
@@ -70,7 +73,10 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
         // An absent plist with the job not loaded means there was nothing to unload,
         // so the stop succeeded. `.missing` is now reserved for the bootstrap paths,
         // where an absent plist really does block the requested action.
-        XCTAssertEqual(manager.lifecycleReport?.jobs.map(\.state), [.alreadyUnloaded])
+        XCTAssertEqual(
+            manager.lifecycleReport?.jobs.map(\.state),
+            [.alreadyUnloaded, .alreadyUnloaded]
+        )
         XCTAssertTrue(manager.lifecycleReport?.jobs.allSatisfy(\.succeeded) ?? false)
 
         XCTAssertEqual(

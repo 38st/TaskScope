@@ -29,6 +29,7 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.processListLimit, 120)
         XCTAssertEqual(store.searchText, "Codex")
         XCTAssertFalse(store.enableNotifications)
+        XCTAssertFalse(store.keepGlobalProtectOff)
         XCTAssertEqual(store.sortKey, .cpu)
     }
 
@@ -92,5 +93,16 @@ final class SettingsStoreTests: XCTestCase {
         let relaunched = SettingsStore(userDefaults: defaults, key: key)
         XCTAssertEqual(relaunched.refreshIntervalSeconds, 22)
         XCTAssertTrue(relaunched.enableNotifications)
+    }
+
+    func testKeepGlobalProtectOffPersistsAndDefaultsOffForOlderSettings() throws {
+        let oldJSON = #"{"schemaVersion":2,"refreshIntervalSeconds":10}"#
+        defaults.set(try XCTUnwrap(oldJSON.data(using: .utf8)), forKey: key)
+        let migrated = SettingsStore(userDefaults: defaults, key: key)
+        XCTAssertFalse(migrated.keepGlobalProtectOff)
+
+        migrated.keepGlobalProtectOff = true
+        let relaunched = SettingsStore(userDefaults: defaults, key: key)
+        XCTAssertTrue(relaunched.keepGlobalProtectOff)
     }
 }

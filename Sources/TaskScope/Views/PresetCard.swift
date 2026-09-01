@@ -6,6 +6,9 @@ struct PresetCard: View {
     var onQuitApp: () -> Void
     var onQuitHelpers: () -> Void
     var onQuitAll: () -> Void
+    var isKeptOff: Bool
+    var isKeepOffControlEnabled: Bool
+    var onKeepOffChanged: @MainActor @Sendable (Bool) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -29,6 +32,29 @@ struct PresetCard: View {
                 PresetActionButton(title: "Quit Helpers", systemImage: "wrench.and.screwdriver", role: .destructive, action: onQuitHelpers)
                 PresetActionButton(title: "Quit All Killable", systemImage: "stop.circle", role: .destructive, action: onQuitAll)
             }
+
+            if snapshot.preset.id == WatchedAppPreset.globalProtectID {
+                Divider()
+                Toggle(
+                    isOn: Binding(
+                        get: { isKeptOff },
+                        set: onKeepOffChanged
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Keep GlobalProtect Off")
+                            .fontWeight(.medium)
+                        Text("Persistently disables its user launch agents. Open turns them back on.")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .toggleStyle(.switch)
+                .disabled(!isKeepOffControlEnabled)
+                .accessibilityHint(
+                    "Does not disable a protected system launch daemon."
+                )
+            }
         }
         .padding(12)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
@@ -49,14 +75,18 @@ struct PresetCard: View {
     }
 
     private var color: Color {
-        if snapshot.isMainRunning { .red }
+        if isKeptOff && (snapshot.isMainRunning || snapshot.hasHelpers) { .orange }
+        else if isKeptOff { .green }
+        else if snapshot.isMainRunning { .red }
         else if snapshot.hasHelpers { .yellow }
         else if !snapshot.protectedRunning.isEmpty { .orange }
         else { .green }
     }
 
     private var label: String {
-        if snapshot.isMainRunning { "Active" }
+        if isKeptOff && (snapshot.isMainRunning || snapshot.hasHelpers) { "Enforcing" }
+        else if isKeptOff { "Kept Off" }
+        else if snapshot.isMainRunning { "Active" }
         else if snapshot.hasHelpers { "Helpers" }
         else if !snapshot.protectedRunning.isEmpty { "Services" }
         else { "Quiet" }

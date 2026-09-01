@@ -26,7 +26,8 @@ TaskScope should represent them as unavailable rather than inventing a value.
 
 TaskScope uses standard macOS preferences for:
 
-- refresh, display, search, sorting, threshold, and notification settings;
+- refresh, display, search, sorting, threshold, notification, and the explicit
+  Keep GlobalProtect Off preference;
 - watched-app presets, including app paths, user launch-agent plist paths and
   labels, process names, and notification choices; the immutable built-in
   GlobalProtect definition also contains its fixed protected-daemon fields;
@@ -74,6 +75,11 @@ screenshot to a public issue.
   cannot add privileged daemon jobs, and TaskScope does not store the password.
 - **Launch at Login:** optional and controlled in TaskScope Settings and macOS
   Login Items.
+
+Keep GlobalProtect Off also stores a per-user launchd disable override for the
+known GlobalProtect user launch-agent labels. Turning the control off or choosing
+Open clears those overrides. TaskScope does not use this control on a protected
+system launch daemon.
 
 Revoking a permission in System Settings can limit the related feature without
 deleting TaskScope's preferences.

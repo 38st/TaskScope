@@ -9,10 +9,12 @@ presets, lifecycle controls, saved selections, auto-stop rules, notifications,
 Shortcuts actions, and process-history charts.
 
 TaskScope includes a GlobalProtect preset. It can open the GlobalProtect app,
-manage its configured user launch agent, and request macOS administrator
+manage its known per-user launch agents, and request macOS administrator
 approval when the protected `PanGPS` service must be restored. It does not
 uninstall GlobalProtect, delete or rename launch files, or stop the protected
-system daemon during a normal close operation. GlobalProtect paths and service
+system daemon. Its explicit **Keep GlobalProtect Off** control persistently
+disables and unloads only per-user GlobalProtect launch agents; **Open** clears
+that disable state. GlobalProtect paths and service
 behavior vary by product version and organization; this integration is not a
 replacement for an organization's supported VPN recovery process.
 
@@ -142,6 +144,9 @@ be exported from Settings when their stored data is readable. See
   A lifecycle dry run lists later Open/Close operations without performing
   them. Custom presets cannot configure privileged system launch daemons.
 - Open or close watched apps through one lifecycle path with per-job reporting.
+- Keep the built-in GlobalProtect user app off across relaunches and login by
+  persistently disabling its known per-user launch agents. This is reversible
+  through Open and never disables or signals the protected system daemon.
 - Create Prompt, Auto Stop, or Log Only runtime rules with event history. Auto
   Stop requires a trusted executable path; legacy name-only Auto Stop rules
   load disabled until reviewed.
@@ -207,6 +212,9 @@ ad-hoc signature is insufficient for App Intents execution.
   approval to restore its fixed protected daemon. Custom presets cannot define
   or alter privileged system-daemon jobs, and TaskScope does not bypass macOS
   authorization.
+- Keep GlobalProtect Off changes the current user's launchd overrides and can
+  disconnect or prevent a required VPN session. TaskScope confirms the action,
+  never applies it through a URL, and leaves protected system daemons alone.
 - Imported presets are untrusted configuration. Importing must not execute a
   lifecycle action, but a later user-triggered action can use a custom preset's
   app path, user launch-agent labels and plist paths, and process names. Review

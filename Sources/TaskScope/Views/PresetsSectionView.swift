@@ -3,6 +3,7 @@ import SwiftUI
 struct PresetsSectionView: View {
     @ObservedObject var processManager: ProcessManager
     @ObservedObject var loginItemManager: LoginItemManager
+    @ObservedObject var settings: SettingsStore
     @ObservedObject var confirmationState: ProcessConfirmationState
 
     var body: some View {
@@ -26,6 +27,19 @@ struct PresetsSectionView: View {
                         },
                         onQuitAll: {
                             confirmationState.requestPresetAction(.quitAll, preset: snapshot.preset)
+                        },
+                        isKeptOff: snapshot.preset.id == WatchedAppPreset.globalProtectID
+                            && settings.keepGlobalProtectOff,
+                        isKeepOffControlEnabled: !settings.isReadOnlyAfterCorruption,
+                        onKeepOffChanged: { keptOff in
+                            if keptOff {
+                                confirmationState.requestPresetAction(
+                                    .keepOff,
+                                    preset: snapshot.preset
+                                )
+                            } else {
+                                Task { await processManager.allowToRun(snapshot.preset) }
+                            }
                         }
                     )
                 }

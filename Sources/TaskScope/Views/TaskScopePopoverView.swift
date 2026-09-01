@@ -199,6 +199,8 @@ struct TaskScopePopoverView: View {
                         _ = await processManager.quitHelpers(preset)
                     case .quitAll:
                         _ = await processManager.quitAllKillable(preset)
+                    case .keepOff:
+                        _ = await processManager.keepOff(preset)
                     }
                 }
             }
@@ -694,6 +696,7 @@ struct TaskScopePopoverView: View {
         PresetsSectionView(
             processManager: processManager,
             loginItemManager: loginItemManager,
+            settings: settings,
             confirmationState: confirmationState
         )
     }
@@ -959,8 +962,13 @@ struct TaskScopePopoverView: View {
             names = pending.preset.helperProcessNames
         case .quitAll:
             names = pending.preset.killableNames
+        case .keepOff:
+            names = pending.preset.killableNames
         }
         let targets = names.isEmpty ? "no configured processes" : names.joined(separator: ", ")
+        if pending.action == .keepOff {
+            return "TaskScope will persistently disable GlobalProtect's per-user launch agents and stop current user-facing matches: \(targets). A protected system daemon, if installed, remains untouched."
+        }
         return "TaskScope will stop the currently running matches for: \(targets)."
     }
 

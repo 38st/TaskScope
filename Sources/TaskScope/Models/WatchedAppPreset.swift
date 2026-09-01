@@ -3,6 +3,24 @@ import Foundation
 struct UserLaunchAgentJob: Codable, Equatable, Hashable, Sendable {
     var label: String
     var plistPath: String
+    var isRequired: Bool
+
+    init(label: String, plistPath: String, isRequired: Bool = true) {
+        self.label = label
+        self.plistPath = plistPath
+        self.isRequired = isRequired
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case label, plistPath, isRequired
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        label = try container.decode(String.self, forKey: .label)
+        plistPath = try container.decode(String.self, forKey: .plistPath)
+        isRequired = try container.decodeIfPresent(Bool.self, forKey: .isRequired) ?? true
+    }
 }
 
 struct SystemLaunchDaemonJob: Codable, Equatable, Hashable, Sendable {
@@ -32,14 +50,14 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
     }
 
     var lifecycleUserLaunchAgentJobs: [UserLaunchAgentJob] {
-        if hasCanonicalGlobalProtectIdentity {
+        if hasSupportedGlobalProtectIdentity {
             return Self.globalProtectUserLaunchAgentJobs
         }
         return userLaunchAgentJobs
     }
 
     var lifecycleSystemLaunchDaemonJobs: [SystemLaunchDaemonJob] {
-        if hasCanonicalGlobalProtectIdentity {
+        if hasSupportedGlobalProtectIdentity {
             return Self.globalProtectSystemLaunchDaemonJobs
         }
         return []
@@ -98,14 +116,30 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
     )
 
     var hasCanonicalGlobalProtectIdentity: Bool {
+        hasFixedGlobalProtectFields
+            && userLaunchAgentJobs == Self.globalProtectUserLaunchAgentJobs
+            && systemLaunchDaemonJobs == Self.globalProtectSystemLaunchDaemonJobs
+    }
+
+    /// Recognizes the previous built-in payload so a trusted schema migration can
+    /// add the optional per-user PanGPS agent without putting preferences into
+    /// recovery mode. No custom identity or privileged field is accepted here.
+    var hasSupportedGlobalProtectIdentity: Bool {
+        hasFixedGlobalProtectFields
+            && [
+                Self.globalProtectUserLaunchAgentJobs,
+                Self.legacyGlobalProtectUserLaunchAgentJobs
+            ].contains(userLaunchAgentJobs)
+            && systemLaunchDaemonJobs == Self.globalProtectSystemLaunchDaemonJobs
+    }
+
+    private var hasFixedGlobalProtectFields: Bool {
         id == Self.globalProtectID
             && displayName == "GlobalProtect"
             && mainProcessName == "GlobalProtect"
             && helperProcessNames == ["PanGPA"]
             && protectedProcessNames == ["PanGPS"]
             && appPath == "/Applications/GlobalProtect.app"
-            && userLaunchAgentJobs == Self.globalProtectUserLaunchAgentJobs
-            && systemLaunchDaemonJobs == Self.globalProtectSystemLaunchDaemonJobs
     }
 
     func matchesLookupName(_ name: String) -> Bool {
@@ -117,6 +151,18 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
     }
 
     static let globalProtectUserLaunchAgentJobs = [
+        UserLaunchAgentJob(
+            label: "com.paloaltonetworks.gp.pangpa",
+            plistPath: "/Library/LaunchAgents/com.paloaltonetworks.gp.pangpa.plist"
+        ),
+        UserLaunchAgentJob(
+            label: "com.paloaltonetworks.gp.pangps",
+            plistPath: "/Library/LaunchAgents/com.paloaltonetworks.gp.pangps.plist",
+            isRequired: false
+        )
+    ]
+
+    static let legacyGlobalProtectUserLaunchAgentJobs = [
         UserLaunchAgentJob(
             label: "com.paloaltonetworks.gp.pangpa",
             plistPath: "/Library/LaunchAgents/com.paloaltonetworks.gp.pangpa.plist"
