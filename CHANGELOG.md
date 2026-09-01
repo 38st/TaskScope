@@ -17,8 +17,8 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
-- Removed hosted GitHub Actions CI and scheduled Dependabot update jobs. The
-  complete build, test, and packaging gate remains available locally.
+- Removed hosted GitHub Actions CI. The complete build, test, and packaging
+  gate remains available locally; weekly Swift dependency updates remain enabled.
 
 ### Security
 
