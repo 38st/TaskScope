@@ -22,9 +22,8 @@ body:
       label: Installation source
       description: How was this copy of TaskScope installed?
       options:
-        - GitHub release download
-        - Built from source
-        - Local development package
+        - Built from source (swift build)
+        - Local development package (script/build_and_run.sh or script/install.sh)
         - Other or unknown
     validations:
       required: true

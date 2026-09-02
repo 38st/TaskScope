@@ -8,7 +8,8 @@ staged app is not itself a published release.
 ## Current 1.0.0 scope
 
 - Version: `1.0.0`
-- Build: `2`
+- Build: `3` (the 1.0.0 tag carries build `2`; `script/release.sh` refuses a
+  build number that is not greater than the latest `v*` tag's)
 - Deployment target: macOS 14
 - Verified packaging architecture: arm64 only
 - Distribution: GitHub source release and local-development packaging
@@ -97,7 +98,7 @@ Stage and verify the current-architecture bundle:
 
 ```bash
 ./script/build_and_run.sh --stage
-./script/build_and_run.sh --verify
+./script/build_and_run.sh --verify   # verifies the bundle staged above without rebuilding it
 codesign --verify --deep --strict dist/TaskScope.app
 lipo -archs dist/TaskScope.app/Contents/MacOS/TaskScope
 /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' dist/TaskScope.app/Contents/Info.plist
@@ -142,7 +143,9 @@ With those values configured securely outside Git, run:
 ```
 
 The script requires a clean worktree; validates identifier syntax, version,
-build, arm64 architecture, deployment target, and App Intents metadata; builds
+build (which must exceed the build number at the latest `v*` tag), the
+presence of a `## [<version>]` changelog heading, arm64 architecture,
+deployment target, and App Intents metadata; builds
 with hardened runtime and no entitlements; verifies the Developer ID team;
 creates matching app/dSYM UUIDs; submits to Apple; staples and
 Gatekeeper-verifies the app; round-trips the final ZIP; and emits the app ZIP,
@@ -186,8 +189,9 @@ finish all credential-independent checks and label the release source only.
 1. Review the complete diff and rerun the gate after the final change.
 2. Commit the release preparation to the default branch with a descriptive
    message and push normally. Never force-push or rewrite public history.
-3. Verify the pushed commit is the intended release commit and required checks
-   are successful.
+3. Verify the pushed commit is the intended release commit and confirm the
+   recorded local gate output (see "Canonical automated gate") passed for that
+   exact commit. There are no hosted checks.
 4. Create `v<version>` at that exact commit. Use the repository's configured
    signed-tag mechanism; if no signing mechanism exists, do not claim the tag is
    signed.

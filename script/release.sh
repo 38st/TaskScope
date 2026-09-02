@@ -76,6 +76,23 @@ validate_credential_independent_inputs() {
   xcrun --find dsymutil >/dev/null
   xcrun --find notarytool >/dev/null
   xcrun --find stapler >/dev/null
+
+  # Build numbers must increase for every distributed artifact: refuse to
+  # release a build number that is not greater than the latest v* tag's.
+  local latest_tag
+  local tagged_build
+  latest_tag="$(git -C "$ROOT_DIR" tag --list 'v*' --sort=-version:refname | head -n 1)"
+  if [[ -n "$latest_tag" ]]; then
+    tagged_build="$(git -C "$ROOT_DIR" show "$latest_tag:BUILD_NUMBER" 2>/dev/null | tr -d '[:space:]')"
+    if [[ "$tagged_build" =~ ^[0-9]+$ ]] && (( APP_BUILD_NUMBER <= tagged_build )); then
+      fail "BUILD_NUMBER ($APP_BUILD_NUMBER) must be greater than the value at $latest_tag ($tagged_build)."
+    fi
+  fi
+
+  # The release notes must exist before the artifact does.
+  if ! /usr/bin/grep -Eq "^## \[$APP_VERSION\]" "$ROOT_DIR/CHANGELOG.md"; then
+    fail "CHANGELOG.md lacks a '## [$APP_VERSION]' heading for this release."
+  fi
 }
 
 cleanup_release() {

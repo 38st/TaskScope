@@ -27,7 +27,9 @@ public issue for a vulnerability or private conduct report; follow
 
 ### App will not start or Shortcuts cannot discover actions
 
-1. Run `./script/build_and_run.sh --verify` from the source checkout.
+1. Run `./script/build_and_run.sh --stage` and then
+   `./script/build_and_run.sh --verify` from the source checkout. `--verify`
+   checks the bundle that is already staged and does not rebuild it.
 2. Verify the installed app, not the bare SwiftPM executable, is being launched.
 3. An ad-hoc signature cannot execute TaskScope App Intents. Rebuild with an
    eligible Apple Development identity for local Shortcuts testing.
@@ -87,10 +89,14 @@ managed installer or IT support when its protected service cannot be restored.
 Use **Keep GlobalProtect Off** on the built-in preset instead of repeatedly
 killing its window. The control disables and unloads the known per-user
 `pangpa` and, when installed, `pangps` launch agents. It persists across login.
-Choosing **Open** or turning the control off re-enables those user agents. A
-protected system `PanGPS` launch daemon remains outside this control; if policy
-or management software restores user agents, consult the organization managing
-the Mac.
+Choosing **Open** or turning the control off re-enables those user agents.
+
+The per-user `pangps` agent runs a process that is also named `PanGPS`. The
+protected system `PanGPS` launch daemon (the one running as root) remains
+outside this control and is never unloaded, signalled, or restarted; TaskScope
+shows a per-user instance separately as "PanGPS (user)" so it is not mistaken
+for the daemon. If policy or management software restores user agents, consult
+the organization managing the Mac.
 
 ## Export and upgrade precautions
 
@@ -102,11 +108,20 @@ that migration was tested.
 
 ## Uninstall and erase local data
 
-1. Turn off Launch at Login.
-2. Quit TaskScope.
-3. Delete the app bundle.
-4. Remove Accessibility and notification permission entries if desired.
-5. For the current development identifier only, erase preferences with:
+1. Turn off **Keep GlobalProtect Off** (or choose **Open**). The control writes
+   a persistent per-user launchd override that `defaults delete` does not
+   clear. If TaskScope is already gone, clear it manually:
+
+   ```bash
+   launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa
+   launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps
+   ```
+
+2. Turn off Launch at Login.
+3. Quit TaskScope.
+4. Delete the app bundle.
+5. Remove Accessibility and notification permission entries if desired.
+6. For the current development identifier only, erase preferences with:
 
    ```bash
    defaults delete com.local.TaskScope

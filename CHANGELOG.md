@@ -19,6 +19,21 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 - Removed hosted GitHub Actions CI. The complete build, test, and packaging
   gate remains available locally; weekly Swift dependency updates remain enabled.
+- Bumped the build number to 3. `script/release.sh` now refuses a build number
+  that is not greater than the latest `v*` tag's and a release whose version
+  has no changelog heading.
+- `script/build_and_run.sh --verify` verifies the bundle that is already
+  staged instead of rebuilding and restaging it first.
+- The app icon is rendered into explicit bitmaps so the `.icns` carries every
+  member (16 through 512 points at 1x and 2x) at its exact pixel size, and
+  bundle verification checks the full member set.
+- The uninstall instructions start with turning off Keep GlobalProtect Off,
+  because the launchd override it writes is not removed by `defaults delete`;
+  the manual `launchctl enable` recovery commands are documented.
+- Documented that Shortcuts stop actions run without the in-app confirmation
+  dialog, that Keep Off unloads the per-user `pangps` agent while the root
+  system daemon is untouched, and that the bug report template no longer offers
+  a nonexistent release download as an install source.
 
 ### Security
 

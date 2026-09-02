@@ -24,10 +24,23 @@ let specs: [(points: Int, scale: Int)] = [
 
 for spec in specs {
     let pixels = spec.points * spec.scale
-    let image = renderIcon(size: pixels)
+    let bitmap = try renderIcon(pixels: pixels)
+    // `NSImage.lockFocus` rendered at the display's backing scale, so a 16-point
+    // member came out at 32 pixels and iconutil silently dropped the 16 and 128
+    // point members. Drawing into an explicit bitmap makes the size exact.
+    guard bitmap.pixelsWide == pixels, bitmap.pixelsHigh == pixels else {
+        throw NSError(
+            domain: "TaskScopeIcon",
+            code: 2,
+            userInfo: [
+                NSLocalizedDescriptionKey:
+                    "Rendered \(bitmap.pixelsWide)x\(bitmap.pixelsHigh) pixels for a \(pixels)-pixel member."
+            ]
+        )
+    }
     let suffix = spec.scale == 1 ? "" : "@2x"
     let filename = "icon_\(spec.points)x\(spec.points)\(suffix).png"
-    try writePNG(image: image, to: iconsetURL.appendingPathComponent(filename))
+    try writePNG(bitmap: bitmap, to: iconsetURL.appendingPathComponent(filename))
 }
 
 let process = Process()
@@ -46,22 +59,46 @@ if process.terminationStatus != 0 {
 
 try? fileManager.removeItem(at: iconsetURL)
 
-func renderIcon(size: Int) -> NSImage {
-    let dimension = CGFloat(size)
-    let image = NSImage(size: NSSize(width: dimension, height: dimension))
+func renderIcon(pixels: Int) throws -> NSBitmapImageRep {
+    guard let bitmap = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: pixels,
+        pixelsHigh: pixels,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0,
+        bitsPerPixel: 0
+    ) else {
+        throw NSError(
+            domain: "TaskScopeIcon",
+            code: 3,
+            userInfo: [NSLocalizedDescriptionKey: "Could not allocate a \(pixels)-pixel bitmap."]
+        )
+    }
+    // One point per pixel: the drawing code below works in the pixel grid.
+    bitmap.size = NSSize(width: pixels, height: pixels)
 
-    image.lockFocus()
+    guard let graphicsContext = NSGraphicsContext(bitmapImageRep: bitmap) else {
+        throw NSError(
+            domain: "TaskScopeIcon",
+            code: 4,
+            userInfo: [NSLocalizedDescriptionKey: "Could not create a graphics context for \(pixels) pixels."]
+        )
+    }
+
+    NSGraphicsContext.saveGraphicsState()
     defer {
-        image.unlockFocus()
+        NSGraphicsContext.restoreGraphicsState()
     }
-
-    guard let context = NSGraphicsContext.current?.cgContext else {
-        return image
-    }
-
+    NSGraphicsContext.current = graphicsContext
+    let context = graphicsContext.cgContext
     context.setShouldAntialias(true)
     context.setAllowsAntialiasing(true)
 
+    let dimension = CGFloat(pixels)
     let bounds = CGRect(x: 0, y: 0, width: dimension, height: dimension)
     let cornerRadius = dimension * 0.22
     let backgroundPath = NSBezierPath(
@@ -85,7 +122,8 @@ func renderIcon(size: Int) -> NSImage {
     drawWaveform(in: bounds, size: dimension)
     drawPowerAccent(in: bounds, size: dimension)
 
-    return image
+    graphicsContext.flushGraphics()
+    return bitmap
 }
 
 func drawActivityLines(in bounds: CGRect, size: CGFloat) {
@@ -176,11 +214,8 @@ func drawPowerAccent(in bounds: CGRect, size: CGFloat) {
     stem.stroke()
 }
 
-func writePNG(image: NSImage, to url: URL) throws {
-    guard let tiffData = image.tiffRepresentation,
-          let bitmap = NSBitmapImageRep(data: tiffData),
-          let pngData = bitmap.representation(using: .png, properties: [:])
-    else {
+func writePNG(bitmap: NSBitmapImageRep, to url: URL) throws {
+    guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
         throw NSError(
             domain: "TaskScopeIcon",
             code: 1,

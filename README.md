@@ -10,13 +10,15 @@ Shortcuts actions, and process-history charts.
 
 TaskScope includes a GlobalProtect preset. It can open the GlobalProtect app,
 manage its known per-user launch agents, and request macOS administrator
-approval when the protected `PanGPS` service must be restored. It does not
-uninstall GlobalProtect, delete or rename launch files, or stop the protected
-system daemon. Its explicit **Keep GlobalProtect Off** control persistently
-disables and unloads only per-user GlobalProtect launch agents; **Open** clears
-that disable state. GlobalProtect paths and service
-behavior vary by product version and organization; this integration is not a
-replacement for an organization's supported VPN recovery process.
+approval only to load the protected `PanGPS` daemon when launchd does not have
+it loaded. It does not uninstall GlobalProtect, delete or rename launch files,
+and never stops or restarts the protected system daemon. Its explicit **Keep
+GlobalProtect Off** control persistently disables and unloads only per-user
+GlobalProtect launch agents; **Open** always clears that disable state before
+it loads the agents, and turning the control off clears it without starting
+anything. GlobalProtect paths and service behavior vary by product version and
+organization; this integration is not a replacement for an organization's
+supported VPN recovery process.
 
 > [!IMPORTANT]
 > The 1.0.0 repository release provides source and local-development packaging.
@@ -56,7 +58,7 @@ Other modes:
 
 ```bash
 ./script/build_and_run.sh --stage       # stage without opening
-./script/build_and_run.sh --verify      # verify the staged bundle and startup
+./script/build_and_run.sh --verify      # verify the already staged bundle (no rebuild) and its startup
 ./script/build_and_run.sh --debug       # start the debug executable in LLDB
 ./script/build_and_run.sh --logs        # stream local process logs
 ./script/build_and_run.sh --telemetry   # stream local subsystem logs only
@@ -114,11 +116,16 @@ should be assumed until a release explicitly documents and tests one.
 
 To uninstall a local build:
 
-1. Turn off **Launch at Login** in TaskScope Settings.
-2. Quit TaskScope and move `TaskScope.app` to the Trash.
-3. Remove TaskScope from Accessibility and Notifications in System Settings if
+1. Turn off **Keep GlobalProtect Off** on the GlobalProtect preset (or choose
+   **Open**). This clears the persistent per-user launchd override the control
+   writes; deleting TaskScope's preferences does not clear it. If the app is
+   already gone, run `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa`
+   and `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`.
+2. Turn off **Launch at Login** in TaskScope Settings.
+3. Quit TaskScope and move `TaskScope.app` to the Trash.
+4. Remove TaskScope from Accessibility and Notifications in System Settings if
    desired.
-4. To erase current development-build preferences as well, run
+5. To erase current development-build preferences as well, run
    `defaults delete com.local.TaskScope`. This permanently removes local
    settings, presets, rules, saved selections, history, and corruption backups.
 
@@ -144,6 +151,8 @@ be exported from Settings when their stored data is readable. See
   A lifecycle dry run lists later Open/Close operations without performing
   them. Custom presets cannot configure privileged system launch daemons.
 - Open or close watched apps through one lifecycle path with per-job reporting.
+  Quit, Close, and Keep Off give a process 3 seconds to exit gracefully before
+  force stopping it, and the confirmation dialog says so.
 - Keep the built-in GlobalProtect user app off across relaunches and login by
   persistently disabling its known per-user launch agents. This is reversible
   through Open and never disables or signals the protected system daemon.
@@ -192,8 +201,10 @@ can discover:
 - **Stop Watched App**
 
 Open and Stop use a watched-app entity selected by the user from TaskScope's
-stored presets. They use the same lifecycle result reporting as the app. An
-ad-hoc signature is insufficient for App Intents execution.
+stored presets. They use the same lifecycle result reporting as the app, but a
+Shortcuts **Stop Watched App** action runs without the in-app confirmation
+dialog: configuring the shortcut is the confirmation. An ad-hoc signature is
+insufficient for App Intents execution.
 
 ## Permissions and trust boundaries
 
@@ -209,7 +220,8 @@ ad-hoc signature is insufficient for App Intents execution.
 - Auto Stop is destructive and path-bound. Use Prompt or Log Only while
   validating a rule.
 - The immutable built-in GlobalProtect definition can request administrator
-  approval to restore its fixed protected daemon. Custom presets cannot define
+  approval to load its fixed protected daemon when launchd does not have it
+  loaded; a loaded daemon is never restarted. Custom presets cannot define
   or alter privileged system-daemon jobs, and TaskScope does not bypass macOS
   authorization.
 - Keep GlobalProtect Off changes the current user's launchd overrides and can

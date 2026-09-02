@@ -136,6 +136,7 @@ verify_bundle() {
     echo "Bundle verification failed: AppIcon.icns is not a valid ICNS image." >&2
     return 1
   fi
+  verify_icon_members "$icon" || return 1
 
   /usr/bin/plutil -lint "$plist" >/dev/null
   verify_plist_value "$plist" "CFBundleExecutable" "$APP_NAME"
@@ -204,6 +205,49 @@ verify_bundle() {
   done
 
   /usr/bin/codesign --verify --deep --strict "$bundle"
+}
+
+# The icns must carry every iconset member at its exact pixel size; a member
+# rendered at the wrong scale is dropped by iconutil and Finder then shows a
+# blurry or generic icon at that size.
+verify_icon_members() {
+  local icon="$1"
+  local iconset_dir
+  local member
+  local expected
+  local actual
+
+  iconset_dir="$(mktemp -d "${TMPDIR:-/tmp}/taskscope-iconset.XXXXXX")"
+  if ! /usr/bin/iconutil -c iconset "$icon" -o "$iconset_dir/AppIcon.iconset" 2>/dev/null; then
+    echo "Bundle verification failed: iconutil could not read AppIcon.icns." >&2
+    rm -rf "$iconset_dir"
+    return 1
+  fi
+  for member in \
+    icon_16x16.png icon_16x16@2x.png \
+    icon_32x32.png icon_32x32@2x.png \
+    icon_128x128.png icon_128x128@2x.png \
+    icon_256x256.png icon_256x256@2x.png \
+    icon_512x512.png icon_512x512@2x.png; do
+    if [[ ! -s "$iconset_dir/AppIcon.iconset/$member" ]]; then
+      echo "Bundle verification failed: AppIcon.icns lacks $member." >&2
+      rm -rf "$iconset_dir"
+      return 1
+    fi
+    expected="${member#icon_}"
+    expected="${expected%%x*}"
+    if [[ "$member" == *"@2x"* ]]; then
+      expected=$((expected * 2))
+    fi
+    actual="$(/usr/bin/sips -g pixelWidth "$iconset_dir/AppIcon.iconset/$member" 2>/dev/null \
+      | /usr/bin/awk '/pixelWidth/ { print $2 }')"
+    if [[ "$actual" != "$expected" ]]; then
+      echo "Bundle verification failed: $member is ${actual:-unknown} pixels wide (expected $expected)." >&2
+      rm -rf "$iconset_dir"
+      return 1
+    fi
+  done
+  rm -rf "$iconset_dir"
 }
 
 verify_startup_readiness() (
@@ -283,6 +327,21 @@ verify_startup_readiness() (
 stop_staged_app_instances() {
   taskscope_stop_processes_for_executable "$APP_BINARY"
 }
+
+# --verify checks the bundle that is already staged; it never rebuilds or
+# restages, so the verified artifact is exactly the one on disk. Run --stage
+# first (or again) to produce a fresh bundle.
+if [[ "$MODE" == "--verify" || "$MODE" == "verify" ]]; then
+  if [[ ! -d "$APP_BUNDLE" ]]; then
+    echo "Nothing to verify: $APP_BUNDLE does not exist. Run $0 --stage first." >&2
+    exit 1
+  fi
+  cd "$ROOT_DIR"
+  verify_bundle "$APP_BUNDLE"
+  verify_startup_readiness "$APP_BUNDLE"
+  echo "Verified existing $APP_BUNDLE (not rebuilt)"
+  exit 0
+fi
 
 cd "$ROOT_DIR"
 STAGING_BUNDLE="$DIST_DIR/.$APP_NAME.staging.$$"
@@ -505,10 +564,5 @@ case "$MODE" in
     stop_staged_app_instances
     open_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
-    ;;
-  --verify|verify)
-    verify_bundle "$APP_BUNDLE"
-    verify_startup_readiness "$APP_BUNDLE"
-    echo "Verified $APP_BUNDLE"
     ;;
 esac

@@ -79,9 +79,10 @@ screenshot to a public issue.
   Login Items.
 
 Keep GlobalProtect Off also stores a per-user launchd disable override for the
-known GlobalProtect user launch-agent labels. Turning the control off or choosing
-Open clears those overrides. TaskScope does not use this control on a protected
-system launch daemon.
+known GlobalProtect user launch-agent labels. Turning the control off clears
+those overrides without starting anything, and Open always clears them before
+it loads the agents. TaskScope does not use this control on a protected system
+launch daemon.
 
 Revoking a permission in System Settings can limit the related feature without
 deleting TaskScope's preferences.
@@ -95,9 +96,19 @@ deleting TaskScope's preferences.
 - Corruption backups remain until the preferences domain is removed or they are
   deliberately deleted during recovery.
 - Preset export files remain wherever the user saved them.
+- The Keep GlobalProtect Off launchd override lives in launchd's per-user
+  database, not in TaskScope's preferences. It remains until the control is
+  turned off, Open is chosen, or it is cleared manually with
+  `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa` and
+  `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`.
 
-To remove the current development build and its stored data, first disable
-Launch at Login, quit and delete the app, then run:
+To remove the current development build and its stored data:
+
+1. Turn off Keep GlobalProtect Off (or choose Open) so the launchd override is
+   cleared; `defaults delete` does not clear it.
+2. Disable Launch at Login.
+3. Quit and delete the app.
+4. Run:
 
 ```bash
 defaults delete com.local.TaskScope

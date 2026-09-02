@@ -73,8 +73,16 @@ Required invariants:
 - re-read and compare identity immediately before sending a signal;
 - distinguish “not present,” “identity changed,” and “could not verify”;
 - never turn an unreadable inventory into a success or stale-target claim;
-- never signal TaskScope itself;
-- require a separate, explicit Force Stop confirmation for `SIGKILL`;
+- never signal TaskScope itself, launchd (pid 1), the kernel task, or a process
+  group; the parser drops such rows and every signal path refuses them;
+- treat a protected process name as the protected system daemon only when the
+  process runs as root, so a same-named per-user instance is never mistaken
+  for it;
+- require a separate, explicit Force Stop confirmation for `SIGKILL`; preset
+  Quit, Close, and Keep Off escalate to `SIGKILL` only after a disclosed
+  graceful window (3 seconds) with the identity still present;
+- require an executable directory for every scoped termination; there is no
+  name-only termination entry point;
 - bind queued prompts and batch reports to immutable captured targets.
 - require enabled automatic-stop authority to include a trusted executable path
   and match that path again in the final inventory immediately before signal.
@@ -121,7 +129,9 @@ boundary.
 
 Required invariants:
 
-- reach this path only through an explicit user-approved lifecycle action;
+- reach this path only through an explicit user-approved lifecycle action, and
+  only when launchd reports the daemon as not loaded; a loaded daemon is
+  waited on, never restarted (`kickstart -k` is never issued for it);
 - show that the built-in GlobalProtect restoration operation needs approval;
 - verify the complete built-in identity and its fixed plist path and job fields
   before requesting approval;
@@ -150,7 +160,10 @@ Required invariants:
 - operate only on the fixed per-user `pangpa` and optional `pangps` labels;
 - never disable, unload, or signal a protected system launch daemon;
 - re-enable user agents only through an explicit Open or toggle-off action;
-- clear the persistent disable before bootstrap and report each job result;
+- clear the persistent disable before bootstrap (launchd refuses to bootstrap a
+  disabled job) and report each job result;
+- re-check the persisted intent inside the operation gate before background
+  enforcement acts, so enforcement queued behind an Open cannot undo it;
 - preserve startup enforcement across app relaunch and login without exposing a
   destructive URL route.
 
@@ -170,7 +183,8 @@ Required invariants:
 - reject URL requests to open/stop presets or quit TaskScope;
 - queue a cold-launch refresh without activating unnecessary UI;
 - route user-configured Shortcut actions through the same identity validation
-  and truthful result reporting as the app;
+  and truthful result reporting as the app; a Shortcuts stop runs without the
+  in-app confirmation dialog, so configuring the shortcut is the confirmation;
 - do not treat local/development signing as proof of production artifact
   identity;
 - make Launch at Login optional and recover visibly from macOS approval states.
