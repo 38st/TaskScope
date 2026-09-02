@@ -210,6 +210,37 @@ final class WatchedAppsStoreTests: XCTestCase {
         }
     }
 
+    /// A versioned archive whose presets fail to decode must report *that*
+    /// error. Retrying it as a legacy array only hid the real problem behind a
+    /// generic "not a recognized archive" message.
+    func testVersionedArchiveWithABrokenPresetReportsTheDecodingErrorInsteadOfLegacyFallback() {
+        let broken = Data("""
+        {"schemaVersion":1,"presets":[{"displayName":"Broken","appPath":"/Applications/Broken.app"}]}
+        """.utf8)
+
+        XCTAssertThrowsError(try WatchedAppsStore.decodePresetArchive(broken)) { error in
+            guard case .invalidContents(let detail)? = error as? WatchedAppsStore.PresetArchiveError else {
+                return XCTFail("Expected invalidContents, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("mainProcessName"), detail)
+            XCTAssertTrue(detail.contains("presets[0]"), detail)
+        }
+
+        let legacyBroken = Data("""
+        [{"displayName":"Broken","appPath":"/Applications/Broken.app"}]
+        """.utf8)
+        XCTAssertThrowsError(try WatchedAppsStore.decodePresetArchive(legacyBroken)) { error in
+            guard case .invalidContents(let detail)? = error as? WatchedAppsStore.PresetArchiveError else {
+                return XCTFail("Expected invalidContents, got \(error)")
+            }
+            XCTAssertTrue(detail.contains("[0]"), detail)
+        }
+
+        XCTAssertThrowsError(try WatchedAppsStore.decodePresetArchive(Data(#"{"presets":[]}"#.utf8))) { error in
+            XCTAssertEqual(error as? WatchedAppsStore.PresetArchiveError, .unreadable)
+        }
+    }
+
     func testMalformedArchiveIsRejected() {
         XCTAssertThrowsError(
             try WatchedAppsStore.decodePresetArchive(Data("not json".utf8))

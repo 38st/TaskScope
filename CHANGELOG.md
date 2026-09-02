@@ -37,6 +37,34 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Fixed
 
+- Open no longer requests administrator approval for a GlobalProtect daemon that
+  launchd already has loaded, and never restarts a loaded daemon: readiness is
+  verified from launchd's pid and a fresh process inventory instead of an
+  unprivileged `lsof` port probe that could never succeed, and the privileged
+  script only bootstraps a daemon that is not loaded.
+- Keep GlobalProtect Off enforcement re-checks the persisted intent inside the
+  operation gate and skips while a user action runs, so a poll tick can no
+  longer re-disable the launch agents and quit the app right after Open.
+- Open enables a kept-off user launch agent before bootstrapping it; launchd
+  refuses to bootstrap a disabled job, so the previous post-bootstrap enable
+  never took effect when it was needed.
+- Open re-checks whether the restored launch agents already started
+  GlobalProtect and no longer uses `open -n`, so it cannot launch a second
+  instance.
+- The Keep Off report sheet no longer appears on every launch; background
+  enforcement publishes a report only when a launch-agent job fails.
+- A process named PanGPS is reported as the protected system daemon only when it
+  runs as root; the optional per-user `pangps` agent is shown separately as a
+  user instance and never mistaken for the daemon.
+- Quit Helpers leaves a launch agent loaded when it is the one running the main
+  GlobalProtect process, and preset confirmations now name the launch agents
+  that will be unloaded.
+- The preset card's Open button addresses the clicked preset by identity, so a
+  display name that matches another preset's main process name can no longer
+  open the wrong preset.
+- Importing a versioned preset archive with a malformed preset now reports the
+  failing field instead of retrying the file as a legacy array and calling it
+  unrecognized.
 - Removed a pipe-reader teardown race in command execution and strengthened
   cancellation near child exit.
 - Preserved full executable paths in the process display schema and saved

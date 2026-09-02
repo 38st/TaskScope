@@ -954,22 +954,52 @@ struct TaskScopePopoverView: View {
     private func presetConfirmationMessage(
         for pending: ProcessConfirmationState.PendingPresetAction
     ) -> String {
+        Self.presetConfirmationMessage(for: pending)
+    }
+
+    /// Spells out every side effect of a preset action: which launch agents are
+    /// unloaded and which processes are signalled. Quit Helpers keeps an agent
+    /// loaded when it is the one running the main process.
+    static func presetConfirmationMessage(
+        for pending: ProcessConfirmationState.PendingPresetAction
+    ) -> String {
+        let preset = pending.preset
         let names: [String]
         switch pending.action {
         case .quitApp:
-            names = [pending.preset.mainProcessName]
+            names = [preset.mainProcessName]
         case .quitHelpers:
-            names = pending.preset.helperProcessNames
+            names = preset.helperProcessNames
         case .quitAll:
-            names = pending.preset.killableNames
+            names = preset.killableNames
         case .keepOff:
-            names = pending.preset.killableNames
+            names = preset.killableNames
         }
         let targets = names.isEmpty ? "no configured processes" : names.joined(separator: ", ")
-        if pending.action == .keepOff {
-            return "TaskScope will persistently disable GlobalProtect's per-user launch agents and stop current user-facing matches: \(targets). A protected system daemon, if installed, remains untouched."
+        let agentLabels = preset.lifecycleUserLaunchAgentJobs.map(\.label)
+        let agentList = agentLabels.joined(separator: ", ")
+
+        var sentences: [String] = []
+        switch pending.action {
+        case .keepOff:
+            sentences.append(
+                "TaskScope will persistently disable GlobalProtect's per-user launch agents (\(agentList)) and stop current user-facing matches: \(targets)."
+            )
+            sentences.append("A protected system daemon, if installed, remains untouched.")
+        case .quitHelpers:
+            if !agentLabels.isEmpty {
+                sentences.append(
+                    "TaskScope will unload the helper launch agents (\(agentList)); an agent that is running the main \(preset.mainProcessName) process is left loaded."
+                )
+            }
+            sentences.append("It will then stop the currently running matches for: \(targets).")
+        case .quitApp, .quitAll:
+            if !agentLabels.isEmpty {
+                sentences.append("TaskScope will unload the user launch agents (\(agentList)).")
+            }
+            sentences.append("It will then stop the currently running matches for: \(targets).")
         }
-        return "TaskScope will stop the currently running matches for: \(targets)."
+        return sentences.joined(separator: " ")
     }
 
     private func moveKeyboard(by delta: Int, in processes: [AppProcess], proxy: ScrollViewProxy) {

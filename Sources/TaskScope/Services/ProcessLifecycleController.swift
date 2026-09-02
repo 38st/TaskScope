@@ -7,10 +7,29 @@ enum ProcessLifecycleController {
     /// false "remained loaded" failure.
     private static let launchAgentBootoutTimeout: TimeInterval = 30
 
+    /// How long a loaded-but-not-yet-running system daemon is given before its
+    /// readiness is reported as unverifiable. TaskScope never restarts a loaded
+    /// system daemon, so waiting for launchd is the only recovery it performs.
+    static let systemDaemonReadinessTimeout: TimeInterval = 15
+    private static let systemDaemonReadinessPollNanoseconds: UInt64 = 500_000_000
+
     enum LaunchJobInspection: Equatable {
         case loaded
         case notLoaded
         case failed(String)
+    }
+
+    /// The result of inspecting a protected system launch daemon without
+    /// privileges. Only `.notLoaded` (and an inspection that could not decide)
+    /// may lead to an administrator bootstrap request.
+    enum SystemDaemonReadiness: Equatable {
+        /// launchd reports a pid and a fresh inventory shows that pid running the
+        /// expected process.
+        case ready
+        /// launchd has the service loaded but its process is not (yet) verifiable.
+        case loadedButNotReady
+        case notLoaded
+        case inspectionFailed(String)
     }
 
     static func settleAfterProcessChange(
@@ -86,8 +105,15 @@ enum ProcessLifecycleController {
         )
     }
 
+    /// Unloads the preset's per-user launch agents.
+    ///
+    /// A job whose loaded pid is listed in `preservingPIDs` is left loaded. Quit
+    /// Helpers passes the main process pids here because on some GlobalProtect
+    /// layouts the `pangpa` agent's Program *is* the main GlobalProtect binary,
+    /// and booting it out would quit the app the user asked to keep.
     static func unloadUserLaunchAgents(
         for preset: WatchedAppPreset,
+        preservingPIDs: Set<Int32> = [],
         runtime: ProcessLifecycleRuntime = .live
     ) async -> LifecycleBatchResult {
         let jobs = preset.lifecycleUserLaunchAgentJobs
@@ -98,7 +124,8 @@ enum ProcessLifecycleController {
         for job in jobs.reversed() {
             let target = "gui/\(uid)/\(job.label)"
             let plistExists = runtime.fileExists(job.plistPath)
-            switch await inspectLaunchJob(target, runtime: runtime) {
+            let status = await inspectLaunchJob(target, runtime: runtime)
+            switch status.inspection {
             case .notLoaded:
                 // An absent plist is not a failure when the goal is to *stop* the
                 // job: there is nothing loaded and nothing to unload, so the stop
@@ -123,9 +150,18 @@ enum ProcessLifecycleController {
                 break
             }
 
+            if let loadedPID = status.pid, preservingPIDs.contains(loadedPID) {
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .alreadyLoaded,
+                    detail: "Left loaded: it runs the main \(preset.mainProcessName) process (pid \(loadedPID))."
+                ))
+                continue
+            }
+
             let command = "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))"
             let result = await runtime.runCommand(command, launchAgentBootoutTimeout)
-            let after = await inspectLaunchJob(target, runtime: runtime)
+            let after = await inspectLaunchJob(target, runtime: runtime).inspection
             let didUnload = after == .notLoaded
             results.append(LifecycleJobResult(
                 label: job.label,
@@ -177,7 +213,7 @@ enum ProcessLifecycleController {
                 continue
             }
 
-            switch await inspectLaunchJob(target, runtime: runtime) {
+            switch await inspectLaunchJob(target, runtime: runtime).inspection {
             case .notLoaded:
                 results.append(LifecycleJobResult(
                     label: job.label,
@@ -195,7 +231,7 @@ enum ProcessLifecycleController {
                     "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))",
                     launchAgentBootoutTimeout
                 )
-                let after = await inspectLaunchJob(target, runtime: runtime)
+                let after = await inspectLaunchJob(target, runtime: runtime).inspection
                 let didUnload = after == .notLoaded
                 results.append(LifecycleJobResult(
                     label: job.label,
@@ -244,6 +280,12 @@ enum ProcessLifecycleController {
         return LifecycleBatchResult(jobs: results)
     }
 
+    /// Loads the preset's per-user launch agents that are not already loaded.
+    ///
+    /// `launchctl enable` runs *before* `bootstrap`: launchd refuses to bootstrap
+    /// a service that carries a persistent disable override, so enabling after a
+    /// bootstrap could never take effect exactly when it was needed (after Keep
+    /// Off had disabled the job). Enabling an already-enabled job is a no-op.
     static func bootstrapUserLaunchAgents(
         for preset: WatchedAppPreset,
         runtime: ProcessLifecycleRuntime = .live
@@ -282,7 +324,7 @@ enum ProcessLifecycleController {
             }
 
             let target = "gui/\(uid)/\(job.label)"
-            switch await inspectLaunchJob(target, runtime: runtime) {
+            switch await inspectLaunchJob(target, runtime: runtime).inspection {
             case .loaded:
                 results.append(LifecycleJobResult(
                     label: job.label,
@@ -301,6 +343,19 @@ enum ProcessLifecycleController {
                 break
             }
 
+            let enable = await runtime.runCommand(
+                "/bin/launchctl enable \(ShellCommandRunner.shellQuoted(target))",
+                15
+            )
+            guard enable.succeeded else {
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: .failed,
+                    detail: commandFailure(enable, fallback: "Could not enable the user launch agent before bootstrap.")
+                ))
+                continue
+            }
+
             let bootstrap = await runtime.runCommand(
                 "/bin/launchctl bootstrap \(ShellCommandRunner.shellQuoted("gui/\(uid)")) \(ShellCommandRunner.shellQuoted(job.plistPath))",
                 15
@@ -314,23 +369,11 @@ enum ProcessLifecycleController {
                 continue
             }
 
-            let enable = await runtime.runCommand(
-                "/bin/launchctl enable \(ShellCommandRunner.shellQuoted(target))",
-                15
-            )
-            guard enable.succeeded else {
-                results.append(LifecycleJobResult(
-                    label: job.label,
-                    state: .failed,
-                    detail: commandFailure(enable, fallback: "Loaded, but enable failed.")
-                ))
-                continue
-            }
             let kickstart = await runtime.runCommand(
                 "/bin/launchctl kickstart -k \(ShellCommandRunner.shellQuoted(target))",
                 15
             )
-            let verified = await inspectLaunchJob(target, runtime: runtime) == .loaded
+            let verified = await inspectLaunchJob(target, runtime: runtime).inspection == .loaded
             results.append(LifecycleJobResult(
                 label: job.label,
                 state: kickstart.succeeded && verified ? .changed : .failed,
@@ -344,6 +387,19 @@ enum ProcessLifecycleController {
         return LifecycleBatchResult(jobs: results)
     }
 
+    /// Makes sure the immutable built-in preset's protected system daemon is
+    /// loaded and running.
+    ///
+    /// Readiness is decided from `launchctl print system/<label>` plus a fresh
+    /// process inventory: the reported pid must be running the expected process.
+    /// No port probe is used; an unprivileged `lsof` cannot see a root daemon's
+    /// descriptors, so it can never confirm readiness and only ever produced
+    /// false negatives.
+    ///
+    /// Administrator approval is requested only when the daemon is *not loaded*
+    /// (or its state could not be inspected). A loaded daemon is never restarted:
+    /// `kickstart -k` on a live VPN daemon drops the user's session, so TaskScope
+    /// waits for launchd instead and fails closed if the process never appears.
     static func ensureSystemLaunchDaemons(
         for preset: WatchedAppPreset,
         runtime: ProcessLifecycleRuntime = .live
@@ -363,13 +419,26 @@ enum ProcessLifecycleController {
                 continue
             }
 
-            if await systemLaunchDaemonIsReady(job, runtime: runtime) {
+            switch await systemLaunchDaemonReadiness(job, runtime: runtime) {
+            case .ready:
                 results.append(LifecycleJobResult(
                     label: job.label,
                     state: .verified,
                     detail: "Loaded process identity verified."
                 ))
                 continue
+            case .loadedButNotReady:
+                let verified = await waitForSystemLaunchDaemon(job, runtime: runtime)
+                results.append(LifecycleJobResult(
+                    label: job.label,
+                    state: verified ? .verified : .failed,
+                    detail: verified
+                        ? "Loaded process identity verified after waiting for launchd."
+                        : "The daemon is loaded, but launchd did not report a running \(job.processName) within \(Int(systemDaemonReadinessTimeout)) seconds. TaskScope never restarts a loaded system daemon; use the organization's supported GlobalProtect recovery path."
+                ))
+                continue
+            case .notLoaded, .inspectionFailed:
+                break
             }
 
             let result = await requestAdminBootstrap(for: job, runtime: runtime)
@@ -382,15 +451,13 @@ enum ProcessLifecycleController {
                 continue
             }
 
-            let verified = await waitForSystemLaunchDaemon(
-                job,
-                timeoutSeconds: 15,
-                runtime: runtime
-            )
+            let verified = await waitForSystemLaunchDaemon(job, runtime: runtime)
             results.append(LifecycleJobResult(
                 label: job.label,
                 state: verified ? .changed : .failed,
-                detail: verified ? "Started and verified." : "Started but readiness could not be verified."
+                detail: verified
+                    ? "Bootstrapped and verified."
+                    : "Bootstrap was approved, but launchd did not report a running \(job.processName) within \(Int(systemDaemonReadinessTimeout)) seconds."
             ))
         }
 
@@ -411,13 +478,16 @@ enum ProcessLifecycleController {
         )
     }
 
+    /// Opens the bundle with Launch Services' default single-instance behavior.
+    /// `open -n` would force a second instance, which duplicates GlobalProtect
+    /// whenever its `pangpa` launch agent already runs the main binary.
     static func openAppBundle(
         at path: String,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> Bool {
         guard runtime.fileExists(path) else { return false }
         let result = await runtime.runCommand(
-            "/usr/bin/open -n \(ShellCommandRunner.shellQuoted(path))",
+            "/usr/bin/open \(ShellCommandRunner.shellQuoted(path))",
             15
         )
         return result.succeeded
@@ -426,12 +496,12 @@ enum ProcessLifecycleController {
     private static func inspectLaunchJob(
         _ target: String,
         runtime: ProcessLifecycleRuntime
-    ) async -> LaunchJobInspection {
+    ) async -> (inspection: LaunchJobInspection, pid: Int32?) {
         let result = await runtime.runCommand(
             "/bin/launchctl print \(ShellCommandRunner.shellQuoted(target))",
             15
         )
-        return launchJobInspection(from: result)
+        return (launchJobInspection(from: result), launchJobPID(from: result))
     }
 
     static func launchJobInspection(from result: ShellCommandResult) -> LaunchJobInspection {
@@ -452,29 +522,30 @@ enum ProcessLifecycleController {
         return .failed(detail.isEmpty ? "launchctl exited with status \(result.exitCode)." : detail)
     }
 
-    private static func systemLaunchDaemonIsReady(
+    static func systemLaunchDaemonReadiness(
         _ job: SystemLaunchDaemonJob,
         runtime: ProcessLifecycleRuntime
-    ) async -> Bool {
+    ) async -> SystemDaemonReadiness {
         let target = "system/\(job.label)"
         let inspection = await runtime.runCommand(
             "/bin/launchctl print \(ShellCommandRunner.shellQuoted(target))",
             15
         )
-        guard let jobPID = launchJobPID(from: inspection),
-              case .success(let inventory) = await runtime.loadProcessInventory(),
-              let process = inventory.first(where: {
-                  $0.pid == jobPID && $0.name == job.processName
-              }) else {
-            return false
+        switch launchJobInspection(from: inspection) {
+        case .notLoaded:
+            return .notLoaded
+        case .failed(let detail):
+            return .inspectionFailed(detail)
+        case .loaded:
+            break
         }
 
-        guard let servicePort = job.servicePort else { return true }
-        let result = await runtime.runCommand(
-            "/usr/sbin/lsof -nP -a -p \(ShellCommandRunner.shellQuoted(String(process.pid))) -iTCP:\(servicePort) -sTCP:LISTEN",
-            15
-        )
-        return result.succeeded
+        guard let jobPID = launchJobPID(from: inspection),
+              case .success(let inventory) = await runtime.loadProcessInventory(),
+              inventory.contains(where: { $0.pid == jobPID && $0.name == job.processName }) else {
+            return .loadedButNotReady
+        }
+        return .ready
     }
 
     static func launchJobPID(from result: ShellCommandResult) -> Int32? {
@@ -492,33 +563,42 @@ enum ProcessLifecycleController {
         return nil
     }
 
+    /// Bounded by attempts rather than wall-clock time so an injected no-op
+    /// sleep cannot turn the wait into a busy loop.
     private static func waitForSystemLaunchDaemon(
         _ job: SystemLaunchDaemonJob,
-        timeoutSeconds: TimeInterval,
         runtime: ProcessLifecycleRuntime
     ) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while Date() < deadline {
-            if await systemLaunchDaemonIsReady(job, runtime: runtime) {
+        let pollSeconds = Double(systemDaemonReadinessPollNanoseconds) / 1_000_000_000
+        let attempts = max(1, Int(systemDaemonReadinessTimeout / pollSeconds))
+        for _ in 0..<attempts {
+            if await systemLaunchDaemonReadiness(job, runtime: runtime) == .ready {
                 return true
             }
-            await runtime.sleep(500_000_000)
+            await runtime.sleep(systemDaemonReadinessPollNanoseconds)
         }
-        return await systemLaunchDaemonIsReady(job, runtime: runtime)
+        return await systemLaunchDaemonReadiness(job, runtime: runtime) == .ready
+    }
+
+    /// The privileged script only ever bootstraps a daemon that launchd does not
+    /// have loaded. When the service is already loaded it exits successfully
+    /// without touching it; `kickstart -k` is never used on the system daemon.
+    static func adminBootstrapScript(for job: SystemLaunchDaemonJob) -> String {
+        let target = "system/\(job.label)"
+        return """
+        if /bin/launchctl print \(ShellCommandRunner.shellQuoted(target)) >/dev/null 2>&1; then
+          exit 0
+        else
+          /bin/launchctl bootstrap system \(ShellCommandRunner.shellQuoted(job.plistPath))
+        fi
+        """
     }
 
     private static func requestAdminBootstrap(
         for job: SystemLaunchDaemonJob,
         runtime: ProcessLifecycleRuntime
     ) async -> ShellCommandResult {
-        let target = "system/\(job.label)"
-        let rootCommand = """
-        if /bin/launchctl print \(ShellCommandRunner.shellQuoted(target)) >/dev/null 2>&1; then
-          /bin/launchctl kickstart -k \(ShellCommandRunner.shellQuoted(target))
-        else
-          /bin/launchctl bootstrap system \(ShellCommandRunner.shellQuoted(job.plistPath))
-        fi
-        """
+        let rootCommand = adminBootstrapScript(for: job)
         let appleScript = "do shell script \(ShellCommandRunner.appleScriptString(rootCommand)) with administrator privileges"
         return await runtime.runCommand(
             "/usr/bin/osascript -e \(ShellCommandRunner.shellQuoted(appleScript))",

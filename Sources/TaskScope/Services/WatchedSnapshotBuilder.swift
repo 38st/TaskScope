@@ -17,23 +17,24 @@ struct WatchedSnapshotBuilder: Sendable {
         in inventory: [AppProcess]
     ) -> WatchedAppSnapshot {
         var runningNames = Set<String>()
-        let mainExecutableDirectory = URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents/MacOS", isDirectory: true)
-            .standardizedFileURL.path + "/"
-        let bundleContentsDirectory = URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents", isDirectory: true)
-            .standardizedFileURL.path + "/"
+        let mainExecutableDirectory = preset.mainExecutableDirectory
+        let bundleContentsDirectory = preset.bundleContentsDirectory
 
-        if inventory.contains(where: { process in
-            guard process.pid != excludedPID,
-                  let executablePath = process.executablePath,
-                  executablePath.hasPrefix(mainExecutableDirectory) else {
-                return false
-            }
-            return process.name == preset.mainProcessName
-                || URL(fileURLWithPath: executablePath).lastPathComponent
-                    == preset.mainProcessName
-        }) {
+        let mainProcessPIDs = Set(
+            inventory.lazy
+                .filter { process in
+                    guard process.pid != excludedPID,
+                          let executablePath = process.executablePath,
+                          executablePath.hasPrefix(mainExecutableDirectory) else {
+                        return false
+                    }
+                    return process.name == preset.mainProcessName
+                        || URL(fileURLWithPath: executablePath).lastPathComponent
+                            == preset.mainProcessName
+                }
+                .map(\.pid)
+        )
+        if !mainProcessPIDs.isEmpty {
             runningNames.insert(preset.mainProcessName)
         }
 
@@ -56,14 +57,28 @@ struct WatchedSnapshotBuilder: Sendable {
                 }
         )
 
+        // A protected name identifies the protected *system* daemon only when the
+        // process actually runs as root. GlobalProtect's optional per-user
+        // `pangps` agent runs a binary that is also named PanGPS; reporting it as
+        // the system daemon would make Keep Off claim a service is available
+        // when only the user agent is, and would hide that the user agent is
+        // still running. An unknown uid is never promoted to root.
         let protectedNames = Set(preset.protectedProcessNames)
-        runningNames.formUnion(
-            inventory.lazy
-                .filter { $0.pid != excludedPID }
-                .map(\.name)
-                .filter { protectedNames.contains($0) }
-        )
+        var unprivilegedProtectedNames = Set<String>()
+        for process in inventory
+        where process.pid != excludedPID && protectedNames.contains(process.name) {
+            if process.uid == 0 {
+                runningNames.insert(process.name)
+            } else {
+                unprivilegedProtectedNames.insert(process.name)
+            }
+        }
 
-        return WatchedAppSnapshot(preset: preset, runningNames: runningNames)
+        return WatchedAppSnapshot(
+            preset: preset,
+            runningNames: runningNames,
+            mainProcessPIDs: mainProcessPIDs,
+            unprivilegedProtectedNames: unprivilegedProtectedNames
+        )
     }
 }

@@ -310,8 +310,24 @@ final class ProcessManager: ObservableObject {
                     jobs: serviceJobs
                 )
 
-            let didOpen: Bool
+            // Restoring the user launch agents can itself start the main process
+            // (GlobalProtect's `pangpa` agent runs the main binary). Re-check with
+            // a fresh inventory before opening so a second instance is never
+            // launched, and fail closed when that check cannot be made.
+            let alreadyRunning: Bool
             if beforeOpen.isMainRunning {
+                alreadyRunning = true
+            } else {
+                guard case .success(let afterServices) = await currentSnapshot(for: preset) else {
+                    message = "Could not verify whether \(preset.displayName) started with its services; nothing was opened."
+                    commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                    return
+                }
+                alreadyRunning = afterServices.isMainRunning
+            }
+
+            let didOpen: Bool
+            if alreadyRunning {
                 didOpen = true
             } else {
                 didOpen = await lifecycle.openAppBundle(at: preset.appPath)
@@ -323,7 +339,7 @@ final class ProcessManager: ObservableObject {
             }
 
             let verified: Bool
-            if beforeOpen.isMainRunning {
+            if alreadyRunning {
                 verified = true
             } else {
                 verified = await lifecycle.waitForMainProcess(
@@ -355,6 +371,12 @@ final class ProcessManager: ObservableObject {
     /// Persists the user's intent and disables the preset's per-user launch jobs
     /// before stopping its ordinary app/helper processes. Protected system daemons
     /// are never signalled or disabled by this path.
+    ///
+    /// With `recordIntent == false` this is background enforcement. It re-checks
+    /// the persisted intent *inside* the operation gate: a poll tick that decided
+    /// to enforce can be queued behind a user's Open, which clears the intent, and
+    /// running the enforcement afterwards would re-disable the agents the user
+    /// just restored and quit the app they just opened.
     @discardableResult
     func keepOff(
         _ preset: WatchedAppPreset,
@@ -369,6 +391,14 @@ final class ProcessManager: ObservableObject {
             message: "Keep Off did not complete."
         )
         await runAction(kind: .mutation) {
+            if !recordIntent, isPresetKeptOffProvider?(preset) != true {
+                commandResult = TaskScopeCommandResult(
+                    status: .rejected,
+                    message: "Keep Off is no longer enabled for \(preset.displayName); enforcement skipped."
+                )
+                return
+            }
+
             let inventoryWasAvailable: Bool
             switch await currentSnapshot(for: preset) {
             case .success:
@@ -377,12 +407,16 @@ final class ProcessManager: ObservableObject {
                 inventoryWasAvailable = false
             }
             let disableResult = await lifecycle.disableUserLaunchAgents(for: preset)
-            lifecycleReport = disableResult.jobs.isEmpty
-                ? nil
-                : LifecycleReport(
-                    title: "\(preset.displayName) Keep Off",
-                    jobs: disableResult.jobs
-                )
+            // Background enforcement runs on every launch and poll tick; only a
+            // failure is worth interrupting the user with a report sheet.
+            if recordIntent || !disableResult.succeeded {
+                lifecycleReport = disableResult.jobs.isEmpty
+                    ? nil
+                    : LifecycleReport(
+                        title: "\(preset.displayName) Keep Off",
+                        jobs: disableResult.jobs
+                    )
+            }
 
             guard inventoryWasAvailable else {
                 message = disableResult.succeeded
@@ -419,9 +453,14 @@ final class ProcessManager: ObservableObject {
                 message = "Keep Off is enabled, but user-facing GlobalProtect processes may still run."
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else {
-                message = nowSnapshot.protectedRunning.isEmpty
-                    ? "\(preset.displayName) is kept off. Its user launch agents are disabled."
-                    : "\(preset.displayName) app is kept off. Protected system service remains available."
+                if !nowSnapshot.protectedRunning.isEmpty {
+                    message = "\(preset.displayName) app is kept off. Protected system service remains available."
+                } else if !nowSnapshot.unprivilegedProtectedRunning.isEmpty {
+                    let names = nowSnapshot.unprivilegedProtectedRunning.joined(separator: ", ")
+                    message = "\(preset.displayName) is kept off. Its user launch agents are disabled; a per-user \(names) instance is still running and should exit as launchd finishes unloading it."
+                } else {
+                    message = "\(preset.displayName) is kept off. Its user launch agents are disabled."
+                }
                 commandResult = TaskScopeCommandResult(status: .completed, message: message)
             }
         }
@@ -460,8 +499,14 @@ final class ProcessManager: ObservableObject {
     /// Enforces persisted Keep Off intent after startup and if a user-facing job
     /// is restored externally. Routine polling skips work once only a protected
     /// system service (or nothing) remains.
+    ///
+    /// Enforcement never queues behind a user-initiated mutation: while one runs
+    /// the user is changing exactly the state enforcement would act on, and the
+    /// gated re-check inside `keepOff` is the last line of defence for a tick
+    /// that had already decided before the mutation started.
     func enforceKeptOffPresets(force: Bool = false) async {
         for preset in keptOffPresetsProvider?() ?? [] {
+            guard operationGate.state != .runningMutation else { continue }
             if !force {
                 guard case .success(let current) = await currentSnapshot(for: preset),
                       current.isMainRunning || current.hasHelpers else {
@@ -538,7 +583,12 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
-            let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
+            // A launch agent whose Program is the main binary must stay loaded,
+            // otherwise Quit Helpers would quit the app itself.
+            let agentResult = await lifecycle.unloadUserLaunchAgents(
+                for: preset,
+                preservingPIDs: before.mainProcessPIDs
+            )
             lifecycleReport = agentResult.jobs.isEmpty
                 ? nil
                 : LifecycleReport(

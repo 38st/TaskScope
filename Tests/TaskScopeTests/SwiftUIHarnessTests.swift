@@ -244,13 +244,71 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try presented.find(text: "Quit All Killable"))
         XCTAssertNoThrow(
             try presented.find(
-                text: "TaskScope will stop the currently running matches for: GlobalProtect, PanGPA."
+                text: "TaskScope will unload the user launch agents (com.paloaltonetworks.gp.pangpa, com.paloaltonetworks.gp.pangps). It will then stop the currently running matches for: GlobalProtect, PanGPA."
             )
         )
 
         try presented.find(button: "Cancel").tap()
         XCTAssertNil(confirmation.pendingPresetAction)
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
+    }
+
+    /// The Open button must address the preset it belongs to by identity. A
+    /// display-name lookup also matches other presets' main process names, so a
+    /// cross-field collision used to open a different preset than the one clicked.
+    func testPresetCardOpenSubmitsTheClickedPresetIdentityNotItsDisplayName() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.watchedApps
+        XCTAssertTrue(store.remove(at: IndexSet(store.presets.indices)))
+        let alpha = WatchedAppPreset(
+            displayName: "Alpha",
+            mainProcessName: "Beta",
+            helperProcessNames: [],
+            protectedProcessNames: [],
+            appPath: "/Applications/Alpha.app"
+        )
+        let beta = WatchedAppPreset(
+            displayName: "Beta",
+            mainProcessName: "Gamma",
+            helperProcessNames: [],
+            protectedProcessNames: [],
+            appPath: "/Applications/Beta.app"
+        )
+        XCTAssertTrue(store.add(alpha))
+        XCTAssertTrue(store.add(beta))
+        XCTAssertEqual(
+            store.presets.first { $0.matchesLookupName("Beta") }?.id,
+            alpha.id,
+            "precondition: a name lookup for Beta resolves to Alpha"
+        )
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { store.presets }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+
+        let recorder = CommandRecorder()
+        AppCommandBus.shared.install { command in
+            recorder.record(command)
+            return TaskScopeCommandResult(status: .completed, message: "recorded")
+        }
+        defer {
+            AppCommandBus.shared.install { _ in
+                TaskScopeCommandResult(status: .rejected, message: "No handler installed by this test.")
+            }
+        }
+
+        let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
+        let cards = try view.inspect().findAll(PresetCard.self)
+        XCTAssertEqual(cards.count, 2)
+        XCTAssertEqual(try cards[1].actualView().snapshot.preset.id, beta.id)
+
+        try cards[1].find(button: "Open").tap()
+        await settle()
+
+        XCTAssertEqual(
+            recorder.commands,
+            [.openPresetEntity(WatchedPresetCommandTarget(id: beta.id, displayName: "Beta"))]
+        )
     }
 
     /// A row can be on screen purely because the search filter surfaced it, even
@@ -515,6 +573,13 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNotEqual(defaults.data(forKey: "settings"), corrupt)
     }
 
+    private func settle() async {
+        for _ in 0..<10 {
+            await Task.yield()
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+
     private func process(
         pid: Int32,
         parentPID: Int32,
@@ -595,6 +660,15 @@ final class SwiftUIHarnessTests: XCTestCase {
             ),
             history: ProcessHistory(inventory: inventory)
         )
+    }
+}
+
+@MainActor
+private final class CommandRecorder {
+    private(set) var commands: [TaskScopeCommand] = []
+
+    func record(_ command: TaskScopeCommand) {
+        commands.append(command)
     }
 }
 

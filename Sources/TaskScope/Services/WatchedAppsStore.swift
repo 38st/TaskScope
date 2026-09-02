@@ -23,6 +23,9 @@ final class WatchedAppsStore: ObservableObject {
         case exceedsMaximumSize
         case unsupportedSchemaVersion(Int)
         case unreadable
+        /// The archive shape was recognized but its presets did not decode. The
+        /// detail names the failing field so the user can repair the file.
+        case invalidContents(String)
 
         var errorDescription: String? {
             switch self {
@@ -32,6 +35,8 @@ final class WatchedAppsStore: ObservableObject {
                 "Preset schema version \(version) is not supported by this TaskScope build."
             case .unreadable:
                 "The file is not a recognized TaskScope preset archive."
+            case .invalidContents(let detail):
+                "The preset archive could not be decoded: \(detail)"
             }
         }
     }
@@ -277,21 +282,71 @@ final class WatchedAppsStore: ObservableObject {
         return try encoder.encode(PresetArchive(presets: presets))
     }
 
+    /// Decodes a versioned archive or a legacy preset array.
+    ///
+    /// The envelope shape decides the format first; a versioned archive whose
+    /// presets fail to decode reports that decoding error and is never retried
+    /// as a legacy array, which used to mask the real problem behind a generic
+    /// "not a recognized archive" message.
     nonisolated static func decodePresetArchive(_ data: Data) throws -> [WatchedAppPreset] {
         guard data.count <= maximumPresetArchiveBytes else {
             throw PresetArchiveError.exceedsMaximumSize
         }
-        let decoder = JSONDecoder()
-        if let archive = try? decoder.decode(PresetArchive.self, from: data) {
-            guard archive.schemaVersion == PresetArchive.currentSchemaVersion else {
-                throw PresetArchiveError.unsupportedSchemaVersion(archive.schemaVersion)
-            }
-            return archive.presets
+        let topLevel: Any
+        do {
+            topLevel = try JSONSerialization.jsonObject(with: data)
+        } catch {
+            throw PresetArchiveError.unreadable
         }
-        if let legacy = try? decoder.decode([WatchedAppPreset].self, from: data) {
-            return legacy
+
+        let decoder = JSONDecoder()
+        if let envelope = topLevel as? [String: Any] {
+            guard let schemaVersion = envelope["schemaVersion"] as? Int else {
+                throw PresetArchiveError.unreadable
+            }
+            guard schemaVersion == PresetArchive.currentSchemaVersion else {
+                throw PresetArchiveError.unsupportedSchemaVersion(schemaVersion)
+            }
+            do {
+                return try decoder.decode(PresetArchive.self, from: data).presets
+            } catch {
+                throw PresetArchiveError.invalidContents(describeDecodingError(error))
+            }
+        }
+        if topLevel is [Any] {
+            do {
+                return try decoder.decode([WatchedAppPreset].self, from: data)
+            } catch {
+                throw PresetArchiveError.invalidContents(describeDecodingError(error))
+            }
         }
         throw PresetArchiveError.unreadable
+    }
+
+    nonisolated private static func describeDecodingError(_ error: Error) -> String {
+        func path(_ codingPath: [CodingKey]) -> String {
+            var joined = ""
+            for key in codingPath {
+                if let index = key.intValue {
+                    joined += "[\(index)]"
+                } else {
+                    joined += joined.isEmpty ? key.stringValue : ".\(key.stringValue)"
+                }
+            }
+            return joined.isEmpty ? "the top level" : joined
+        }
+        switch error {
+        case DecodingError.keyNotFound(let key, let context):
+            return "missing \(key.stringValue) at \(path(context.codingPath))."
+        case DecodingError.typeMismatch(_, let context):
+            return "wrong value type at \(path(context.codingPath)): \(context.debugDescription)"
+        case DecodingError.valueNotFound(_, let context):
+            return "missing value at \(path(context.codingPath)): \(context.debugDescription)"
+        case DecodingError.dataCorrupted(let context):
+            return "corrupted data at \(path(context.codingPath)): \(context.debugDescription)"
+        default:
+            return error.localizedDescription
+        }
     }
 
     private func validateAndNormalize(_ preset: WatchedAppPreset) -> WatchedAppPreset? {

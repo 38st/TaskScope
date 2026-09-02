@@ -13,10 +13,16 @@ struct PresetsSectionView: View {
                     PresetCard(
                         snapshot: snapshot,
                         onOpen: {
+                            // Address the preset by identity, exactly as the quit
+                            // buttons do. A display-name lookup also matches other
+                            // presets' main process names, so a name collision could
+                            // open a different preset than the card the user clicked.
+                            let target = WatchedPresetCommandTarget(
+                                id: snapshot.preset.id,
+                                displayName: snapshot.preset.displayName
+                            )
                             Task {
-                                _ = await AppCommandBus.shared.submit(
-                                    .openPreset(snapshot.preset.displayName)
-                                )
+                                _ = await AppCommandBus.shared.submit(.openPresetEntity(target))
                             }
                         },
                         onQuitApp: {

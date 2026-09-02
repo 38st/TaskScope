@@ -478,6 +478,7 @@ final class ProcessManagerTests: XCTestCase {
         let manager = makeManager(
             inventory: FakeProcessInventory(results: [
                 .success([]),
+                .success([]),
                 .failure(.commandFailed("final inventory unavailable"))
             ]),
             lifecycle: lifecycle
@@ -495,6 +496,47 @@ final class ProcessManagerTests: XCTestCase {
             "wait"
         ])
         XCTAssertEqual(manager.processLoadError, "final inventory unavailable")
+    }
+
+    /// GlobalProtect's `pangpa` launch agent runs the main binary, so restoring
+    /// the agents can start the app by itself. Open must re-check before it
+    /// launches, otherwise `open` produced a second instance.
+    func testOpenSkipsLaunchWhenRestoredServicesAlreadyStartedTheMainProcess() async {
+        let lifecycle = FakeLifecycleService()
+        let preset = lifecyclePreset()
+        let running = process(pid: 42, name: "Example")
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .success([]),
+                .success([running])
+            ]),
+            lifecycle: lifecycle
+        )
+        manager.watchedAppsProvider = { [preset] }
+
+        let result = await manager.openApp(preset)
+
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "agents.load"])
+        XCTAssertFalse(lifecycle.calls.contains("open"))
+        XCTAssertEqual(manager.message, "Opened Example.")
+    }
+
+    func testOpenFailsClosedWhenPostServiceInventoryIsUnavailable() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .success([]),
+                .failure(.commandFailed("inventory unavailable"))
+            ]),
+            lifecycle: lifecycle
+        )
+
+        let result = await manager.openApp(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("nothing was opened"), result.message)
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "agents.load"])
     }
 
     func testMissingAppBundleCausesNoLifecycleMutation() async {
@@ -538,6 +580,29 @@ final class ProcessManagerTests: XCTestCase {
 
         XCTAssertEqual(lifecycle.calls.first, "agents.unload")
         XCTAssertTrue(lifecycle.calls.contains("terminate.helper:ExampleHelper"))
+    }
+
+    /// Quit Helpers must leave a launch agent loaded when it is the one running
+    /// the main process, otherwise booting it out quits the app.
+    func testQuitHelpersPreservesLaunchAgentsRunningTheMainProcess() async {
+        let lifecycle = FakeLifecycleService()
+        let preset = lifecyclePreset()
+        let main = process(pid: 42, name: "Example")
+        let helper = process(pid: 43, name: "ExampleHelper")
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .success([main, helper]),
+                .success([main])
+            ]),
+            lifecycle: lifecycle
+        )
+        manager.watchedAppsProvider = { [preset] }
+
+        let result = await manager.quitHelpers(preset)
+
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertEqual(lifecycle.preservedPIDs, [[42]])
+        XCTAssertEqual(lifecycle.calls.first, "agents.unload")
     }
 
     func testManagedStopReturnsTypedFailureWhenTargetStillRuns() async {
@@ -605,7 +670,7 @@ final class ProcessManagerTests: XCTestCase {
             LifecycleJobResult(label: "example.agent", state: .changed, detail: "disabled")
         ])
         let preset = lifecyclePreset()
-        let protected = process(pid: 44, name: "ExampleDaemon")
+        let protected = process(pid: 44, uid: 0, name: "ExampleDaemon")
         let inventory = FakeProcessInventory(results: [
             .success([
                 process(pid: 42, name: "Example"),
@@ -695,10 +760,150 @@ final class ProcessManagerTests: XCTestCase {
             lifecycle: lifecycle
         )
         manager.keptOffPresetsProvider = { [preset] }
+        manager.isPresetKeptOffProvider = { _ in true }
 
         await manager.enforceKeptOffPresets(force: true)
 
         XCTAssertEqual(lifecycle.calls, ["agents.disable"])
+    }
+
+    /// Enforcement runs on every launch and poll tick; a successful run must not
+    /// raise the Keep Off report sheet.
+    func testEnforcementPublishesNoReportWhenEveryJobSucceeds() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .changed, detail: "disabled")
+        ])
+        let preset = lifecyclePreset()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+        manager.keptOffPresetsProvider = { [preset] }
+        manager.isPresetKeptOffProvider = { _ in true }
+
+        await manager.enforceKeptOffPresets(force: true)
+
+        XCTAssertEqual(lifecycle.calls.first, "agents.disable")
+        XCTAssertNil(manager.lifecycleReport)
+    }
+
+    func testEnforcementPublishesAReportWhenAJobFails() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .failed, detail: "Operation not permitted")
+        ])
+        let preset = lifecyclePreset()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+        manager.keptOffPresetsProvider = { [preset] }
+        manager.isPresetKeptOffProvider = { _ in true }
+
+        await manager.enforceKeptOffPresets(force: true)
+
+        XCTAssertEqual(manager.lifecycleReport?.jobs.map(\.state), [.failed])
+    }
+
+    func testUserKeepOffStillPublishesItsReport() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "example.agent", state: .changed, detail: "disabled")
+        ])
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+
+        _ = await manager.keepOff(lifecyclePreset())
+
+        XCTAssertEqual(manager.lifecycleReport?.jobs.map(\.state), [.changed])
+    }
+
+    func testEnforcementIsSkippedOnceIntentHasBeenCleared() async {
+        let lifecycle = FakeLifecycleService()
+        let preset = lifecyclePreset()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([process(pid: 42, name: "Example")])]),
+            lifecycle: lifecycle
+        )
+        manager.keptOffPresetsProvider = { [preset] }
+        manager.isPresetKeptOffProvider = { _ in false }
+
+        let result = await manager.keepOff(preset, recordIntent: false)
+
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertTrue(lifecycle.calls.isEmpty)
+    }
+
+    /// The poll tick decides to enforce, a user's Open then takes the gate and
+    /// clears the Keep Off intent, and the queued enforcement runs afterwards. It
+    /// must abort inside the gate instead of re-disabling the agents the user
+    /// just restored and quitting the app they just opened.
+    func testEnforcementQueuedBehindOpenDoesNotReDisableAgentsAfterOpenClearsIntent() async {
+        let lifecycle = FakeLifecycleService()
+        let preset = lifecyclePreset()
+        let running = process(pid: 42, name: "Example")
+        let inventory = SequencedBlockingProcessInventory(
+            results: [
+                .success([running]),   // enforcement's ungated snapshot: app running
+                .success([]),          // Open's fresh snapshot: not running yet
+                .success([running]),   // Open's post-service re-check
+                .success([running])    // Open's final refresh and anything later
+            ],
+            blockingFirstCalls: 2
+        )
+        let manager = makeManager(inventory: inventory, lifecycle: lifecycle)
+        var keptOff = true
+        manager.watchedAppsProvider = { [preset] }
+        manager.isPresetKeptOffProvider = { _ in keptOff }
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+        manager.keptOffPresetsProvider = { keptOff ? [preset] : [] }
+
+        let enforcement = Task { await manager.enforceKeptOffPresets() }
+        await inventory.waitForCall(1)
+        let open = Task { await manager.openApp(preset) }
+        await inventory.waitForCall(2)
+
+        await inventory.release(1)
+        for _ in 0..<50 { await Task.yield() }
+        await inventory.release(2)
+
+        let openResult = await open.value
+        await enforcement.value
+
+        XCTAssertEqual(openResult.status, .completed, openResult.message)
+        XCTAssertFalse(keptOff)
+        XCTAssertFalse(
+            lifecycle.calls.contains("agents.disable"),
+            "enforcement re-disabled the agents after Open: \(lifecycle.calls)"
+        )
+        XCTAssertFalse(lifecycle.calls.contains("terminate:Example"))
+        XCTAssertEqual(manager.operationState, .idle)
+    }
+
+    func testEnforcementSkipsWhileAMutationIsRunning() async {
+        let lifecycle = FakeLifecycleService()
+        let preset = lifecyclePreset()
+        let inventory = SequencedBlockingProcessInventory(
+            results: [.success([process(pid: 42, name: "Example")])],
+            blockingFirstCalls: 1
+        )
+        let manager = makeManager(inventory: inventory, lifecycle: lifecycle)
+        manager.watchedAppsProvider = { [preset] }
+        manager.keptOffPresetsProvider = { [preset] }
+        manager.isPresetKeptOffProvider = { _ in true }
+
+        let quit = Task { await manager.quitMainApp(preset) }
+        await inventory.waitForCall(1)
+        XCTAssertEqual(manager.operationState, .runningMutation)
+
+        await manager.enforceKeptOffPresets(force: true)
+
+        XCTAssertFalse(lifecycle.calls.contains("agents.disable"))
+        await inventory.release(1)
+        _ = await quit.value
     }
 
     func testRoutineKeepOffEnforcementChecksFreshProcessState() async {
@@ -717,6 +922,7 @@ final class ProcessManagerTests: XCTestCase {
             lifecycle: lifecycle
         )
         manager.keptOffPresetsProvider = { [preset] }
+        manager.isPresetKeptOffProvider = { _ in true }
         manager.watchedAppsProvider = { [preset] }
 
         await manager.enforceKeptOffPresets()
@@ -813,6 +1019,7 @@ final class ProcessManagerTests: XCTestCase {
     private func process(
         pid: Int32,
         startTime: String = "Sat Jul 26 11:20:17 2026",
+        uid: uid_t? = nil,
         cpu: Double = 0,
         memory: Double = 0,
         name: String
@@ -820,6 +1027,7 @@ final class ProcessManagerTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: uid,
             cpu: cpu,
             memoryMB: memory,
             command: "/Applications/\(name).app/Contents/MacOS/\(name)",
@@ -845,6 +1053,7 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     var waitResult = true
     var terminationOutcome = ProcessTerminationOutcome.signalled
     private(set) var calls: [String] = []
+    private(set) var preservedPIDs: [Set<Int32>] = []
 
     func appBundleExists(at path: String) -> Bool {
         calls.append("exists")
@@ -871,6 +1080,15 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     }
 
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        calls.append("agents.unload")
+        return agentUnloadResult
+    }
+
+    func unloadUserLaunchAgents(
+        for preset: WatchedAppPreset,
+        preservingPIDs: Set<Int32>
+    ) async -> LifecycleBatchResult {
+        preservedPIDs.append(preservingPIDs)
         calls.append("agents.unload")
         return agentUnloadResult
     }
@@ -937,6 +1155,53 @@ private actor BlockingProcessInventory: ProcessInventoryProviding {
 
     func currentLoadCount() -> Int {
         loadCount
+    }
+}
+
+/// Blocks the first `blockingFirstCalls` reads until the test releases each one
+/// by number, so a test can interleave an ungated read, a gated mutation, and a
+/// queued mutation deterministically.
+private actor SequencedBlockingProcessInventory: ProcessInventoryProviding {
+    private var results: [Result<[AppProcess], ProcessInventoryError>]
+    private let blockingFirstCalls: Int
+    private var callCount = 0
+    private var blocked: [Int: CheckedContinuation<Void, Never>] = [:]
+    private var released: Set<Int> = []
+    private var callWaiters: [(count: Int, continuation: CheckedContinuation<Void, Never>)] = []
+
+    init(
+        results: [Result<[AppProcess], ProcessInventoryError>],
+        blockingFirstCalls: Int
+    ) {
+        self.results = results
+        self.blockingFirstCalls = blockingFirstCalls
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        callCount += 1
+        let index = callCount
+        let ready = callWaiters.filter { callCount >= $0.count }
+        callWaiters.removeAll { callCount >= $0.count }
+        ready.forEach { $0.continuation.resume() }
+
+        if index <= blockingFirstCalls, !released.contains(index) {
+            await withCheckedContinuation { blocked[index] = $0 }
+        }
+        guard !results.isEmpty else {
+            return .failure(.commandFailed("No fake result configured."))
+        }
+        return results.count == 1 ? results[0] : results.removeFirst()
+    }
+
+    func waitForCall(_ count: Int) async {
+        guard callCount < count else { return }
+        await withCheckedContinuation { callWaiters.append((count, $0)) }
+    }
+
+    func release(_ index: Int) {
+        released.insert(index)
+        blocked[index]?.resume()
+        blocked[index] = nil
     }
 }
 

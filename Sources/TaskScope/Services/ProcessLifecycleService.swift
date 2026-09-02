@@ -13,12 +13,26 @@ protocol ProcessTerminating: Sendable {
 
 protocol UserLaunchAgentControlling: Sendable {
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
+    /// Unloads the preset's user launch agents except any whose loaded pid is in
+    /// `preservingPIDs` (used by Quit Helpers to keep an agent that runs the
+    /// main process loaded).
+    func unloadUserLaunchAgents(
+        for preset: WatchedAppPreset,
+        preservingPIDs: Set<Int32>
+    ) async -> LifecycleBatchResult
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
     func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
     func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
 }
 
 extension UserLaunchAgentControlling {
+    func unloadUserLaunchAgents(
+        for preset: WatchedAppPreset,
+        preservingPIDs: Set<Int32>
+    ) async -> LifecycleBatchResult {
+        await unloadUserLaunchAgents(for: preset)
+    }
+
     func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         .notNeeded
     }
@@ -77,7 +91,7 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
         return await ProcessLifecycleController.terminateProcess(
             named: preset.mainProcessName,
             policy: .gracefulThenForce,
-            expectedExecutableDirectory: Self.executableDirectory(for: preset)
+            expectedExecutableDirectory: preset.mainExecutableDirectory
         )
     }
 
@@ -85,7 +99,7 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
         await ProcessLifecycleController.terminateProcess(
             named: name,
             policy: .gracefulThenForce,
-            expectedExecutableDirectory: Self.bundleContentsDirectory(for: preset)
+            expectedExecutableDirectory: preset.bundleContentsDirectory
         )
     }
 
@@ -95,6 +109,16 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
 
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         await ProcessLifecycleController.unloadUserLaunchAgents(for: preset)
+    }
+
+    func unloadUserLaunchAgents(
+        for preset: WatchedAppPreset,
+        preservingPIDs: Set<Int32>
+    ) async -> LifecycleBatchResult {
+        await ProcessLifecycleController.unloadUserLaunchAgents(
+            for: preset,
+            preservingPIDs: preservingPIDs
+        )
     }
 
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
@@ -121,23 +145,11 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
         await ProcessLifecycleController.waitForProcessNamed(
             preset.mainProcessName,
             timeoutSeconds: timeoutSeconds,
-            expectedExecutableDirectory: Self.executableDirectory(for: preset)
+            expectedExecutableDirectory: preset.mainExecutableDirectory
         )
     }
 
     func openAppBundle(at path: String) async -> Bool {
         await ProcessLifecycleController.openAppBundle(at: path)
-    }
-
-    private static func executableDirectory(for preset: WatchedAppPreset) -> String {
-        URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents/MacOS", isDirectory: true)
-            .standardizedFileURL.path + "/"
-    }
-
-    private static func bundleContentsDirectory(for preset: WatchedAppPreset) -> String {
-        URL(fileURLWithPath: preset.appPath, isDirectory: true)
-            .appendingPathComponent("Contents", isDirectory: true)
-            .standardizedFileURL.path + "/"
     }
 }

@@ -142,6 +142,23 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
             && appPath == "/Applications/GlobalProtect.app"
     }
 
+    /// `<appPath>/Contents/MacOS/`: a main-process match must be executed from
+    /// here. Trailing slash included so prefix checks cannot match a sibling
+    /// bundle whose name merely starts with this one.
+    var mainExecutableDirectory: String {
+        URL(fileURLWithPath: appPath, isDirectory: true)
+            .appendingPathComponent("Contents/MacOS", isDirectory: true)
+            .standardizedFileURL.path + "/"
+    }
+
+    /// `<appPath>/Contents/`: helper matches must be executed from inside the
+    /// bundle, anywhere under Contents.
+    var bundleContentsDirectory: String {
+        URL(fileURLWithPath: appPath, isDirectory: true)
+            .appendingPathComponent("Contents", isDirectory: true)
+            .standardizedFileURL.path + "/"
+    }
+
     func matchesLookupName(_ name: String) -> Bool {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedName.isEmpty else { return false }
@@ -181,7 +198,18 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
 
 struct WatchedAppSnapshot: Equatable, Sendable {
     var preset: WatchedAppPreset
+    /// Main, helper, and *system-daemon* protected names observed running.
     var runningNames: Set<String>
+    /// PIDs of the processes that matched the main process definition. Lifecycle
+    /// actions that must leave the main app alone (Quit Helpers) use these to
+    /// keep a launch agent that runs the main binary loaded.
+    var mainProcessPIDs: Set<Int32> = []
+    /// Protected names observed running *without* root privileges. Such a
+    /// process is a per-user instance (for GlobalProtect, the optional `pangps`
+    /// user agent), never the protected system daemon, and it is reported
+    /// separately so it is not mistaken for the daemon. It is still never
+    /// signalled by name; Keep Off and Quit unload it through launchd only.
+    var unprivilegedProtectedNames: Set<String> = []
 
     var isMainRunning: Bool {
         runningNames.contains(preset.mainProcessName)
@@ -199,8 +227,12 @@ struct WatchedAppSnapshot: Equatable, Sendable {
         !helpersRunning.isEmpty
     }
 
+    var unprivilegedProtectedRunning: [String] {
+        preset.protectedProcessNames.filter { unprivilegedProtectedNames.contains($0) }
+    }
+
     var hasAny: Bool {
-        !runningNames.isEmpty
+        !runningNames.isEmpty || !unprivilegedProtectedNames.isEmpty
     }
 
     var detail: String {
@@ -210,6 +242,7 @@ struct WatchedAppSnapshot: Equatable, Sendable {
         }
         names.append(contentsOf: helpersRunning)
         names.append(contentsOf: protectedRunning)
+        names.append(contentsOf: unprivilegedProtectedRunning.map { "\($0) (user)" })
         return names.isEmpty ? "No watched processes" : names.joined(separator: ", ")
     }
 }
@@ -226,7 +259,7 @@ extension Array where Element == WatchedAppSnapshot {
         if contains(where: { $0.hasHelpers }) {
             return .helpersOnly
         }
-        if contains(where: { !$0.protectedRunning.isEmpty }) {
+        if contains(where: { !$0.protectedRunning.isEmpty || !$0.unprivilegedProtectedRunning.isEmpty }) {
             return .protectedOnly
         }
         return .idle

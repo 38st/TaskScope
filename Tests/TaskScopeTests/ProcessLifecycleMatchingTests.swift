@@ -386,7 +386,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertFalse(harness.commands.contains { $0.contains("launchctl bootout") })
     }
 
-    func testAgentBootstrapExecutesAndVerifiesThroughInjectedRuntime() async {
+    func testAgentBootstrapExecutesAndVerifiesThroughInjectedRuntime() async throws {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
             launchAgentLabels: ["/agents/example.plist": "example.agent"],
@@ -411,6 +411,33 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
         XCTAssertTrue(harness.commands.contains { $0.contains("bootstrap") })
         XCTAssertTrue(harness.commands.contains { $0.contains("kickstart") })
+        let enableIndex = try XCTUnwrap(harness.commands.firstIndex { $0.contains(" enable ") })
+        let bootstrapIndex = try XCTUnwrap(harness.commands.firstIndex { $0.contains(" bootstrap ") })
+        XCTAssertLessThan(enableIndex, bootstrapIndex, "enable must precede bootstrap")
+    }
+
+    /// launchd refuses to bootstrap a job that carries a persistent disable
+    /// override, which is exactly the state Keep Off leaves behind. Enabling
+    /// after the bootstrap therefore never ran when it mattered.
+    func testAgentBootstrapEnablesBeforeBootstrapSoADisabledJobCanLoad() async throws {
+        let launchd = DisabledJobLaunchd()
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            launchAgentLabels: ["/agents/example.plist": "example.agent"],
+            commandResults: [],
+            respond: { launchd.respond(to: $0) }
+        )
+
+        let batch = await ProcessLifecycleController.bootstrapUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .changed, batch.jobs.first?.detail ?? "")
+        XCTAssertTrue(launchd.loaded)
+        let enableIndex = try XCTUnwrap(harness.commands.firstIndex { $0.contains(" enable ") })
+        let bootstrapIndex = try XCTUnwrap(harness.commands.firstIndex { $0.contains(" bootstrap ") })
+        XCTAssertLessThan(enableIndex, bootstrapIndex)
     }
 
     func testAgentBootstrapRejectsMismatchedPlistLabelBeforeMutation() async {
@@ -430,13 +457,12 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertTrue(harness.commands.isEmpty)
     }
 
-    func testAgentBootstrapReportsEnableFailureAndDoesNotKickstart() async {
+    func testAgentBootstrapReportsEnableFailureAndDoesNotBootstrapOrKickstart() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
             launchAgentLabels: ["/agents/example.plist": "example.agent"],
             commandResults: [
                 result(stderr: "Could not find service", exitCode: 113),
-                result(exitCode: 0),
                 result(stderr: "Operation not permitted", exitCode: 1)
             ]
         )
@@ -448,7 +474,64 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
 
         XCTAssertEqual(batch.jobs.first?.state, .failed)
         XCTAssertEqual(batch.jobs.first?.detail, "Operation not permitted")
+        XCTAssertFalse(harness.commands.contains { $0.contains(" bootstrap ") })
         XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
+    }
+
+    func testOpenAppBundleDoesNotForceASecondInstance() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/Applications/Example.app"],
+            commandResults: [result(exitCode: 0)]
+        )
+
+        let opened = await ProcessLifecycleController.openAppBundle(
+            at: "/Applications/Example.app",
+            runtime: harness.runtime
+        )
+
+        XCTAssertTrue(opened)
+        XCTAssertEqual(harness.commands, ["/usr/bin/open '/Applications/Example.app'"])
+    }
+
+    /// On some GlobalProtect layouts the `pangpa` agent's Program is the main
+    /// GlobalProtect binary. Quit Helpers must leave that agent loaded or it
+    /// quits the app the user asked to keep.
+    func testUnloadLeavesAgentThatRunsThePreservedMainProcessLoaded() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            commandResults: [result(stdout: "state = running\n\tpid = 42", exitCode: 0)]
+        )
+
+        let batch = await ProcessLifecycleController.unloadUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            preservingPIDs: [42],
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .alreadyLoaded)
+        XCTAssertTrue(batch.succeeded)
+        XCTAssertTrue(batch.jobs.first?.detail.contains("pid 42") == true)
+        XCTAssertFalse(harness.commands.contains { $0.contains("bootout") })
+    }
+
+    func testUnloadStillBootsOutAgentsThatDoNotRunAPreservedProcess() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"],
+            commandResults: [
+                result(stdout: "state = running\n\tpid = 43", exitCode: 0),
+                result(exitCode: 0),
+                result(stderr: "Could not find service", exitCode: 113)
+            ]
+        )
+
+        let batch = await ProcessLifecycleController.unloadUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"),
+            preservingPIDs: [42],
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .changed)
+        XCTAssertTrue(harness.commands.contains { $0.contains("bootout") })
     }
 
     func testLoadedAgentIsLeftRunningWithoutRestart() async {
@@ -537,13 +620,15 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertTrue(harness.commands.isEmpty)
     }
 
-    func testUnrelatedPortListenerCannotSatisfyDaemonReadiness() async {
+    /// A loaded daemon whose reported pid is not running the expected process is
+    /// waited on, never restarted, and never re-bootstrapped with privileges.
+    func testLoadedDaemonWithoutMatchingProcessIsWaitedOnNotRestarted() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
-            commandResults: [
-                result(stdout: "pid = 42", exitCode: 0),
-                result(stderr: "Administrator approval cancelled", exitCode: 1)
-            ],
+            commandResults: [],
+            respond: { _ in
+                ShellCommandResult(command: "", stdout: "state = running\n\tpid = 42", stderr: "", exitCode: 0)
+            },
             inventory: [
                 process(pid: 99, command: "/Applications/UnrelatedListener")
             ]
@@ -555,16 +640,21 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
 
         XCTAssertEqual(batch.jobs.first?.state, .failed)
+        XCTAssertTrue(batch.jobs.first?.detail.contains("never restarts") == true)
+        XCTAssertFalse(harness.sleepDurations.isEmpty, "readiness must be re-polled before failing")
         XCTAssertFalse(harness.commands.contains { $0.contains("/usr/sbin/lsof") })
-        XCTAssertTrue(harness.commands.contains { $0.contains("/usr/bin/osascript") })
+        XCTAssertFalse(harness.commands.contains { $0.contains("/usr/bin/osascript") })
+        XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
     }
 
-    func testDaemonReadinessScopesPortProbeToExpectedProcessPID() async {
+    /// Readiness is launchd's pid plus a fresh inventory. An unprivileged `lsof`
+    /// cannot see a root daemon's descriptors, so a port probe could only ever
+    /// fail and used to make every Open fall into the administrator script.
+    func testDaemonReadinessIsVerifiedFromLaunchdPIDAndInventoryWithoutLsof() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
             commandResults: [
-                result(stdout: "pid = 42", exitCode: 0),
-                result(exitCode: 0)
+                result(stdout: "state = running\n\tpid = 42", exitCode: 0)
             ],
             inventory: [
                 process(pid: 42, command: "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS"),
@@ -578,18 +668,21 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
 
         XCTAssertEqual(batch.jobs.first?.state, .verified)
-        let lsofCommand = harness.commands.first { $0.contains("/usr/sbin/lsof") }
-        XCTAssertTrue(lsofCommand?.contains("-p '42'") == true)
-        XCTAssertFalse(lsofCommand?.contains("99") == true)
+        XCTAssertEqual(
+            harness.commands,
+            ["/bin/launchctl print 'system/com.paloaltonetworks.gp.pangpsd'"]
+        )
+        XCTAssertFalse(harness.commands.contains { $0.contains("lsof") })
+        XCTAssertFalse(harness.commands.contains { $0.contains("osascript") })
     }
 
     func testDaemonReadinessRejectsSameNameProcessWhosePIDIsNotLaunchdJobPID() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
-            commandResults: [
-                result(stdout: "pid = 42", exitCode: 0),
-                result(stderr: "Administrator approval cancelled", exitCode: 1)
-            ],
+            commandResults: [],
+            respond: { _ in
+                ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0)
+            },
             inventory: [
                 process(pid: 99, command: "/tmp/PanGPS")
             ]
@@ -602,7 +695,42 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
 
         XCTAssertEqual(batch.jobs.first?.state, .failed)
         XCTAssertFalse(harness.commands.contains { $0.contains("/usr/sbin/lsof") })
-        XCTAssertTrue(harness.commands.contains { $0.contains("/usr/bin/osascript") })
+        XCTAssertFalse(harness.commands.contains { $0.contains("/usr/bin/osascript") })
+    }
+
+    /// The privileged script bootstraps only a daemon launchd does not have
+    /// loaded. `kickstart -k` on the live VPN daemon would drop the session, so
+    /// it must never appear in the script, loaded or not.
+    func testEnsureSystemLaunchDaemonsNeverKickstartsTheSystemDaemon() async throws {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
+            commandResults: [
+                result(stderr: "Could not find service", exitCode: 113),
+                result(exitCode: 0),
+                result(stdout: "state = running\n\tpid = 42", exitCode: 0)
+            ],
+            inventory: [
+                process(pid: 42, command: "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS")
+            ]
+        )
+
+        let batch = await ProcessLifecycleController.ensureSystemLaunchDaemons(
+            for: .globalProtect,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(batch.jobs.first?.state, .changed)
+        let adminCommand = try XCTUnwrap(harness.commands.first { $0.contains("/usr/bin/osascript") })
+        XCTAssertFalse(adminCommand.contains("kickstart"))
+        XCTAssertTrue(adminCommand.contains("launchctl bootstrap system"))
+        XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
+
+        let script = ProcessLifecycleController.adminBootstrapScript(
+            for: WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0]
+        )
+        XCTAssertFalse(script.contains("kickstart"))
+        XCTAssertTrue(script.contains("exit 0"), "a loaded daemon must be left alone")
+        XCTAssertTrue(script.contains("/bin/launchctl bootstrap system '/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist'"))
     }
 
     func testCustomDaemonConfigurationNeverReachesPrivilegedCommandPath() async {
@@ -696,11 +824,50 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
     }
 }
 
+/// A fake launchd that mirrors the real one's refusal to bootstrap a job that
+/// still carries a persistent disable override.
+private final class DisabledJobLaunchd: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = false
+    private(set) var loaded = false
+
+    func respond(to command: String) -> ShellCommandResult {
+        lock.withLock {
+            if command.contains(" print ") {
+                return loaded
+                    ? ShellCommandResult(command: command, stdout: "pid = 42", stderr: "", exitCode: 0)
+                    : ShellCommandResult(command: command, stdout: "", stderr: "Could not find service", exitCode: 113)
+            }
+            if command.contains(" enable ") {
+                enabled = true
+                return ShellCommandResult(command: command, stdout: "", stderr: "", exitCode: 0)
+            }
+            if command.contains(" bootstrap ") {
+                guard enabled else {
+                    return ShellCommandResult(
+                        command: command,
+                        stdout: "",
+                        stderr: "Bootstrap failed: 5: Input/output error",
+                        exitCode: 5
+                    )
+                }
+                loaded = true
+                return ShellCommandResult(command: command, stdout: "", stderr: "", exitCode: 0)
+            }
+            if command.contains(" kickstart ") {
+                return ShellCommandResult(command: command, stdout: "", stderr: "", exitCode: loaded ? 0 : 1)
+            }
+            return ShellCommandResult(command: command, stdout: "", stderr: "unexpected command", exitCode: 1)
+        }
+    }
+}
+
 private final class LifecycleRuntimeHarness: @unchecked Sendable {
     private let lock = NSLock()
     private let existingPaths: Set<String>
     private let launchAgentLabels: [String: String]
     private var commandResults: [ShellCommandResult]
+    private let respond: (@Sendable (String) -> ShellCommandResult)?
     private var inventoryResults: [Result<[AppProcess], ProcessInventoryError>]
     private let executablePathsAtSignal: [Int32: String]
     private var signalResults: [Bool]
@@ -713,6 +880,7 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
         existingPaths: Set<String>,
         launchAgentLabels: [String: String] = [:],
         commandResults: [ShellCommandResult],
+        respond: (@Sendable (String) -> ShellCommandResult)? = nil,
         inventory: [AppProcess] = [],
         inventoryResults: [Result<[AppProcess], ProcessInventoryError>]? = nil,
         executablePathsAtSignal: [Int32: String]? = nil,
@@ -721,6 +889,7 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
         self.existingPaths = existingPaths
         self.launchAgentLabels = launchAgentLabels
         self.commandResults = commandResults
+        self.respond = respond
         self.inventoryResults = inventoryResults ?? [.success(inventory)]
         self.executablePathsAtSignal = executablePathsAtSignal
             ?? Dictionary(uniqueKeysWithValues: inventory.compactMap { process in
@@ -742,6 +911,9 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
                 lock.withLock {
                     recordedCommands.append(command)
                     recordedTimeouts.append(timeout)
+                    if let respond {
+                        return respond(command)
+                    }
                     guard !commandResults.isEmpty else {
                         return ShellCommandResult(
                             command: command,

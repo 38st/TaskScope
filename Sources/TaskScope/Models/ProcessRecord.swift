@@ -3,6 +3,10 @@ import Foundation
 struct AppProcess: Identifiable, Equatable, Sendable {
     var pid: Int32
     var parentPID: Int32
+    /// Effective user id reported by `ps`, or nil when the row did not carry it.
+    /// A protected process name is treated as the protected *system* daemon only
+    /// when this is 0; an unknown uid is never promoted to root.
+    var uid: uid_t?
     var cpu: Double
     var memoryMB: Double
     var command: String
@@ -18,6 +22,7 @@ struct AppProcess: Identifiable, Equatable, Sendable {
     init(
         pid: Int32,
         parentPID: Int32,
+        uid: uid_t? = nil,
         cpu: Double,
         memoryMB: Double,
         command: String,
@@ -31,6 +36,7 @@ struct AppProcess: Identifiable, Equatable, Sendable {
     ) {
         self.pid = pid
         self.parentPID = parentPID
+        self.uid = uid
         self.cpu = cpu
         self.memoryMB = memoryMB
         self.command = command

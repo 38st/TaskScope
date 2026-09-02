@@ -57,12 +57,73 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
             protectedProcessNames: ["Example Service"],
             appPath: "/Applications/Example.app"
         )
-        let service = process(pid: 20, name: "Example Service", path: "/Library/Example Service")
+        let service = process(pid: 20, name: "Example Service", path: "/Library/Example Service", uid: 0)
 
         let snapshot = WatchedSnapshotBuilder(excludedPID: 99)
             .snapshot(for: preset, in: [service])
 
         XCTAssertEqual(snapshot.runningNames, ["Example Service"])
+        XCTAssertEqual(snapshot.protectedRunning, ["Example Service"])
+        XCTAssertTrue(snapshot.unprivilegedProtectedNames.isEmpty)
+    }
+
+    /// GlobalProtect's optional per-user `pangps` agent runs a binary that is
+    /// also named PanGPS. Only a root process is the protected system daemon; a
+    /// same-named user process is reported separately, and an unknown uid is
+    /// never promoted to root.
+    func testProtectedNameWithoutRootIsReportedAsAUserInstanceNotTheSystemDaemon() {
+        let preset = WatchedAppPreset.globalProtect
+        let userAgent = process(
+            pid: 20,
+            name: "PanGPS",
+            path: "/Applications/GlobalProtect.app/Contents/Resources/PanGPS",
+            uid: 501
+        )
+        let unknownUID = process(pid: 21, name: "PanGPS", path: "/tmp/PanGPS", uid: nil)
+        let daemon = process(
+            pid: 22,
+            name: "PanGPS",
+            path: "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS",
+            uid: 0
+        )
+
+        let userOnly = WatchedSnapshotBuilder(excludedPID: 99)
+            .snapshot(for: preset, in: [userAgent, unknownUID])
+        XCTAssertTrue(userOnly.runningNames.isEmpty)
+        XCTAssertTrue(userOnly.protectedRunning.isEmpty)
+        XCTAssertEqual(userOnly.unprivilegedProtectedNames, ["PanGPS"])
+        XCTAssertEqual(userOnly.unprivilegedProtectedRunning, ["PanGPS"])
+        XCTAssertTrue(userOnly.hasAny)
+        XCTAssertEqual(userOnly.detail, "PanGPS (user)")
+        XCTAssertEqual([userOnly].aggregateStatus, .protectedOnly)
+
+        let both = WatchedSnapshotBuilder(excludedPID: 99)
+            .snapshot(for: preset, in: [userAgent, daemon])
+        XCTAssertEqual(both.runningNames, ["PanGPS"])
+        XCTAssertEqual(both.protectedRunning, ["PanGPS"])
+        XCTAssertEqual(both.unprivilegedProtectedNames, ["PanGPS"])
+    }
+
+    func testSnapshotRecordsMainProcessPIDsForLifecycleDecisions() {
+        let preset = WatchedAppPreset.globalProtect
+        let main = process(
+            pid: 30,
+            name: "GlobalProtect",
+            path: "/Applications/GlobalProtect.app/Contents/MacOS/GlobalProtect",
+            uid: 501
+        )
+        let helper = process(
+            pid: 31,
+            name: "PanGPA",
+            path: "/Applications/GlobalProtect.app/Contents/MacOS/PanGPA",
+            uid: 501
+        )
+
+        let snapshot = WatchedSnapshotBuilder(excludedPID: 99)
+            .snapshot(for: preset, in: [main, helper])
+
+        XCTAssertEqual(snapshot.mainProcessPIDs, [30])
+        XCTAssertEqual(snapshot.runningNames, ["GlobalProtect", "PanGPA"])
     }
 
     func testExcludedProcessNeverAppearsInSnapshot() {
@@ -85,10 +146,11 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
         XCTAssertTrue(snapshot.runningNames.isEmpty)
     }
 
-    private func process(pid: Int32, name: String, path: String) -> AppProcess {
+    private func process(pid: Int32, name: String, path: String, uid: uid_t? = nil) -> AppProcess {
         AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: uid,
             cpu: 0,
             memoryMB: 0,
             command: path,
