@@ -80,7 +80,7 @@ struct ProcessRow: View {
                     .frame(width: 96, alignment: .trailing)
                     .accessibilityHidden(true)
 
-                Text(metricPair(process.diskReadBlocks, process.diskWriteBlocks, decimals: 0))
+                Text(metricPair(process.diskReadBytes.map { $0 / 1_048_576 }, process.diskWriteBytes.map { $0 / 1_048_576 }, decimals: 1))
                     .monospacedDigit()
                     .font(.caption)
                     .foregroundStyle(.secondary)

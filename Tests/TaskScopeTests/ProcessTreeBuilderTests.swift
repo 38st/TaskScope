@@ -78,6 +78,16 @@ final class ProcessTreeBuilderTests: XCTestCase {
         XCTAssertEqual(tree[1].children.map(\.id), [21])
     }
 
+    func testDuplicatePIDRowsDoNotCrashTheBuilder() {
+        let first = process(pid: 7, command: "first")
+        let duplicate = process(pid: 7, command: "duplicate")
+
+        let tree = ProcessTreeBuilder.build(from: [first, duplicate], ppidMap: [7: 0])
+
+        XCTAssertEqual(tree.map(\.id), [7])
+        XCTAssertEqual(tree[0].process.command, "first")
+    }
+
     private func process(pid: Int32, command: String) -> AppProcess {
         AppProcess(
             pid: pid,
@@ -88,8 +98,8 @@ final class ProcessTreeBuilderTests: XCTestCase {
             elapsedTime: "",
             netInKB: 0,
             netOutKB: 0,
-            diskReadBlocks: 0,
-            diskWriteBlocks: 0
+            diskReadBytes: 0,
+            diskWriteBytes: 0
         )
     }
 }

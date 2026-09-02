@@ -142,12 +142,56 @@ final class AppCommandCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(manager.message, "Idle.")
         await inventory.finish()
-        await silentRefresh.value
+        _ = await silentRefresh.value
         let result = await explicitRefresh.value
 
         XCTAssertEqual(result.status, .completed)
         XCTAssertEqual(result.message, manager.message)
         XCTAssertNotEqual(result.message, "Idle.")
+    }
+
+    /// `processLoadError` describes the displayed process list, which a
+    /// watched-status refresh never reloads. A refresh that read a fresh
+    /// inventory must report success even while that stale-list error stands.
+    func testRefreshReportsItsOwnOutcomeNotAStaleProcessListError() async {
+        let inventory = ScriptedInventory(results: [
+            .failure(.commandFailed("ps timed out")),
+            .success([])
+        ])
+        let manager = ProcessManager(
+            processInventory: inventory,
+            processSignaler: NoopSignaler(),
+            lifecycle: NoopLifecycle(),
+            settleAfterProcessChange: {}
+        )
+        manager.enableNotifications = false
+        let coordinator = AppCommandCoordinator(processManager: manager, presets: { [] })
+
+        await manager.loadProcessList(showMessage: false)
+        XCTAssertEqual(manager.processLoadError, "ps timed out", "precondition: a stale-list error is recorded")
+
+        let result = await coordinator.perform(.refresh)
+
+        XCTAssertEqual(result.status, .completed, result.message)
+        XCTAssertEqual(result.message, "No watched processes")
+        XCTAssertEqual(manager.processLoadError, "ps timed out", "the list was not reloaded, so its error stands")
+    }
+
+    func testRefreshReportsFailureWhenItsOwnReadFails() async {
+        let inventory = ScriptedInventory(results: [.failure(.commandFailed("ps timed out"))])
+        let manager = ProcessManager(
+            processInventory: inventory,
+            processSignaler: NoopSignaler(),
+            lifecycle: NoopLifecycle(),
+            settleAfterProcessChange: {}
+        )
+        manager.enableNotifications = false
+        let coordinator = AppCommandCoordinator(processManager: manager, presets: { [] })
+
+        let result = await coordinator.perform(.refresh)
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("ps timed out"), result.message)
     }
 
     func testEntityCommandRejectsReplacementPresetWithSameDisplayName() async {
@@ -224,6 +268,22 @@ final class AppCommandCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(result, TaskScopeCommandResult(status: .completed, message: "done"))
         XCTAssertEqual(events, ["prepare:refresh", "dispatch:refresh"])
+    }
+}
+
+private final class ScriptedInventory: ProcessInventoryProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<[AppProcess], ProcessInventoryError>]
+
+    init(results: [Result<[AppProcess], ProcessInventoryError>]) {
+        self.results = results
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        lock.withLock {
+            guard !results.isEmpty else { return .failure(.commandFailed("exhausted")) }
+            return results.count == 1 ? results[0] : results.removeFirst()
+        }
     }
 }
 

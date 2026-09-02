@@ -55,11 +55,14 @@ final class AppCommandCoordinator {
 
         switch command {
         case .refresh:
-            await processManager.refreshWatchedStatus(showMessage: true)
-            if let error = processManager.processLoadError {
-                return TaskScopeCommandResult(status: .failed, message: error)
-            }
-            return TaskScopeCommandResult(status: .completed, message: processManager.message)
+            // Report this refresh's own outcome. `processLoadError` describes the
+            // displayed process list, which a watched-status refresh does not
+            // reload, so a stale list error must not fail a refresh that worked.
+            let refreshed = await processManager.refreshWatchedStatus(showMessage: true)
+            return TaskScopeCommandResult(
+                status: refreshed ? .completed : .failed,
+                message: processManager.message
+            )
 
         case .openPreset(let name):
             guard let preset = preset(named: name) else {

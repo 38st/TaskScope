@@ -95,6 +95,29 @@ All notable changes to TaskScope are documented in this file. The project uses
   instead of decoding as Logged.
 - Recovery banners say when an unreadable payload could not be backed up
   because an earlier backup already occupies the slot.
+- Every local tool now runs in the C locale (LC_ALL=C, LANG and LC_* removed),
+  so a non-English locale can no longer make `ps` print decimals and start
+  times the parser rejects; the parser also accepts a comma decimal.
+- Command output is decoded lossily and an empty process inventory is treated
+  as a read failure instead of an empty machine.
+- Disk I/O is read from the kernel's per-process resource usage in bytes
+  (shown in MB); the `ps inblock/oublock` columns print `-` on current macOS,
+  so the Disk column was always empty and cost an extra `ps` per refresh.
+- A process-list read cancelled by a poll restart is no longer recorded as the
+  persistent "process list is stale" error.
+- Refresh (in-app, URL, and Shortcuts) reports its own outcome instead of
+  failing because of an older process-list error it did not touch.
+- The process name is computed once per row and the sorted, filtered, and tree
+  lists are memoized per inventory generation instead of being rebuilt on
+  every view evaluation.
+- A repeated pid in `ps` output fails the read instead of crashing or silently
+  overwriting a row; the legacy six-token `ps` layout is no longer parsed, and
+  a malformed row is dropped while the rest of the inventory is kept.
+- The home-directory abbreviation in the command column applies only to the
+  home directory itself or paths inside it.
+- A slow inventory read that finishes late no longer overwrites a newer cached
+  result, and failed reads are never cached.
+- Process detail keeps internal runs of spaces in the command.
 - Removed a pipe-reader teardown race in command execution and strengthened
   cancellation near child exit.
 - Preserved full executable paths in the process display schema and saved

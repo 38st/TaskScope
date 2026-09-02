@@ -4,6 +4,10 @@ import Foundation
 enum ProcessInventoryError: Error, Equatable, LocalizedError, Sendable {
     case commandFailed(String)
     case parseFailed
+    /// The read was cancelled by its caller (a poll restart, a view teardown).
+    /// It says nothing about the inventory and is never recorded as a load
+    /// failure.
+    case cancelled
 
     var errorDescription: String? {
         switch self {
@@ -11,6 +15,8 @@ enum ProcessInventoryError: Error, Equatable, LocalizedError, Sendable {
             return detail.isEmpty ? "The process list command failed." : detail
         case .parseFailed:
             return "The process list could not be parsed."
+        case .cancelled:
+            return "The process list read was cancelled."
         }
     }
 }
@@ -29,12 +35,19 @@ enum ProcessListReader {
     // `comm` supplies a useful display path when available. It remains argv-backed,
     // so lifecycle and destructive matching must use the separately resolved kernel
     // executable path rather than trusting this value.
-    static let processListCommand = "/bin/ps -awwwxo pid=,ppid=,pcpu=,rss=,lstart=,etime=,comm="
+    //
+    // Column layout (12 whitespace-separated tokens; `lstart` is 5):
+    //   pid ppid uid pcpu rss lstart(5) etime comm
+    // Every command runs with LC_ALL=C (see ShellCommandRunner), so decimals use
+    // "." and `lstart` keeps the C-locale shape.
+    static let processListCommand = "/bin/ps -awwwxo pid=,ppid=,uid=,pcpu=,rss=,lstart=,etime=,comm="
     static let identityValidationCommand = "/bin/ps -awwwxo pid=,lstart="
 
     static func currentProcessList(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         let result = await ShellCommandRunner.run(processListCommand)
-
+        if let cancellation = cancellation(of: result) {
+            return .failure(cancellation)
+        }
         guard result.succeeded else {
             let detail = result.stderr.isEmpty ? "ps exited with status \(result.exitCode)." : result.stderr
             return .failure(.commandFailed(detail))
@@ -48,10 +61,16 @@ enum ProcessListReader {
             return .failure(error)
         }
 
-        let resolvedPaths = Dictionary(uniqueKeysWithValues: parsed.compactMap { process in
-            executablePath(for: process.pid).map { (process.pid, $0) }
-        })
+        let resolvedPaths = Dictionary(
+            parsed.compactMap { process in
+                executablePath(for: process.pid).map { (process.pid, $0) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         let validation = await ShellCommandRunner.run(identityValidationCommand)
+        if let cancellation = cancellation(of: validation) {
+            return .failure(cancellation)
+        }
         let validatedStartTimeMap: [Int32: String]
         switch validatedStartTimes(from: validation) {
         case .success(let startTimes):
@@ -64,6 +83,11 @@ enum ProcessListReader {
         // survived unchanged; malformed validation output still fails the
         // entire read, but a cleanly missing PID is simply no longer present.
         parsed = validatedProcesses(parsed, using: validatedStartTimeMap)
+        // TaskScope itself is always running, so an empty inventory can only be
+        // a broken read, never a true observation.
+        guard !parsed.isEmpty else {
+            return .failure(.parseFailed)
+        }
         attachExecutablePaths(
             to: &parsed,
             resolvedPaths: resolvedPaths,
@@ -72,89 +96,95 @@ enum ProcessListReader {
 
         if fetchExtendedStats {
             let netStats = await currentNetworkStats()
-            let diskStats = await currentDiskStats()
+            if Task.isCancelled {
+                return .failure(.cancelled)
+            }
             for index in parsed.indices {
                 parsed[index].netInKB = netStats?[parsed[index].pid]?.0
                 parsed[index].netOutKB = netStats?[parsed[index].pid]?.1
-                parsed[index].diskReadBlocks = diskStats?[parsed[index].pid]?.0
-                parsed[index].diskWriteBlocks = diskStats?[parsed[index].pid]?.1
+                let disk = diskIOBytes(for: parsed[index].pid)
+                parsed[index].diskReadBytes = disk?.read
+                parsed[index].diskWriteBytes = disk?.written
             }
         }
 
         return .success(parsed)
     }
 
-    /// A row that cannot be parsed, or that names a pid TaskScope must never
-    /// signal (0, negative, or launchd), is dropped while the rest of the
-    /// inventory is kept.
+    /// A cancelled command (or a cancelled calling task) is reported as
+    /// `.cancelled` so callers never record it as an inventory fault.
+    static func cancellation(of result: ShellCommandResult) -> ProcessInventoryError? {
+        if Task.isCancelled || result.exitCode == ShellCommandRunner.cancelledExitCode {
+            return .cancelled
+        }
+        return nil
+    }
+
+    /// Rows that cannot be parsed, or that name a pid TaskScope must never
+    /// signal, are dropped while the rest of the inventory is kept. Output with
+    /// no usable rows, or a repeated pid (an inconsistent snapshot), fails the
+    /// whole read.
     static func parseProcessListOutput(
         _ output: String
     ) -> Result<[AppProcess], ProcessInventoryError> {
         var processes: [AppProcess] = []
+        var seenPIDs: Set<Int32> = []
         for line in output.split(separator: "\n") {
             guard let process = parseProcessLine(line) else {
                 continue
             }
+            guard seenPIDs.insert(process.pid).inserted else {
+                return .failure(.parseFailed)
+            }
             processes.append(process)
+        }
+        guard !processes.isEmpty else {
+            return .failure(.parseFailed)
         }
         return .success(processes)
     }
 
+    /// Parses one `processListCommand` row. Exactly 11 tokens is a row whose
+    /// `comm` is empty; anything else that does not fit the 12-token shape is
+    /// rejected so the caller can drop that row.
     static func parseProcessLine(_ line: Substring) -> AppProcess? {
-        let extendedParts = line.split(
+        let parts = line.split(
             separator: " ",
-            maxSplits: 10,
+            maxSplits: 11,
             omittingEmptySubsequences: true
         )
-
-        if extendedParts.count == 11,
-           let pid = Int32(extendedParts[0]),
-           ProcessSignalGuard.isSignalablePID(pid),
-           let ppid = Int32(extendedParts[1]),
-           let cpu = Double(extendedParts[2]),
-           let rssKB = Double(extendedParts[3]) {
-            return AppProcess(
-                pid: pid,
-                parentPID: ppid,
-                cpu: cpu,
-                memoryMB: rssKB / 1024.0,
-                command: String(extendedParts[10]),
-                elapsedTime: String(extendedParts[9]),
-                startTime: extendedParts[4...8].joined(separator: " "),
-                netInKB: nil,
-                netOutKB: nil,
-                diskReadBlocks: nil,
-                diskWriteBlocks: nil
-            )
-        }
-
-        let legacyParts = line.split(
-            separator: " ",
-            maxSplits: 5,
-            omittingEmptySubsequences: true
-        )
-
-        guard legacyParts.count == 6,
-              let pid = Int32(legacyParts[0]),
+        guard parts.count == 11 || parts.count == 12,
+              let pid = Int32(parts[0]),
               ProcessSignalGuard.isSignalablePID(pid),
-              let ppid = Int32(legacyParts[1]),
-              let cpu = Double(legacyParts[2]),
-              let rssKB = Double(legacyParts[3]) else {
+              let ppid = Int32(parts[1]),
+              let uid = uid_t(parts[2]),
+              let cpu = decimal(parts[3]),
+              let rssKB = decimal(parts[4]) else {
             return nil
         }
 
         return AppProcess(
             pid: pid,
             parentPID: ppid,
+            uid: uid,
             cpu: cpu,
             memoryMB: rssKB / 1024.0,
-            command: String(legacyParts[5]),
-            elapsedTime: String(legacyParts[4]),
+            command: parts.count == 12
+                ? String(parts[11]).trimmingCharacters(in: .whitespacesAndNewlines)
+                : "",
+            elapsedTime: String(parts[10]),
+            startTime: parts[5...9].joined(separator: " "),
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
+    }
+
+    /// Accepts "0.5" and, defensively, "0,5": the command runs under LC_ALL=C,
+    /// but a comma decimal must still parse rather than drop the row.
+    private static func decimal(_ token: Substring) -> Double? {
+        Double(token) ?? Double(token.replacingOccurrences(of: ",", with: "."))
     }
 
     static func attachExecutablePaths(
@@ -188,7 +218,9 @@ enum ProcessListReader {
             guard parts.count == 6, let pid = Int32(parts[0]) else {
                 return .failure(.parseFailed)
             }
-            values[pid] = parts[1...5].joined(separator: " ")
+            guard values.updateValue(parts[1...5].joined(separator: " "), forKey: pid) == nil else {
+                return .failure(.parseFailed)
+            }
         }
         return .success(values)
     }
@@ -231,6 +263,24 @@ enum ProcessListReader {
         return String(decoding: bytes, as: UTF8.self)
     }
 
+    /// Cumulative disk I/O from the kernel's resource-usage record. `ps`'s
+    /// `inblock`/`oublock` columns print `-` for every row on current macOS, so
+    /// they were never a source of data. The kernel refuses this call for
+    /// processes the caller may not inspect; those rows stay nil.
+    static func diskIOBytes(for pid: Int32) -> (read: Double, written: Double)? {
+        // `rusage_info_t` is `void *`; the C API is declared as taking a pointer
+        // to it but writes the struct at the pointed-to address itself, exactly
+        // as its callers pass `(rusage_info_t *)&info`.
+        var info = rusage_info_v4()
+        let status = withUnsafeMutablePointer(to: &info) { infoPointer -> Int32 in
+            infoPointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { buffer in
+                proc_pid_rusage(pid, RUSAGE_INFO_V4, buffer)
+            }
+        }
+        guard status == 0 else { return nil }
+        return (Double(info.ri_diskio_bytesread), Double(info.ri_diskio_byteswritten))
+    }
+
     private static func currentNetworkStats() async -> [Int32: (Double, Double)]? {
         let result = await ShellCommandRunner.run(
             "/usr/bin/nettop -P -L 1 -n -x -J bytes_in,bytes_out"
@@ -246,22 +296,6 @@ enum ProcessListReader {
                   let inBytes = Double(parts[1]),
                   let outBytes = Double(parts[2]) else { continue }
             stats[pid] = (inBytes / 1024.0, outBytes / 1024.0)
-        }
-        return stats.isEmpty ? nil : stats
-    }
-
-    private static func currentDiskStats() async -> [Int32: (Double, Double)]? {
-        let result = await ShellCommandRunner.run(
-            "/bin/ps -axo pid=,inblock=,oublock="
-        )
-        guard result.succeeded else { return nil }
-        var stats: [Int32: (Double, Double)] = [:]
-        for line in result.stdout.split(separator: "\n") {
-            let parts = line.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-            guard parts.count >= 3, let pid = Int32(parts[0]),
-                  let r = Double(parts[1]),
-                  let w = Double(parts[2]) else { continue }
-            stats[pid] = (r, w)
         }
         return stats.isEmpty ? nil : stats
     }

@@ -182,8 +182,8 @@ final class SavedSelectionsStoreTests: XCTestCase {
             startTime: "start-\(pid)",
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
     }
 }

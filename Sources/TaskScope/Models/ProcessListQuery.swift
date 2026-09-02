@@ -16,7 +16,7 @@ enum ProcessFilterMode: String, CaseIterable, Identifiable {
     }
 }
 
-struct ProcessListQuery {
+struct ProcessListQuery: Hashable {
     var searchText: String
     var filterMode: ProcessFilterMode
     var watchedNames: Set<String>

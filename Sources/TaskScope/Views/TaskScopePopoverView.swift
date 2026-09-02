@@ -570,7 +570,7 @@ struct TaskScopePopoverView: View {
                         .frame(width: 70, alignment: .trailing)
                     Text("NET KB TOTAL")
                         .frame(width: 96, alignment: .trailing)
-                    Text("DISK BLKS TOTAL")
+                    Text("DISK MB TOTAL")
                         .frame(width: 96, alignment: .trailing)
                 } else {
                     Spacer()
@@ -710,15 +710,20 @@ struct TaskScopePopoverView: View {
         )
     }
 
-    private var filteredProcesses: [AppProcess] {
-        let query = ProcessListQuery(
+    private var listQuery: ProcessListQuery {
+        ProcessListQuery(
             searchText: settings.searchText,
             filterMode: filterMode,
             watchedNames: Set(processManager.snapshots.flatMap { $0.preset.allProcessNames }),
             cpuHighlightThreshold: settings.cpuHighlightThreshold,
             memoryHighlightThresholdMB: settings.memHighlightThresholdMB
         )
-        return processManager.displayProcesses(matching: query.matches)
+    }
+
+    /// Memoized by the manager per inventory generation, so the several reads
+    /// SwiftUI makes during one body pass compute the list once.
+    private var filteredProcesses: [AppProcess] {
+        processManager.displayProcesses(for: listQuery)
     }
 
     private var processCountTitle: String {
@@ -756,12 +761,7 @@ struct TaskScopePopoverView: View {
     }
 
     private var treeRoots: [ProcessTreeNode] {
-        let matchingPIDs = Set(filteredProcesses.map(\.pid))
-        return ProcessTreeBuilder.build(
-            from: processManager.inventorySnapshot,
-            ppidMap: processManager.ppidMap,
-            matchingPIDs: matchingPIDs
-        )
+        processManager.treeRoots(for: listQuery)
     }
 
     private var keyboardNavigationProcesses: [AppProcess] {

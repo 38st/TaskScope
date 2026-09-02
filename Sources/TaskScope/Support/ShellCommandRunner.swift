@@ -2,6 +2,11 @@ import Darwin
 import Foundation
 
 enum ShellCommandRunner {
+    /// Exit code reported when the calling task was cancelled.
+    static let cancelledExitCode: Int32 = -2
+    /// Exit code reported when the command outlived its timeout.
+    static let timedOutExitCode: Int32 = -3
+
     static func run(
         _ command: String,
         timeout: TimeInterval = 15
@@ -30,6 +35,20 @@ enum ShellCommandRunner {
             // string AppleScript hands to /bin/sh keeps its real line breaks.
             .replacingOccurrences(of: "\n", with: "\\n")
         return "\"\(escaped)\""
+    }
+
+    /// Every child runs in the C locale. `ps` prints locale-formatted decimals
+    /// and start times otherwise (`0,5`, `So. 30 Aug.`), which the parser must
+    /// never see. LANG and every LC_* variable are removed so nothing can
+    /// override LC_ALL.
+    static func childEnvironment(
+        from environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> [String: String] {
+        var sanitized = environment.filter { key, _ in
+            key != "LANG" && !key.hasPrefix("LC_")
+        }
+        sanitized["LC_ALL"] = "C"
+        return sanitized
     }
 
     static func extendedRegexLiteral(_ value: String) -> String {
@@ -140,13 +159,13 @@ enum ShellCommandRunner {
         }
 
         func cancel() {
-            requestStop(message: "Command cancelled.", exitCode: -2)
+            requestStop(message: "Command cancelled.", exitCode: ShellCommandRunner.cancelledExitCode)
         }
 
         private func timeOut() {
             requestStop(
                 message: "Command timed out after \(timeout) seconds.",
-                exitCode: -3
+                exitCode: ShellCommandRunner.timedOutExitCode
             )
         }
 
@@ -410,7 +429,7 @@ enum ShellCommandRunner {
             var argv = arguments.map { strdup($0) } + [nil]
             defer { argv.dropLast().forEach { free($0) } }
 
-            var environment = ProcessInfo.processInfo.environment
+            var environment = ShellCommandRunner.childEnvironment()
                 .map { strdup("\($0.key)=\($0.value)") } + [nil]
             defer { environment.dropLast().forEach { free($0) } }
 
@@ -488,7 +507,9 @@ enum ShellCommandRunner {
                 lock.unlock()
             }
 
-            return String(data: data, encoding: .utf8) ?? ""
+            // Lossy on purpose: a single invalid byte in a process name must not
+            // erase the whole inventory.
+            return String(decoding: data, as: UTF8.self)
         }
 
         func append(_ newData: Data) {

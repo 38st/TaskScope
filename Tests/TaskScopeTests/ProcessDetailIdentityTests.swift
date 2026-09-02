@@ -35,8 +35,8 @@ final class ProcessDetailIdentityProofTests: XCTestCase {
             startTime: "Sat Jul 26 11:20:17 2026",
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
 
         let manager = ProcessManager(
@@ -92,8 +92,8 @@ final class ProcessDetailIdentityProofTests: XCTestCase {
             startTime: lstart,
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
     }
 }

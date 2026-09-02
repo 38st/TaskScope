@@ -10,6 +10,33 @@ final class ShellCommandRunnerTests: XCTestCase {
         )
     }
 
+    /// `ps` formats decimals and start times by locale. Every child runs in the
+    /// C locale, with LANG and LC_* removed so nothing can override LC_ALL.
+    func testChildRunsInTheCLocaleRegardlessOfTheParentEnvironment() async {
+        let sanitized = ShellCommandRunner.childEnvironment(
+            from: ["LANG": "de_DE.UTF-8", "LC_NUMERIC": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8", "PATH": "/usr/bin"]
+        )
+        XCTAssertEqual(sanitized, ["LC_ALL": "C", "PATH": "/usr/bin"])
+
+        let result = await ShellCommandRunner.run(
+            "/usr/bin/printf '%s|%s|%s' \"$LC_ALL\" \"${LANG-unset}\" \"${LC_NUMERIC-unset}\"; LC_ALL= /bin/ps -o pcpu= -p $$ | /usr/bin/tr -d ' '"
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.stdout.hasPrefix("C|unset|unset"), result.stdout)
+        XCTAssertFalse(result.stdout.contains(","), "ps must print C-locale decimals: \(result.stdout)")
+    }
+
+    /// One invalid byte in a process name must not erase the whole output.
+    func testInvalidUTF8OutputIsDecodedLossilyInsteadOfDropped() async {
+        let result = await ShellCommandRunner.run("/usr/bin/printf 'before\\377\\376after'")
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.stdout.hasPrefix("before"), result.stdout)
+        XCTAssertTrue(result.stdout.hasSuffix("after"), result.stdout)
+        XCTAssertTrue(result.stdout.contains("\u{FFFD}"))
+    }
+
     func testRunCapturesOutputAndExitStatus() async {
         let result = await ShellCommandRunner.run(
             "/usr/bin/printf 'standard output'; /usr/bin/printf 'standard error' >&2; exit 7"

@@ -30,7 +30,12 @@ enum ProcessTreeBuilder {
         ppidMap: [Int32: Int32],
         matchingPIDs: Set<Int32>? = nil
     ) -> [ProcessTreeNode] {
-        let allByID = Dictionary(uniqueKeysWithValues: processes.map { ($0.pid, $0) })
+        // A repeated pid cannot come from the parser, which rejects it, but a
+        // duplicate must never crash the view; the first row wins.
+        let allByID = Dictionary(
+            processes.map { ($0.pid, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let includedIDs = includedProcessIDs(
             allIDs: Set(allByID.keys),
             ppidMap: ppidMap,

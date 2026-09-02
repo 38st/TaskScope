@@ -26,6 +26,9 @@ final class ProcessManager: ObservableObject {
     }
 
     @Published private(set) var selectedPids: Set<Int32> = []
+    /// Increments whenever the full inventory changes. Views key derived,
+    /// memoized lists on it.
+    @Published private(set) var inventoryGeneration: UInt64 = 0
     @Published private(set) var processLoadError: String?
     @Published private(set) var lastSuccessfulInventoryAt: Date?
     @Published private(set) var lifecycleReport: LifecycleReport?
@@ -56,10 +59,27 @@ final class ProcessManager: ObservableObject {
     private let snapshotBuilder: WatchedSnapshotBuilder
     private let operationGate = ProcessOperationGate()
     private var operationGateCancellable: AnyCancellable?
-    private var fullProcessInventory: [AppProcess] = []
+    private var fullProcessInventory: [AppProcess] = [] {
+        didSet {
+            inventoryGeneration &+= 1
+            invalidateDerivedLists()
+        }
+    }
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
     private var extendedMetricsConsumers = 0
     private let now: () -> Date
+    private var successfulInventoryReads: UInt64 = 0
+    private var lastInventoryFailure: String?
+
+    private struct DisplayListKey: Hashable {
+        var query: ProcessListQuery
+        var limit: Int
+        var sortKey: ProcessSortKey
+    }
+
+    private var sortedInventoryCache: (sortKey: ProcessSortKey, processes: [AppProcess])?
+    private var displayListCache: [DisplayListKey: [AppProcess]] = [:]
+    private var treeRootsCache: [DisplayListKey: [ProcessTreeNode]] = [:]
 
     init(
         processInventory: any ProcessInventoryProviding = SystemProcessInventory(),
@@ -143,7 +163,8 @@ final class ProcessManager: ObservableObject {
         let selectable = visibleProcesses.filter { $0.pid != currentPID }
         selectedPids = Set(selectable.map(\.pid))
         selectedIdentities = Dictionary(
-            uniqueKeysWithValues: selectable.map { ($0.pid, $0.identity) }
+            selectable.map { ($0.pid, $0.identity) },
+            uniquingKeysWith: { first, _ in first }
         )
     }
 
@@ -166,11 +187,63 @@ final class ProcessManager: ObservableObject {
     ) -> [AppProcess] {
         let limit = processListLimitProvider?() ?? 80
         return Array(
-            sorted(fullProcessInventory)
+            sortedInventory()
                 .lazy
                 .filter(predicate)
                 .prefix(max(0, limit))
         )
+    }
+
+    /// The sorted, filtered, limited list for `query`, memoized per inventory
+    /// generation, sort key, and limit. SwiftUI evaluates the list several
+    /// times per body pass; only the first evaluation does any work.
+    func displayProcesses(for query: ProcessListQuery) -> [AppProcess] {
+        let key = DisplayListKey(
+            query: query,
+            limit: processListLimitProvider?() ?? 80,
+            sortKey: sortKey
+        )
+        if let cached = displayListCache[key] {
+            return cached
+        }
+        let list = displayProcesses(matching: query.matches)
+        displayListCache[key] = list
+        return list
+    }
+
+    /// Tree roots giving every `query` match its ancestor context, memoized
+    /// like `displayProcesses(for:)`.
+    func treeRoots(for query: ProcessListQuery) -> [ProcessTreeNode] {
+        let key = DisplayListKey(
+            query: query,
+            limit: processListLimitProvider?() ?? 80,
+            sortKey: sortKey
+        )
+        if let cached = treeRootsCache[key] {
+            return cached
+        }
+        let roots = ProcessTreeBuilder.build(
+            from: fullProcessInventory,
+            ppidMap: ppidMap,
+            matchingPIDs: Set(displayProcesses(for: query).map(\.pid))
+        )
+        treeRootsCache[key] = roots
+        return roots
+    }
+
+    private func invalidateDerivedLists() {
+        sortedInventoryCache = nil
+        displayListCache.removeAll(keepingCapacity: true)
+        treeRootsCache.removeAll(keepingCapacity: true)
+    }
+
+    private func sortedInventory() -> [AppProcess] {
+        if let sortedInventoryCache, sortedInventoryCache.sortKey == sortKey {
+            return sortedInventoryCache.processes
+        }
+        let processes = sorted(fullProcessInventory)
+        sortedInventoryCache = (sortKey, processes)
+        return processes
     }
 
     func selectedProcessesSnapshot() -> [AppProcess] {
@@ -202,7 +275,11 @@ final class ProcessManager: ObservableObject {
 
     /// Callers do not need to say whether this refresh should re-baseline
     /// notifications; `apply` detects a changed watched-name set on its own.
-    func refreshWatchedStatus(showMessage: Bool = true) async {
+    /// Returns whether a fresh inventory was applied by this call (or by the
+    /// equivalent read it joined).
+    @discardableResult
+    func refreshWatchedStatus(showMessage: Bool = true) async -> Bool {
+        let readsBefore = successfulInventoryReads
         await runAction(kind: .read(.watchedStatus)) {
             switch await currentSnapshots() {
             case .success(let watched):
@@ -211,16 +288,18 @@ final class ProcessManager: ObservableObject {
                 recordInventoryFailure(error)
             }
         }
+        let refreshed = successfulInventoryReads != readsBefore
         // An equivalent refresh may have been coalesced with a silent polling
         // refresh. Publish the explicit caller's message after the joined read has
         // completed so automation never returns a stale status string.
         if showMessage {
-            if let processLoadError {
-                message = "Could not refresh watched status: \(processLoadError)"
-            } else {
+            if refreshed {
                 message = snapshots.aggregateDetail
+            } else {
+                message = "Could not refresh watched status: \(lastInventoryFailure ?? "the process list could not be read")"
             }
         }
+        return refreshed
     }
 
     func loadProcessList(showMessage: Bool = true) async {
@@ -236,8 +315,9 @@ final class ProcessManager: ObservableObject {
                     message = "Loaded \(processes.count) of \(inventory.count) processes."
                 }
             case .failure(let error):
-                recordInventoryFailure(error)
-                if showMessage {
+                let failure = Task.isCancelled ? ProcessInventoryError.cancelled : error
+                recordInventoryFailure(failure)
+                if showMessage, failure != .cancelled {
                     message = "Could not load processes: \(error.localizedDescription)"
                 }
             }
@@ -840,10 +920,17 @@ final class ProcessManager: ObservableObject {
             processLoadError = nil
         }
         lastSuccessfulInventoryAt = now()
+        lastInventoryFailure = nil
+        successfulInventoryReads &+= 1
     }
 
+    /// A cancelled read (a poll restart, a torn-down view) says nothing about
+    /// the inventory and never becomes the persistent "stale list" error.
     private func recordInventoryFailure(_ error: ProcessInventoryError) {
-        processLoadError = error.localizedDescription
+        let failure = Task.isCancelled ? ProcessInventoryError.cancelled : error
+        lastInventoryFailure = failure.localizedDescription
+        guard failure != .cancelled else { return }
+        processLoadError = failure.localizedDescription
     }
 
     private func snapshots(from inventory: [AppProcess]) -> [WatchedAppSnapshot] {

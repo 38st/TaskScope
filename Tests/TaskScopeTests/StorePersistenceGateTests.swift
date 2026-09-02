@@ -221,8 +221,8 @@ final class P11UnguardedWritebackTests: XCTestCase {
             startTime: "start-\(pid)",
             netInKB: 0,
             netOutKB: 0,
-            diskReadBlocks: 0,
-            diskWriteBlocks: 0
+            diskReadBytes: 0,
+            diskWriteBytes: 0
         )
     }
 }

@@ -392,8 +392,8 @@ final class AutoStopRulesStoreTests: XCTestCase {
             startTime: startTime,
             netInKB: 0,
             netOutKB: 0,
-            diskReadBlocks: 0,
-            diskWriteBlocks: 0
+            diskReadBytes: 0,
+            diskWriteBytes: 0
         )
     }
 

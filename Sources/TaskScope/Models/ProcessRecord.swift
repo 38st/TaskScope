@@ -9,15 +9,23 @@ struct AppProcess: Identifiable, Equatable, Sendable {
     var uid: uid_t?
     var cpu: Double
     var memoryMB: Double
-    var command: String
+    var command: String {
+        didSet { name = Self.name(from: command) }
+    }
+    /// Last path component of `command`, computed once per row rather than on
+    /// every sort comparison and filter pass.
+    private(set) var name: String
     /// Kernel-resolved executable vnode path. Never derived from argv/`ps comm`.
     var executablePath: String?
     var elapsedTime: String
     var startTime: String
     var netInKB: Double?
     var netOutKB: Double?
-    var diskReadBlocks: Double?
-    var diskWriteBlocks: Double?
+    /// Cumulative disk bytes read/written by the process, from
+    /// `proc_pid_rusage`. Nil when the kernel does not report them for this
+    /// process (typically another user's), never fabricated as zero.
+    var diskReadBytes: Double?
+    var diskWriteBytes: Double?
 
     init(
         pid: Int32,
@@ -31,8 +39,8 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         startTime: String = "",
         netInKB: Double?,
         netOutKB: Double?,
-        diskReadBlocks: Double?,
-        diskWriteBlocks: Double?
+        diskReadBytes: Double?,
+        diskWriteBytes: Double?
     ) {
         self.pid = pid
         self.parentPID = parentPID
@@ -40,27 +48,40 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         self.cpu = cpu
         self.memoryMB = memoryMB
         self.command = command
+        self.name = Self.name(from: command)
         self.executablePath = executablePath
         self.elapsedTime = elapsedTime
         self.startTime = startTime
         self.netInKB = netInKB
         self.netOutKB = netOutKB
-        self.diskReadBlocks = diskReadBlocks
-        self.diskWriteBlocks = diskWriteBlocks
+        self.diskReadBytes = diskReadBytes
+        self.diskWriteBytes = diskWriteBytes
     }
 
     var id: Int32 {
         pid
     }
 
-    var name: String {
+    static func name(from command: String) -> String {
         let trimmedCommand = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedCommand.isEmpty else { return "" }
         let lastPathComponent = URL(fileURLWithPath: trimmedCommand).lastPathComponent
         return lastPathComponent.isEmpty ? trimmedCommand : lastPathComponent
     }
 
+    /// The executable path with the home directory abbreviated. Only an exact
+    /// match or a `home/` prefix is replaced, so `/Users/alicedata/...` is not
+    /// rewritten for user `alice`.
     var displayCommand: String {
-        (executablePath ?? command).replacingOccurrences(of: NSHomeDirectory(), with: "~")
+        let path = executablePath ?? command
+        let home = NSHomeDirectory()
+        if path == home {
+            return "~"
+        }
+        if path.hasPrefix(home + "/") {
+            return "~" + path.dropFirst(home.count)
+        }
+        return path
     }
 
     var identity: ProcessIdentity {

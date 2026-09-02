@@ -644,8 +644,8 @@ final class SwiftUIHarnessTests: XCTestCase {
             startTime: "Sun Jul 26 12:00:00 2026",
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
     }
 

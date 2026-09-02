@@ -62,8 +62,8 @@ final class ProcessManagerTests: XCTestCase {
             startTime: "parent-start",
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
         let child = AppProcess(
             pid: 11,
@@ -75,8 +75,8 @@ final class ProcessManagerTests: XCTestCase {
             startTime: "child-start",
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
         let inventory = FakeProcessInventory(results: [.success([parent, child])])
         let manager = makeManager(inventory: inventory)
@@ -161,6 +161,56 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(manager.lastSuccessfulInventoryAt, lastSuccess)
         XCTAssertEqual(manager.processLoadError, "temporary failure")
         XCTAssertEqual(manager.message, "Could not load processes: temporary failure")
+    }
+
+    /// A poll restart or view teardown cancels the running read. That says
+    /// nothing about the inventory and must not raise the stale-list banner.
+    func testCancelledInventoryReadIsNotRecordedAsALoadError() async {
+        let original = process(pid: 42, name: "Original")
+        let inventory = CancellationAwareInventory(processes: [original])
+        let manager = makeManager(inventory: inventory)
+
+        await manager.loadProcessList()
+        XCTAssertNil(manager.processLoadError)
+
+        let reload = Task { await manager.loadProcessList(showMessage: false) }
+        await inventory.waitForBlockedCall()
+        reload.cancel()
+        await inventory.releaseBlockedCall()
+        await reload.value
+
+        XCTAssertNil(manager.processLoadError, "a cancelled read must not become a persistent load error")
+        XCTAssertEqual(manager.processes, [original])
+        XCTAssertEqual(manager.operationState, .idle)
+    }
+
+    func testDisplayListsAreMemoizedPerInventoryGeneration() async {
+        let first = process(pid: 10, cpu: 90, name: "First")
+        let second = process(pid: 20, cpu: 10, name: "Second")
+        let inventory = FakeProcessInventory(results: [.success([first, second]), .success([second])])
+        let manager = makeManager(inventory: inventory)
+        let query = ProcessListQuery(
+            searchText: "",
+            filterMode: .all,
+            watchedNames: [],
+            cpuHighlightThreshold: 30,
+            memoryHighlightThresholdMB: 1_024
+        )
+
+        await manager.loadProcessList()
+        let generation = manager.inventoryGeneration
+        XCTAssertEqual(manager.displayProcesses(for: query).map(\.pid), [10, 20])
+        XCTAssertEqual(manager.treeRoots(for: query).map(\.id), [10, 20])
+        XCTAssertEqual(manager.displayProcesses(for: query), manager.displayProcesses(matching: query.matches))
+
+        manager.sortKey = .name
+        XCTAssertEqual(manager.displayProcesses(for: query).map(\.pid), [10, 20])
+        manager.sortKey = .pid
+
+        await manager.loadProcessList()
+        XCTAssertNotEqual(manager.inventoryGeneration, generation)
+        XCTAssertEqual(manager.displayProcesses(for: query).map(\.pid), [20])
+        XCTAssertEqual(manager.treeRoots(for: query).map(\.id), [20])
     }
 
     func testSelectionIsPrunedWhenPIDRepresentsNewProcessIdentity() async {
@@ -386,8 +436,8 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(countWhileBlocked, 1)
 
         await inventory.finishFirstCall()
-        await first.value
-        await second.value
+        _ = await first.value
+        _ = await second.value
 
         let finalCount = await inventory.currentLoadCount()
         XCTAssertEqual(finalCount, 1)
@@ -434,7 +484,7 @@ final class ProcessManagerTests: XCTestCase {
 
         queuedRefresh.cancel()
         await inventory.finishFirstCall()
-        await activeRefresh.value
+        _ = await activeRefresh.value
         await queuedRefresh.value
 
         let finalLoadCount = await inventory.currentLoadCount()
@@ -463,7 +513,7 @@ final class ProcessManagerTests: XCTestCase {
         await Task.yield()
 
         await inventory.finishFirstCall()
-        await activeRefresh.value
+        _ = await activeRefresh.value
         _ = await queuedMutation.value
         await queuedListRefresh.value
 
@@ -1078,8 +1128,8 @@ final class ProcessManagerTests: XCTestCase {
             startTime: startTime,
             netInKB: 0,
             netOutKB: 0,
-            diskReadBlocks: 0,
-            diskWriteBlocks: 0
+            diskReadBytes: 0,
+            diskWriteBytes: 0
         )
     }
 }
@@ -1244,6 +1294,42 @@ private actor SequencedBlockingProcessInventory: ProcessInventoryProviding {
         released.insert(index)
         blocked[index]?.resume()
         blocked[index] = nil
+    }
+}
+
+/// The second read blocks until released and honours cancellation of the task
+/// that awaits it, mirroring how the real command runner reports `.cancelled`.
+private actor CancellationAwareInventory: ProcessInventoryProviding {
+    private let processes: [AppProcess]
+    private var callCount = 0
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+    private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(processes: [AppProcess]) {
+        self.processes = processes
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        callCount += 1
+        if callCount == 2 {
+            blockedWaiters.forEach { $0.resume() }
+            blockedWaiters.removeAll()
+            await withCheckedContinuation { blockedContinuation = $0 }
+            if Task.isCancelled {
+                return .failure(.cancelled)
+            }
+        }
+        return .success(processes)
+    }
+
+    func waitForBlockedCall() async {
+        guard callCount < 2 else { return }
+        await withCheckedContinuation { blockedWaiters.append($0) }
+    }
+
+    func releaseBlockedCall() {
+        blockedContinuation?.resume()
+        blockedContinuation = nil
     }
 }
 

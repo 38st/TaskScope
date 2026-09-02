@@ -39,8 +39,8 @@ final class ProcessSignalIntegrationTests: XCTestCase {
             startTime: "controlled-child-\(pid)",
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
         let signaler = RecordingDarwinSignaler()
         let manager = ProcessManager(

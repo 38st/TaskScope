@@ -219,8 +219,8 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
             startTime: "start-42",
             netInKB: nil,
             netOutKB: nil,
-            diskReadBlocks: nil,
-            diskWriteBlocks: nil
+            diskReadBytes: nil,
+            diskWriteBytes: nil
         )
     }
 }
