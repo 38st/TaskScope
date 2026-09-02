@@ -446,14 +446,13 @@ struct TaskScopeApp: App {
             showTaskScopeWindow()
         }
         configurePolling()
-        autoStopRules.start(cadence: 10) { rule, process in
-            return await processManager.terminate(
-                process,
-                isAuthorized: {
-                    autoStopRules.authorizesAutomaticStop(ruleID: rule.id)
-                }
+        autoStopRules.start(
+            cadence: 10,
+            perform: AutoStopActionHandlerFactory.make(
+                processManager: processManager,
+                rules: autoStopRules
             )
-        }
+        )
         await processManager.refreshWatchedStatus(showMessage: false)
         await processManager.enforceKeptOffPresets(force: true)
 

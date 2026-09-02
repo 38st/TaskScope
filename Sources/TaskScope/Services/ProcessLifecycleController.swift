@@ -38,11 +38,14 @@ enum ProcessLifecycleController {
         await ProcessTerminationController.settle(runtime: runtime)
     }
 
+    /// Signals processes named `name` that run from `expectedExecutableDirectory`.
+    /// The directory is required: a name-only match is never sufficient to
+    /// signal a process.
     @discardableResult
     static func terminateProcess(
         named name: String,
         forceIfStillRunning: Bool,
-        expectedExecutableDirectory: String? = nil,
+        expectedExecutableDirectory: String,
         currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> ProcessTerminationOutcome {
@@ -59,7 +62,7 @@ enum ProcessLifecycleController {
     static func terminateProcess(
         named name: String,
         policy: TerminationPolicy,
-        expectedExecutableDirectory: String? = nil,
+        expectedExecutableDirectory: String,
         currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> ProcessTerminationOutcome {

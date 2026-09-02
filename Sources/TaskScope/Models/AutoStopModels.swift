@@ -75,20 +75,60 @@ struct AutoStopEvent: Codable, Identifiable, Equatable {
     var outcome: Outcome
     var detail: String
 
-    enum Outcome: String, Codable {
+    enum Outcome: Codable, Hashable {
         case logged
         case stopped
+        /// A stop signal was accepted; the exit is confirmed on a later tick.
+        case stopRequested
         case failed
         case dismissed
         case processEnded
+        /// A value written by another build. Preserved verbatim so the event
+        /// survives a round trip and is never misreported as Logged.
+        case unknown(String)
+
+        var rawValue: String {
+            switch self {
+            case .logged: "logged"
+            case .stopped: "stopped"
+            case .stopRequested: "stopRequested"
+            case .failed: "failed"
+            case .dismissed: "dismissed"
+            case .processEnded: "processEnded"
+            case .unknown(let raw): raw
+            }
+        }
+
+        init(rawValue: String) {
+            switch rawValue {
+            case "logged": self = .logged
+            case "stopped": self = .stopped
+            case "stopRequested": self = .stopRequested
+            case "failed": self = .failed
+            case "dismissed": self = .dismissed
+            case "processEnded": self = .processEnded
+            default: self = .unknown(rawValue)
+            }
+        }
+
+        init(from decoder: Decoder) throws {
+            self.init(rawValue: try decoder.singleValueContainer().decode(String.self))
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.singleValueContainer()
+            try container.encode(rawValue)
+        }
 
         var label: String {
             switch self {
             case .logged: "Logged"
             case .stopped: "Stopped"
+            case .stopRequested: "Stop requested"
             case .failed: "Failed"
             case .dismissed: "Dismissed"
             case .processEnded: "Ended"
+            case .unknown(let raw): "Unknown (\(raw))"
             }
         }
     }
@@ -125,7 +165,8 @@ struct AutoStopEvent: Codable, Identifiable, Equatable {
         processName = try container.decodeIfPresent(String.self, forKey: .processName) ?? ""
         pid = try container.decodeIfPresent(Int32.self, forKey: .pid) ?? 0
         ruleID = try container.decodeIfPresent(UUID.self, forKey: .ruleID) ?? UUID()
-        outcome = (try? container.decode(Outcome.self, forKey: .outcome)) ?? .logged
+        outcome = ((try? container.decodeIfPresent(Outcome.self, forKey: .outcome)) ?? nil)
+            ?? .unknown("missing")
         detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
     }
 }

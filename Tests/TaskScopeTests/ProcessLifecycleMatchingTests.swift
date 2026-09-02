@@ -288,12 +288,120 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         let outcome = await ProcessLifecycleController.terminateProcess(
             named: "Example",
             forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
             currentPID: 99,
             runtime: harness.runtime
         )
 
         XCTAssertEqual(outcome, .targetsExited)
         XCTAssertEqual(harness.signals.map(\.0), [SIGTERM])
+    }
+
+    /// The graceful window is disclosed to the user, so it must really be
+    /// waited out before SIGKILL, polling liveness on the way.
+    func testGracefulStopWaitsOutTheWindowBeforeForceStoppingASurvivor() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [target]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .signalled)
+        XCTAssertEqual(harness.signals.map(\.0), [SIGTERM, SIGKILL])
+        XCTAssertGreaterThanOrEqual(ProcessTerminationController.gracefulExitWindowSeconds, 3)
+        XCTAssertEqual(Set(harness.sleepDurations), [ProcessTerminationController.livenessPollNanoseconds])
+        let waited = Double(harness.sleepDurations.reduce(0, +)) / 1_000_000_000
+        XCTAssertGreaterThanOrEqual(waited, ProcessTerminationController.gracefulExitWindowSeconds)
+    }
+
+    func testGracefulStopSkipsForceStopOnceTheTargetExitsWithinTheWindow() async {
+        let target = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventoryResults: [.success([target]), .success([])],
+            executablePathsAtSignal: [target.pid: target.command]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .signalled)
+        XCTAssertEqual(harness.signals.map(\.0), [SIGTERM], "an exited target must not receive SIGKILL")
+        XCTAssertTrue(harness.sleepDurations.isEmpty, "liveness polling must end as soon as the target is gone")
+    }
+
+    /// PID 1 is launchd and 0 or a negative value addresses a process group.
+    /// Even an inventory row that claims such a pid must never be signalled.
+    func testTerminationNeverSignalsLaunchdOrProcessGroupPIDs() async {
+        let launchd = process(pid: 1, command: "/Applications/Example.app/Contents/MacOS/Example")
+        let group = process(pid: 0, command: "/Applications/Example.app/Contents/MacOS/Example")
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [launchd, group]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .noMatchingProcesses)
+        XCTAssertTrue(harness.signals.isEmpty)
+    }
+
+    /// Signal 0 is harmless, so this is safe to run for real: `kill(0, 0)` would
+    /// succeed (and prove the guard missing) if the pid were not refused first.
+    func testLiveSignalSenderRefusesPIDsBelowTwoBeforeCallingKill() {
+        XCTAssertFalse(ProcessLifecycleRuntime.liveSendSignal(0, to: 0))
+        XCTAssertFalse(ProcessLifecycleRuntime.liveSendSignal(0, to: 1))
+        XCTAssertFalse(ProcessLifecycleRuntime.liveSendSignal(0, to: -1))
+    }
+
+    /// There is no name-only termination entry point: the directory is a
+    /// required parameter and a same-named process outside it is never a target.
+    func testTerminationRequiresTheExecutableDirectoryAndNeverMatchesByNameAlone() async {
+        let outsideBundle = process(pid: 10, command: "/tmp/Example")
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [],
+            commandResults: [],
+            inventory: [outsideBundle]
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example",
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99,
+            runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .noMatchingProcesses)
+        XCTAssertTrue(harness.signals.isEmpty)
     }
 
     func testHelperTerminationTargetsAreRestrictedToConfiguredAppBundle() {
@@ -946,6 +1054,14 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
                         return signalResults.first ?? false
                     }
                     return signalResults.removeFirst()
+                }
+            },
+            isProcessAlive: { [self] pid in
+                // Liveness follows the inventory result the next load will return,
+                // so a target that "exits" between reads stops being alive too.
+                lock.withLock {
+                    guard case .success(let processes)? = inventoryResults.first else { return false }
+                    return processes.contains { $0.pid == pid }
                 }
             },
             sleep: { [self] duration in

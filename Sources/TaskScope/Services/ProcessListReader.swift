@@ -84,13 +84,16 @@ enum ProcessListReader {
         return .success(parsed)
     }
 
+    /// A row that cannot be parsed, or that names a pid TaskScope must never
+    /// signal (0, negative, or launchd), is dropped while the rest of the
+    /// inventory is kept.
     static func parseProcessListOutput(
         _ output: String
     ) -> Result<[AppProcess], ProcessInventoryError> {
         var processes: [AppProcess] = []
         for line in output.split(separator: "\n") {
             guard let process = parseProcessLine(line) else {
-                return .failure(.parseFailed)
+                continue
             }
             processes.append(process)
         }
@@ -106,6 +109,7 @@ enum ProcessListReader {
 
         if extendedParts.count == 11,
            let pid = Int32(extendedParts[0]),
+           ProcessSignalGuard.isSignalablePID(pid),
            let ppid = Int32(extendedParts[1]),
            let cpu = Double(extendedParts[2]),
            let rssKB = Double(extendedParts[3]) {
@@ -132,6 +136,7 @@ enum ProcessListReader {
 
         guard legacyParts.count == 6,
               let pid = Int32(legacyParts[0]),
+              ProcessSignalGuard.isSignalablePID(pid),
               let ppid = Int32(legacyParts[1]),
               let cpu = Double(legacyParts[2]),
               let rssKB = Double(legacyParts[3]) else {

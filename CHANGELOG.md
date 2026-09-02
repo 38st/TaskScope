@@ -65,6 +65,36 @@ All notable changes to TaskScope are documented in this file. The project uses
 - Importing a versioned preset archive with a malformed preset now reports the
   failing field instead of retrying the file as a legacy array and calling it
   unrecognized.
+- Stop Now on an auto-stop prompt is authorized as a confirmed prompt (the
+  rule must exist and be enabled) instead of being rejected by the
+  automatic-stop rule and logged as failed.
+- Editing an auto-stop rule's path, name, or runtime while its automatic stop
+  is in flight cancels that stop; the final authority check compares the whole
+  captured rule value.
+- An accepted stop whose process has not exited yet is recorded as "Stop
+  requested" and marked stopped once the process exits; automatic stops
+  re-signal at most once before recording a single failure instead of sending
+  SIGTERM on every tick.
+- Preset Quit, Close, and Keep Off wait up to 3 seconds (polling every 250 ms)
+  for a graceful exit before force stopping, and the confirmation dialog says
+  so.
+- Saving a selection now refuses an entry without a kernel executable path, and
+  the recall preview marks legacy entries that can only match by name.
+- launchd (pid 1), the kernel task, and process-group pids are dropped by the
+  parser and refused by every signal path before `kill(2)`.
+- A stop sent to a process that exited moments earlier is reported as stopped,
+  not as a rejected signal, and a zombie is no longer counted as still running.
+- Auto-stop rule paths resolve symlinks (for example a Homebrew link) so they
+  match the kernel-reported executable path.
+- A dismissed auto-stop prompt stays dismissed when its rule is toggled off and
+  on.
+- Auto-stop evaluations no longer overlap when a rule change restarts polling.
+- Terminating a watched process always requires its executable directory; the
+  name-only termination entry point was removed.
+- Auto-stop events with an outcome written by another build keep that value
+  instead of decoding as Logged.
+- Recovery banners say when an unreadable payload could not be backed up
+  because an earlier backup already occupies the slot.
 - Removed a pipe-reader teardown race in command execution and strengthened
   cancellation near child exit.
 - Preserved full executable paths in the process display schema and saved

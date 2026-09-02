@@ -98,6 +98,10 @@ final class SavedSelectionsStore: ObservableObject {
         var unmatched: [SavedProcess]
         var ambiguous: [SavedProcess]
         var legacyUnsupported: Bool
+        /// Matches produced by the legacy command/name fallback because the
+        /// saved entry carries no kernel executable path. Shown with a visible
+        /// marker so a name-only match is never mistaken for a path-bound one.
+        var legacyNameMatches: Set<ProcessIdentity> = []
 
         var summary: String {
             if legacyUnsupported {
@@ -132,7 +136,11 @@ final class SavedSelectionsStore: ObservableObject {
             // Writing now would replace the unreadable payload with the empty
             // array we fell back to, destroying it at its primary key.
             allowsPersistence = false
-            recoveryMessage = "Saved selections were unreadable and backed up as \(backupKey)."
+            recoveryMessage = "Saved selections were unreadable. "
+                + PersistenceRecovery.unreadableDataMessage(
+                    backupKey: backupKey,
+                    didWriteBackup: loaded.didWriteBackup
+                )
         }
     }
 
@@ -170,6 +178,15 @@ final class SavedSelectionsStore: ObservableObject {
         }
         guard !containsName(trimmedName) else {
             validationError = "A saved selection named \(trimmedName) already exists."
+            return false
+        }
+        // A new entry without a kernel executable path could only ever be
+        // recalled through the spoofable legacy command/name fallback. Refuse
+        // it rather than silently saving a name-only match.
+        let unverifiable = processes.filter { $0.executablePath == nil }
+        guard unverifiable.isEmpty else {
+            let names = unverifiable.map { "\($0.name) (PID \($0.pid))" }.joined(separator: ", ")
+            validationError = "Cannot save \(names): no kernel executable path is available, so the selection could only be recalled by name."
             return false
         }
 
@@ -217,6 +234,7 @@ final class SavedSelectionsStore: ObservableObject {
         var matched: [AppProcess] = []
         var unmatched: [SavedProcess] = []
         var ambiguous: [SavedProcess] = []
+        var legacyNameMatches: Set<ProcessIdentity> = []
         var claimedIdentities: Set<ProcessIdentity> = []
 
         for saved in selection.processes {
@@ -243,6 +261,9 @@ final class SavedSelectionsStore: ObservableObject {
             if unclaimed.count == 1, let match = unclaimed.first {
                 matched.append(match)
                 claimedIdentities.insert(match.identity)
+                if saved.executablePath == nil {
+                    legacyNameMatches.insert(match.identity)
+                }
             } else if candidates.isEmpty {
                 unmatched.append(saved)
             } else {
@@ -254,7 +275,8 @@ final class SavedSelectionsStore: ObservableObject {
             matched: matched,
             unmatched: unmatched,
             ambiguous: ambiguous,
-            legacyUnsupported: false
+            legacyUnsupported: false,
+            legacyNameMatches: legacyNameMatches
         )
     }
 

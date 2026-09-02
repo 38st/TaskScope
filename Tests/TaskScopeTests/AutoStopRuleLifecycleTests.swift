@@ -52,6 +52,8 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         let stored = store.rules[0]
 
         await store.evaluateNow()
+        XCTAssertEqual(store.pendingPrompts.count, 1, "precondition: a prompt is queued")
+        store.dismissCurrentPrompt()
         store.setEnabled(false, for: stored)
         store.setEnabled(true, for: store.rules[0])
 
@@ -59,6 +61,121 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
             store.pendingPrompts.isEmpty,
             "toggling must not leave a duplicate of the prompt it already retired"
         )
+
+        // A dismissed occurrence stays dismissed across the toggle: the process
+        // is still over its threshold, but the user already answered for it.
+        await store.evaluateNow()
+        XCTAssertTrue(
+            store.pendingPrompts.isEmpty,
+            "a dismissed occurrence must not prompt again after the rule is toggled off and on"
+        )
+        XCTAssertEqual(store.events.map(\.outcome), [.dismissed])
+    }
+
+    /// A process that takes longer than the settle delay to exit used to be
+    /// re-SIGTERMed on every tick and logged as "did not complete" each time.
+    /// An accepted stop is now tracked until the identity disappears.
+    func testAcceptedStopWhoseTargetHasNotExitedYetIsRecordedStoppedOnceItExits() async {
+        let inventory = MutableStubInventory(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        let store = makeStore(inventory: inventory)
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
+
+        var attempts = 0
+        store.start(cadence: 3_600) { _, _ in
+            attempts += 1
+            return .requestedStillRunning
+        }
+        await waitUntil { attempts == 1 && !store.events.isEmpty }
+        XCTAssertEqual(store.events.map(\.outcome), [.stopRequested])
+
+        inventory.processes = []
+        await store.evaluateNow()
+        store.stop()
+
+        XCTAssertEqual(attempts, 1, "an accepted stop must not be re-signalled on the next tick")
+        XCTAssertEqual(store.events.map(\.outcome), [.stopped, .stopRequested])
+    }
+
+    func testStillRunningTargetIsReSignalledOnceThenMarkedFailedWithoutFurtherRetries() async {
+        let store = makeStore(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
+
+        var attempts = 0
+        store.start(cadence: 3_600) { _, _ in
+            attempts += 1
+            return .requestedStillRunning
+        }
+        await waitUntil { attempts == 1 && !store.events.isEmpty }
+        XCTAssertEqual(store.events.map(\.outcome), [.stopRequested])
+
+        await store.evaluateNow()
+        XCTAssertEqual(attempts, 2, "one re-signal is allowed")
+        XCTAssertEqual(store.events.map(\.outcome), [.failed, .stopRequested])
+
+        await store.evaluateNow()
+        await store.evaluateNow()
+        store.stop()
+
+        XCTAssertEqual(attempts, 2, "after the retry cap the process is not signalled again")
+        XCTAssertEqual(store.events.count, 2, "the failure is recorded exactly once")
+    }
+
+    func testConfirmedPromptWhoseTargetHasNotExitedYetIsRecordedStoppedOnceItExits() async throws {
+        let inventory = MutableStubInventory(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        let store = makeStore(inventory: inventory)
+        store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt))
+
+        var attempts = 0
+        store.start(cadence: 3_600) { _, _ in
+            attempts += 1
+            return .requestedStillRunning
+        }
+        store.stop()
+        await store.evaluateNow()
+        let prompt = try XCTUnwrap(store.claimPrompt(XCTUnwrap(store.currentPrompt)))
+        await store.finishStop(prompt)
+        XCTAssertEqual(store.events.map(\.outcome), [.stopRequested])
+
+        await store.evaluateNow()
+        XCTAssertEqual(attempts, 1, "a confirmed prompt is never re-signalled automatically")
+
+        inventory.processes = []
+        await store.evaluateNow()
+
+        XCTAssertEqual(store.events.map(\.outcome), [.stopped, .stopRequested])
+        XCTAssertTrue(store.pendingPrompts.isEmpty)
+    }
+
+    /// A rule edit restarts polling with an immediate tick while the previous
+    /// evaluation may still be awaiting its inventory. Evaluations must not
+    /// overlap, and the refused request must run once the pass finishes.
+    func testConcurrentEvaluationsDoNotOverlapAndTheQueuedRequestRunsAfterwards() async {
+        let inventory = BlockingLifecycleInventory(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        let store = makeStore(inventory: inventory)
+        store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt))
+
+        let first = Task { await store.evaluateNow() }
+        await inventory.waitForFirstLoad()
+        await store.evaluateNow()
+        let countWhileBlocked = await inventory.loadCount()
+        XCTAssertEqual(countWhileBlocked, 1, "a second evaluation must not start while one is in flight")
+
+        await inventory.releaseFirstLoad()
+        await first.value
+
+        let finalCount = await inventory.loadCount()
+        XCTAssertEqual(finalCount, 2, "the refused evaluation must run after the first pass")
+        XCTAssertEqual(store.pendingPrompts.count, 1, "the occurrence is prompted exactly once")
     }
 
     /// A `.kill` rule deleted while its handler is in flight must not go on acting.
@@ -165,13 +282,28 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
     private func makeStore(
         processes: [AppProcess] = [appProcess(pid: 41, elapsed: "10:00")]
     ) -> AutoStopRulesStore {
+        makeStore(inventory: StubInventory(processes: processes))
+    }
+
+    private func makeStore(inventory: any ProcessInventoryProviding) -> AutoStopRulesStore {
         AutoStopRulesStore(
             userDefaults: defaults,
             key: key,
             eventsKey: eventsKey,
-            inventory: StubInventory(processes: processes),
+            inventory: inventory,
             now: { Date(timeIntervalSince1970: 1_000) }
         )
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 2,
+        _ condition: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(condition(), "condition was not met within \(timeout)s")
     }
 
 }
@@ -199,4 +331,50 @@ private struct StubInventory: ProcessInventoryProviding {
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         .success(processes)
     }
+}
+
+private final class MutableStubInventory: ProcessInventoryProviding, @unchecked Sendable {
+    var processes: [AppProcess]
+
+    init(processes: [AppProcess]) {
+        self.processes = processes
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        .success(processes)
+    }
+}
+
+/// Blocks the first load until released; later loads return immediately.
+private actor BlockingLifecycleInventory: ProcessInventoryProviding {
+    private let processes: [AppProcess]
+    private var count = 0
+    private var firstLoadContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(processes: [AppProcess]) {
+        self.processes = processes
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        count += 1
+        if count == 1 {
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { firstLoadContinuation = $0 }
+        }
+        return .success(processes)
+    }
+
+    func waitForFirstLoad() async {
+        guard count == 0 else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseFirstLoad() {
+        firstLoadContinuation?.resume()
+        firstLoadContinuation = nil
+    }
+
+    func loadCount() -> Int { count }
 }

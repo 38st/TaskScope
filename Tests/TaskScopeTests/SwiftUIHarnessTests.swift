@@ -244,7 +244,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try presented.find(text: "Quit All Killable"))
         XCTAssertNoThrow(
             try presented.find(
-                text: "TaskScope will unload the user launch agents (com.paloaltonetworks.gp.pangpa, com.paloaltonetworks.gp.pangps). It will then stop the currently running matches for: GlobalProtect, PanGPA."
+                text: "TaskScope will unload the user launch agents (com.paloaltonetworks.gp.pangpa, com.paloaltonetworks.gp.pangps). It will then stop the currently running matches for: GlobalProtect, PanGPA. A process still running 3 seconds after the stop request is force stopped."
             )
         )
 
@@ -368,6 +368,52 @@ final class SwiftUIHarnessTests: XCTestCase {
             try sheet.inspect().find(text: "Needle"),
             "Preset sheet should summarise the selected process, not report it as empty"
         )
+    }
+
+    /// A saved entry without a kernel executable path can only match by name.
+    /// The recall preview must say so next to every such entry.
+    func testRecallSheetMarksLegacyNameMatches() throws {
+        let matched = process(pid: 20, parentPID: 1, name: "Example")
+        let legacyMatched = SavedSelectionsStore.SavedProcess(
+            pid: 10,
+            command: "Example",
+            executableName: "Example"
+        )
+        let legacyMissing = SavedSelectionsStore.SavedProcess(
+            pid: 11,
+            command: "Other",
+            executableName: "Other"
+        )
+        let pathBound = SavedSelectionsStore.SavedProcess(
+            pid: 12,
+            command: "/Applications/Bound.app/Contents/MacOS/Bound",
+            executableName: "Bound",
+            executablePath: "/Applications/Bound.app/Contents/MacOS/Bound"
+        )
+        let selection = SavedSelectionsStore.SavedSelection(
+            name: "Mixed",
+            pids: [10, 11, 12],
+            processes: [legacyMatched, legacyMissing, pathBound]
+        )
+        let result = SavedSelectionsStore.RecallResult(
+            matched: [matched],
+            unmatched: [legacyMissing, pathBound],
+            ambiguous: [],
+            legacyUnsupported: false,
+            legacyNameMatches: [matched.identity]
+        )
+        let sheet = SavedSelectionRecallSheet(
+            selection: selection,
+            result: result,
+            onApply: {},
+            onCancel: {}
+        )
+
+        let inspected = try sheet.inspect()
+        XCTAssertNoThrow(try inspected.find(text: "Example — PID 20 · legacy name match"))
+        XCTAssertNoThrow(try inspected.find(text: "Other · legacy name match"))
+        XCTAssertNoThrow(try inspected.find(text: "Bound"))
+        XCTAssertThrowsError(try inspected.find(text: "Bound · legacy name match"))
     }
 
     func testQuickPresetSheetKeepsRejectedDraftAndShowsStoreError() throws {
@@ -741,7 +787,8 @@ private final class UIRecordingSignaler: ProcessSignaling {
 private struct UILifecycle: ProcessLifecycleServicing {
     func appBundleExists(at path: String) -> Bool { true }
     func settleAfterProcessChange() async {}
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome { .signalled }
+    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .signalled }
+    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .signalled }
     func isProcessNamedRunning(_ name: String) async -> Bool { false }
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }

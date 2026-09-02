@@ -709,6 +709,10 @@ final class ProcessManager: ObservableObject {
             message = "Use Quit to close TaskScope."
             return .rejected
         }
+        guard ProcessSignalGuard.isSignalablePID(process.pid) else {
+            message = "PID \(process.pid) can never be signalled."
+            return .rejected
+        }
 
         var result: ProcessActionResult = .rejected
         await runAction(kind: .mutation) {
@@ -742,21 +746,29 @@ final class ProcessManager: ObservableObject {
             }
 
             let signal: Int32 = forceKill ? SIGKILL : SIGTERM
-            let accepted = processSignaler.send(signal, to: process.pid)
+            let delivery = processSignaler.deliver(signal, to: process.pid)
             await settleAfterProcessChange()
 
-            if !accepted {
+            switch delivery {
+            case .rejected:
                 message = "Could not send \(forceKill ? "force stop" : "stop") to \(process.name)."
                 result = .rejected
-            } else if !processSignaler.isAlive(process.pid) {
-                message = forceKill ? "\(process.name) force stopped." : "\(process.name) stopped."
+            case .noSuchProcess:
+                // It exited between the identity check and the signal; the
+                // requested outcome holds.
+                message = "\(process.name) had already exited."
                 result = .stopped
-            } else if forceKill {
-                message = "\(process.name) is still running after Force Stop."
-                result = .requestedStillRunning
-            } else {
-                message = "Stop requested for \(process.name); it is still running."
-                result = .requestedStillRunning
+            case .delivered:
+                if !processSignaler.isAlive(process.pid) {
+                    message = forceKill ? "\(process.name) force stopped." : "\(process.name) stopped."
+                    result = .stopped
+                } else if forceKill {
+                    message = "\(process.name) is still running after Force Stop."
+                    result = .requestedStillRunning
+                } else {
+                    message = "Stop requested for \(process.name); it is still running."
+                    result = .requestedStillRunning
+                }
             }
 
             await refreshAfterMutation()

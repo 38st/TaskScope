@@ -24,9 +24,27 @@ struct ProcessLifecycleRuntime: Sendable {
         ProcessListReader.executablePath(for: $0)
     }
     var sendSignal: @Sendable (Int32, Int32) -> Bool = { signal, pid in
-        Darwin.kill(pid, signal) == 0
+        ProcessLifecycleRuntime.liveSendSignal(signal, to: pid)
+    }
+    /// Liveness probe used while waiting for a graceful exit. Escalation itself
+    /// never trusts it: the final SIGKILL decision is made from a fresh,
+    /// identity-validated inventory.
+    var isProcessAlive: @Sendable (Int32) -> Bool = { pid in
+        DarwinProcessSignaler().isAlive(pid)
     }
     var sleep: @Sendable (UInt64) async -> Void
+
+    /// A signal to a target that no longer exists (`ESRCH`) counts as delivered:
+    /// the process is not running, which is what the caller asked for. Any pid
+    /// that may never be signalled is refused before `kill(2)`.
+    static func liveSendSignal(_ signal: Int32, to pid: Int32) -> Bool {
+        guard ProcessSignalGuard.isSignalablePID(pid) else { return false }
+        errno = 0
+        if Darwin.kill(pid, signal) == 0 {
+            return true
+        }
+        return errno == ESRCH
+    }
 
     static let live = ProcessLifecycleRuntime(
         userID: getuid(),
@@ -40,7 +58,8 @@ struct ProcessLifecycleRuntime: Sendable {
             await ProcessListReader.currentProcessList(fetchExtendedStats: false)
         },
         executablePathForPID: { ProcessListReader.executablePath(for: $0) },
-        sendSignal: { signal, pid in Darwin.kill(pid, signal) == 0 },
+        sendSignal: { signal, pid in ProcessLifecycleRuntime.liveSendSignal(signal, to: pid) },
+        isProcessAlive: { pid in DarwinProcessSignaler().isAlive(pid) },
         sleep: { nanoseconds in
             try? await Task.sleep(nanoseconds: nanoseconds)
         }

@@ -1,0 +1,270 @@
+import Darwin
+import XCTest
+@testable import TaskScope
+
+/// Drives the *production* auto-stop action handler
+/// (`AutoStopActionHandlerFactory`) end to end: the closure the app installs,
+/// the store's authority check, and `ProcessManager.terminate`.
+@MainActor
+final class AutoStopActionAuthorizationTests: XCTestCase {
+    private let examplePath = "/Applications/Example.app/Contents/MacOS/Example"
+    private let suiteName = "TaskScope.AutoStopActionAuthorizationTests"
+    nonisolated(unsafe) private var defaults: UserDefaults!
+
+    override func setUp() {
+        super.setUp()
+        defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+    }
+
+    override func tearDown() {
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults = nil
+        super.tearDown()
+    }
+
+    /// Stop Now on a Prompt rule used to be authorized with the automatic-stop
+    /// rule (`action == .kill`), so a confirmed prompt was always rejected and
+    /// logged as failed. A confirmed prompt needs only an enabled rule.
+    func testStopNowOnAPromptRuleIsAuthorizedThroughTheProductionHandler() async throws {
+        let target = appProcess(pid: 41, elapsed: "10:00")
+        let inventory = StubInventory(processes: [target])
+        let signaler = RecordingSignaler(alivePids: [41], exitsOnTerminate: true)
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+        let store = makeStore(inventory: inventory)
+        store.start(
+            cadence: 3_600,
+            perform: AutoStopActionHandlerFactory.make(processManager: manager, rules: store)
+        )
+        store.stop()
+        XCTAssertTrue(store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt)))
+
+        await store.evaluateNow()
+        let prompt = try XCTUnwrap(store.currentPrompt, "setup: a prompt is queued")
+        let claimed = try XCTUnwrap(store.claimPrompt(prompt))
+        await store.finishStop(claimed)
+
+        XCTAssertEqual(signaler.sent.map(\.signal), [SIGTERM])
+        XCTAssertEqual(store.events.first?.outcome, .stopped)
+    }
+
+    func testAutomaticStopStillRequiresAnEnabledAutoStopRule() async throws {
+        let target = appProcess(pid: 41, elapsed: "10:00")
+        let inventory = StubInventory(processes: [target])
+        let signaler = RecordingSignaler(alivePids: [41], exitsOnTerminate: true)
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+        let store = makeStore(inventory: inventory)
+        XCTAssertTrue(store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt)))
+        let promptRule = store.rules[0]
+        let handler = AutoStopActionHandlerFactory.make(processManager: manager, rules: store)
+
+        // A prompt rule invoked as if it were automatic is refused before kill(2).
+        let automatic = await handler(promptRule, target, .automatic)
+        XCTAssertEqual(automatic, .rejected)
+        XCTAssertTrue(signaler.sent.isEmpty)
+
+        XCTAssertTrue(store.authorizes(promptRule, kind: .confirmedPrompt))
+        XCTAssertFalse(store.authorizes(promptRule, kind: .automatic))
+
+        var disabled = promptRule
+        disabled.isEnabled = false
+        XCTAssertTrue(store.update(disabled))
+        XCTAssertFalse(store.authorizes(promptRule, kind: .confirmedPrompt))
+        XCTAssertFalse(store.authorizes(promptRule, kind: .automatic))
+    }
+
+    func testAutomaticStopIsAuthorizedForAnEnabledAutoStopRuleThroughTheProductionHandler() async throws {
+        let target = appProcess(pid: 41, elapsed: "10:00")
+        let inventory = StubInventory(processes: [target])
+        let signaler = RecordingSignaler(alivePids: [41], exitsOnTerminate: true)
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+        let store = makeStore(inventory: inventory)
+        XCTAssertTrue(store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        )))
+
+        store.start(
+            cadence: 3_600,
+            perform: AutoStopActionHandlerFactory.make(processManager: manager, rules: store)
+        )
+        await waitUntil { !store.events.isEmpty }
+        store.stop()
+
+        XCTAssertEqual(signaler.sent.map(\.signal), [SIGTERM])
+        XCTAssertEqual(store.events.map(\.outcome), [.stopped])
+    }
+
+    /// Editing the rule while its automatic stop is between the identity check
+    /// and the signal revokes the authority the stop started with: the queued
+    /// action is cancelled and nothing is signalled under the old rule.
+    func testRetargetingTheRuleWhileAStopIsInFlightCancelsItBeforeTheSignal() async throws {
+        let target = appProcess(pid: 41, elapsed: "10:00")
+        let verification = BlockingVerificationInventory(processes: [target])
+        let signaler = RecordingSignaler(alivePids: [41], exitsOnTerminate: true)
+        let manager = ProcessManager(
+            processInventory: StubInventory(processes: [target]),
+            verificationInventory: verification,
+            processSignaler: signaler,
+            settleAfterProcessChange: {}
+        )
+        manager.enableNotifications = false
+        let store = makeStore(inventory: StubInventory(processes: [target]))
+        XCTAssertTrue(store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        )))
+        let stored = store.rules[0]
+
+        store.start(
+            cadence: 3_600,
+            perform: AutoStopActionHandlerFactory.make(processManager: manager, rules: store)
+        )
+        await verification.waitForFirstCall()
+
+        var retargeted = stored
+        retargeted.executablePath = "/Applications/Other.app/Contents/MacOS/Example"
+        XCTAssertTrue(store.update(retargeted))
+        XCTAssertFalse(store.authorizes(stored, kind: .automatic))
+
+        await verification.finishFirstCall()
+        await waitUntil { manager.operationState == .idle && !manager.isWorking }
+        await settle()
+        store.stop()
+
+        XCTAssertTrue(signaler.sent.isEmpty, "a retargeted rule must not signal under its old path")
+        XCTAssertTrue(store.events.isEmpty, "no outcome may be recorded against the retired rule value")
+    }
+
+    // MARK: - Helpers
+
+    private func makeManager(
+        inventory: any ProcessInventoryProviding,
+        signaler: RecordingSignaler
+    ) -> ProcessManager {
+        let manager = ProcessManager(
+            processInventory: inventory,
+            processSignaler: signaler,
+            settleAfterProcessChange: {}
+        )
+        manager.enableNotifications = false
+        return manager
+    }
+
+    private func makeStore(inventory: any ProcessInventoryProviding) -> AutoStopRulesStore {
+        AutoStopRulesStore(
+            userDefaults: defaults,
+            key: "rules",
+            eventsKey: "events",
+            inventory: inventory,
+            now: { Date(timeIntervalSince1970: 1_000) }
+        )
+    }
+
+    private func appProcess(pid: Int32, elapsed: String) -> AppProcess {
+        AppProcess(
+            pid: pid,
+            parentPID: 1,
+            cpu: 1,
+            memoryMB: 1,
+            command: examplePath,
+            executablePath: examplePath,
+            elapsedTime: elapsed,
+            startTime: "start-\(pid)",
+            netInKB: nil,
+            netOutKB: nil,
+            diskReadBlocks: nil,
+            diskWriteBlocks: nil
+        )
+    }
+
+    private func settle() async {
+        for _ in 0..<20 {
+            await Task.yield()
+        }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+    }
+
+    private func waitUntil(
+        timeout: TimeInterval = 2,
+        _ condition: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition(), Date() < deadline {
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertTrue(condition(), "condition was not met within \(timeout)s")
+    }
+}
+
+private struct StubInventory: ProcessInventoryProviding {
+    var processes: [AppProcess]
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        .success(processes)
+    }
+}
+
+/// Blocks the first read (the manager's pre-signal verification) until released.
+private actor BlockingVerificationInventory: ProcessInventoryProviding {
+    private let processes: [AppProcess]
+    private var callCount = 0
+    private var firstCallContinuation: CheckedContinuation<Void, Never>?
+    private var firstCallWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(processes: [AppProcess]) {
+        self.processes = processes
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        callCount += 1
+        if callCount == 1 {
+            firstCallWaiters.forEach { $0.resume() }
+            firstCallWaiters.removeAll()
+            await withCheckedContinuation { firstCallContinuation = $0 }
+        }
+        return .success(processes)
+    }
+
+    func waitForFirstCall() async {
+        guard callCount == 0 else { return }
+        await withCheckedContinuation { firstCallWaiters.append($0) }
+    }
+
+    func finishFirstCall() {
+        firstCallContinuation?.resume()
+        firstCallContinuation = nil
+    }
+}
+
+private final class RecordingSignaler: ProcessSignaling {
+    struct SentSignal: Equatable {
+        var signal: Int32
+        var pid: Int32
+    }
+
+    private var alivePids: Set<Int32>
+    private let exitsOnTerminate: Bool
+    private(set) var sent: [SentSignal] = []
+
+    init(alivePids: Set<Int32>, exitsOnTerminate: Bool) {
+        self.alivePids = alivePids
+        self.exitsOnTerminate = exitsOnTerminate
+    }
+
+    func send(_ signal: Int32, to pid: Int32) -> Bool {
+        sent.append(SentSignal(signal: signal, pid: pid))
+        if signal == SIGTERM, exitsOnTerminate {
+            alivePids.remove(pid)
+        }
+        return true
+    }
+
+    func isAlive(_ pid: Int32) -> Bool {
+        alivePids.contains(pid)
+    }
+}

@@ -239,6 +239,48 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(manager.message, "Frozen force stopped.")
     }
 
+    /// PID 1 is launchd and 0 or a negative value would signal a whole process
+    /// group. None of them may ever reach `kill(2)`, even when an inventory row
+    /// claims one as a target.
+    func testTerminateRefusesPIDsThatMustNeverBeSignalled() async {
+        let launchd = process(pid: 1, name: "launchd")
+        let inventory = FakeProcessInventory(results: [.success([launchd])])
+        let signaler = FakeProcessSignaler(alivePids: [1])
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        let result = await manager.terminate(launchd)
+
+        XCTAssertEqual(result, .rejected)
+        XCTAssertTrue(signaler.sent.isEmpty)
+        XCTAssertEqual(manager.message, "PID 1 can never be signalled.")
+    }
+
+    /// `ESRCH` after the identity check means the target exited in the gap;
+    /// the requested outcome holds and must not be reported as a rejected signal.
+    func testSignalToAProcessThatAlreadyExitedCountsAsStopped() async {
+        let target = process(pid: 42, name: "Gone")
+        let inventory = FakeProcessInventory(results: [.success([target]), .success([])])
+        let signaler = FakeProcessSignaler(missingPids: [42])
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        let result = await manager.terminate(target)
+
+        XCTAssertEqual(result, .stopped)
+        XCTAssertEqual(manager.message, "Gone had already exited.")
+    }
+
+    func testBatchStopReportsAnAlreadyExitedTargetAsStoppedNotRejected() async {
+        let gone = process(pid: 42, name: "Gone")
+        let inventory = FakeProcessInventory(results: [.success([gone]), .success([])])
+        let signaler = FakeProcessSignaler(missingPids: [42])
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        await manager.batchTerminate([gone.identity])
+
+        XCTAssertEqual(manager.batchActionReport?.targets.map(\.state), [.stopped])
+        XCTAssertEqual(manager.message, "Stopped 1 of 1 selected.")
+    }
+
     func testTerminateRejectsReusedPIDBeforeSignaling() async {
         let original = process(pid: 42, startTime: "start-a", name: "Original")
         let replacement = process(pid: 42, startTime: "start-b", name: "Replacement")
@@ -1064,8 +1106,8 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
         calls.append("settle")
     }
 
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome {
-        calls.append("terminate:\(name)")
+    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
+        calls.append("terminate:\(preset.mainProcessName)")
         return terminationOutcome
     }
 
@@ -1277,18 +1319,29 @@ private final class FakeProcessSignaler: ProcessSignaling {
     private let exitsOnKill: Bool
     private let exitsOnTerminate: Bool
     private let rejectedPids: Set<Int32>
+    private let missingPids: Set<Int32>
     private(set) var sent: [SentSignal] = []
 
     init(
         alivePids: Set<Int32> = [],
         exitsOnKill: Bool = false,
         exitsOnTerminate: Bool = false,
-        rejectedPids: Set<Int32> = []
+        rejectedPids: Set<Int32> = [],
+        missingPids: Set<Int32> = []
     ) {
         self.alivePids = alivePids
         self.exitsOnKill = exitsOnKill
         self.exitsOnTerminate = exitsOnTerminate
         self.rejectedPids = rejectedPids
+        self.missingPids = missingPids
+    }
+
+    func deliver(_ signal: Int32, to pid: Int32) -> ProcessSignalDelivery {
+        if missingPids.contains(pid) {
+            sent.append(SentSignal(signal: signal, pid: pid))
+            return .noSuchProcess
+        }
+        return send(signal, to: pid) ? .delivered : .rejected(errno: EPERM)
     }
 
     func send(_ signal: Int32, to pid: Int32) -> Bool {

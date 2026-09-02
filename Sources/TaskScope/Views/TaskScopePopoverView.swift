@@ -978,6 +978,8 @@ struct TaskScopePopoverView: View {
         let targets = names.isEmpty ? "no configured processes" : names.joined(separator: ", ")
         let agentLabels = preset.lifecycleUserLaunchAgentJobs.map(\.label)
         let agentList = agentLabels.joined(separator: ", ")
+        let window = Int(ProcessTerminationController.gracefulExitWindowSeconds)
+        let forceStopDisclosure = "A process still running \(window) seconds after the stop request is force stopped."
 
         var sentences: [String] = []
         switch pending.action {
@@ -999,6 +1001,7 @@ struct TaskScopePopoverView: View {
             }
             sentences.append("It will then stop the currently running matches for: \(targets).")
         }
+        sentences.append(forceStopDisclosure)
         return sentences.joined(separator: " ")
     }
 

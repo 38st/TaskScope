@@ -3,18 +3,41 @@ import Foundation
 
 protocol ProcessSignaling {
     func send(_ signal: Int32, to pid: Int32) -> Bool
+    /// Like `send`, but distinguishes a target that no longer exists from a
+    /// signal the kernel refused.
+    func deliver(_ signal: Int32, to pid: Int32) -> ProcessSignalDelivery
     func isAlive(_ pid: Int32) -> Bool
+}
+
+extension ProcessSignaling {
+    func deliver(_ signal: Int32, to pid: Int32) -> ProcessSignalDelivery {
+        send(signal, to: pid) ? .delivered : .rejected(errno: EPERM)
+    }
 }
 
 struct DarwinProcessSignaler: ProcessSignaling {
     func send(_ signal: Int32, to pid: Int32) -> Bool {
-        Darwin.kill(pid, signal) == 0
+        deliver(signal, to: pid) == .delivered
+    }
+
+    func deliver(_ signal: Int32, to pid: Int32) -> ProcessSignalDelivery {
+        guard ProcessSignalGuard.isSignalablePID(pid) else {
+            return .rejected(errno: EINVAL)
+        }
+        errno = 0
+        if Darwin.kill(pid, signal) == 0 {
+            return .delivered
+        }
+        let code = errno
+        return code == ESRCH ? .noSuchProcess : .rejected(errno: code)
     }
 
     func isAlive(_ pid: Int32) -> Bool {
+        guard ProcessSignalGuard.isSignalablePID(pid) else { return false }
         errno = 0
         let result = Darwin.kill(pid, 0)
-        return result == 0 || errno == EPERM
+        guard result == 0 || errno == EPERM else { return false }
+        return !ProcessSignalGuard.isZombie(pid)
     }
 }
 
@@ -80,7 +103,8 @@ struct ProcessBatchTerminator {
         }
 
         let currentByIdentity = Dictionary(
-            uniqueKeysWithValues: currentProcesses.map { ($0.identity, $0) }
+            currentProcesses.map { ($0.identity, $0) },
+            uniquingKeysWith: { first, _ in first }
         )
         let verified = requestedIdentities.compactMap { currentByIdentity[$0] }
         var targetResults = requestedIdentities.compactMap { identity -> ProcessTargetActionResult? in
@@ -100,7 +124,21 @@ struct ProcessBatchTerminator {
                 state: .selfProcess
             )
         })
-        let signalTargets = verified.filter { $0.pid != currentPID }
+        // A pid that may never be signalled (0, negative, or launchd) cannot
+        // come from the parser, but the guard is enforced here regardless.
+        let unsignalable = verified.filter {
+            $0.pid != currentPID && !ProcessSignalGuard.isSignalablePID($0.pid)
+        }
+        targetResults.append(contentsOf: unsignalable.map {
+            ProcessTargetActionResult(
+                identity: $0.identity,
+                name: $0.name,
+                state: .signalRejected
+            )
+        })
+        let signalTargets = verified.filter {
+            $0.pid != currentPID && ProcessSignalGuard.isSignalablePID($0.pid)
+        }
         guard !signalTargets.isEmpty else {
             sort(&targetResults, by: requestedIdentities)
             let message: String
@@ -123,15 +161,24 @@ struct ProcessBatchTerminator {
         let signal: Int32 = forceKill ? SIGKILL : SIGTERM
         var acceptedIdentities: Set<ProcessIdentity> = []
         for process in signalTargets {
-            guard signaler.send(signal, to: process.pid) else {
+            switch signaler.deliver(signal, to: process.pid) {
+            case .delivered:
+                acceptedIdentities.insert(process.identity)
+            case .noSuchProcess:
+                // It exited between the identity check and the signal; the
+                // requested outcome holds, so this is not a rejected signal.
+                targetResults.append(ProcessTargetActionResult(
+                    identity: process.identity,
+                    name: process.name,
+                    state: .stopped
+                ))
+            case .rejected:
                 targetResults.append(ProcessTargetActionResult(
                     identity: process.identity,
                     name: process.name,
                     state: .signalRejected
                 ))
-                continue
             }
-            acceptedIdentities.insert(process.identity)
         }
         await settleAfterProcessChange()
 
@@ -149,7 +196,7 @@ struct ProcessBatchTerminator {
         let message: String
         if forceKill {
             message = "Force stopped \(stopped) of \(requestedIdentities.count) selected."
-        } else if accepted == 0 {
+        } else if accepted == 0, stopped == 0 {
             message = "Could not send stop to the selected processes."
         } else if stopped == signalTargets.count, staleCount == 0, selfTargets.isEmpty {
             message = "Stopped \(stopped) of \(requestedIdentities.count) selected."

@@ -16,18 +16,27 @@ struct SavedSelectionRecallSheet: View {
 
             if !result.matched.isEmpty {
                 GroupBox("Will select") {
-                    itemList(result.matched.map { "\($0.name) — PID \($0.pid)" })
+                    itemList(result.matched.map {
+                        "\($0.name) — PID \($0.pid)"
+                            + (result.legacyNameMatches.contains($0.identity) ? Self.legacyMarker : "")
+                    })
                 }
             }
             if !result.unmatched.isEmpty {
                 GroupBox("Not running") {
-                    itemList(result.unmatched.map(\.executableName))
+                    itemList(result.unmatched.map { Self.savedEntryLabel($0) })
                 }
             }
             if !result.ambiguous.isEmpty {
                 GroupBox("Ambiguous — not selected") {
-                    itemList(result.ambiguous.map(\.executableName))
+                    itemList(result.ambiguous.map { Self.savedEntryLabel($0) })
                 }
+            }
+
+            if hasLegacyEntries {
+                Text("Entries marked “legacy name match” were saved without a kernel executable path and match by command or name only.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             if result.legacyUnsupported {
@@ -48,6 +57,17 @@ struct SavedSelectionRecallSheet: View {
         }
         .padding(20)
         .frame(width: 430)
+    }
+
+    static let legacyMarker = " · legacy name match"
+
+    private static func savedEntryLabel(_ saved: SavedSelectionsStore.SavedProcess) -> String {
+        saved.executableName + (saved.executablePath == nil ? legacyMarker : "")
+    }
+
+    private var hasLegacyEntries: Bool {
+        !result.legacyNameMatches.isEmpty
+            || (result.unmatched + result.ambiguous).contains { $0.executablePath == nil }
     }
 
     private func itemList(_ items: [String]) -> some View {
@@ -81,9 +101,11 @@ struct RenameSavedSelectionSheet: View {
             }
             HStack {
                 Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Rename", action: onSave)
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
                     .disabled(
                         name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || name == originalName

@@ -2,14 +2,24 @@ import Darwin
 import Foundation
 
 enum ProcessTerminationController {
+    /// How long a target is given to exit after SIGTERM before an escalating
+    /// policy sends SIGKILL. Confirmation dialogs quote this value.
+    static let gracefulExitWindowSeconds: TimeInterval = 3
+    /// Liveness is re-checked this often during the graceful window so a target
+    /// that exits promptly does not hold the action open for the whole window.
+    static let livenessPollNanoseconds: UInt64 = 250_000_000
+
     static func settle(runtime: ProcessLifecycleRuntime) async {
         await runtime.sleep(300_000_000)
     }
 
+    /// Signals every process named `name` that runs from inside
+    /// `expectedExecutableDirectory`. The directory is mandatory: a name alone
+    /// is never sufficient to signal a process.
     static func terminate(
         named name: String,
         policy: TerminationPolicy,
-        expectedExecutableDirectory: String?,
+        expectedExecutableDirectory: String,
         excludingPID currentPID: Int32,
         runtime: ProcessLifecycleRuntime
     ) async -> ProcessTerminationOutcome {
@@ -24,11 +34,12 @@ enum ProcessTerminationController {
             in: initialInventory
         )
         let termTargets = targets.filter {
-            executablePathStillMatches(
-                $0,
-                expectedExecutableDirectory: expectedExecutableDirectory,
-                runtime: runtime
-            )
+            ProcessSignalGuard.isSignalablePID($0.pid)
+                && executablePathStillMatches(
+                    $0,
+                    expectedExecutableDirectory: expectedExecutableDirectory,
+                    runtime: runtime
+                )
         }
         guard !termTargets.isEmpty else { return .noMatchingProcesses }
 
@@ -40,7 +51,7 @@ enum ProcessTerminationController {
             return signalWasRejected ? .signalRejected : .signalled
         }
 
-        await settle(runtime: runtime)
+        await waitForGracefulExit(of: termTargets, runtime: runtime)
         guard case .success(let refreshedInventory) = await runtime.loadProcessInventory() else {
             return signalWasRejected ? .signalRejected : .escalationUnavailable
         }
@@ -53,6 +64,7 @@ enum ProcessTerminationController {
             in: refreshedInventory
         ).filter {
             originalIdentities.contains($0.identity)
+                && ProcessSignalGuard.isSignalablePID($0.pid)
                 && executablePathStillMatches(
                     $0,
                     expectedExecutableDirectory: expectedExecutableDirectory,
@@ -66,6 +78,24 @@ enum ProcessTerminationController {
             signalWasRejected = true
         }
         return signalWasRejected ? .signalRejected : .signalled
+    }
+
+    /// Polls liveness for up to the graceful window and returns early once
+    /// every target has gone. Attempt-bounded so an injected no-op sleep cannot
+    /// spin. The liveness probe only shortens the wait; whether anything is
+    /// force-stopped is decided from a fresh identity-validated inventory.
+    private static func waitForGracefulExit(
+        of targets: [AppProcess],
+        runtime: ProcessLifecycleRuntime
+    ) async {
+        let pollSeconds = Double(livenessPollNanoseconds) / 1_000_000_000
+        let attempts = max(1, Int((gracefulExitWindowSeconds / pollSeconds).rounded(.up)))
+        for _ in 0..<attempts {
+            if targets.allSatisfy({ !runtime.isProcessAlive($0.pid) }) {
+                return
+            }
+            await runtime.sleep(livenessPollNanoseconds)
+        }
     }
 
     static func isRunning(
@@ -112,6 +142,9 @@ enum ProcessTerminationController {
         inventory.filter { $0.name == name }
     }
 
+    /// Detection helper. A nil directory matches by name alone, which is
+    /// acceptable for *observing* a process but never for signalling one; the
+    /// signalling path requires a directory.
     static func terminationTargets(
         named name: String,
         expectedExecutableDirectory: String?,
@@ -138,10 +171,9 @@ enum ProcessTerminationController {
 
     private static func executablePathStillMatches(
         _ process: AppProcess,
-        expectedExecutableDirectory: String?,
+        expectedExecutableDirectory: String,
         runtime: ProcessLifecycleRuntime
     ) -> Bool {
-        guard let expectedExecutableDirectory else { return true }
         guard let inventoryPath = process.executablePath,
               let path = runtime.executablePathForPID(process.pid),
               path.hasPrefix("/") else {

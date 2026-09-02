@@ -216,6 +216,7 @@ final class P11UnguardedWritebackTests: XCTestCase {
             cpu: 0,
             memoryMB: 0,
             command: command,
+            executablePath: command,
             elapsedTime: elapsed,
             startTime: "start-\(pid)",
             netInKB: 0,

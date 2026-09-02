@@ -19,17 +19,42 @@ final class SavedSelectionsStoreTests: XCTestCase {
         super.tearDown()
     }
 
-    func testRestartedProcessRecallsByExactExecutableCommand() {
+    /// Legacy payloads predate executable-path capture. They keep their
+    /// documented command fallback, and every such match is flagged.
+    func testLegacyEntryRecallsByExactExecutableCommandAndIsMarkedAsANameMatch() throws {
+        seedLegacySelection(
+            name: "Example tools",
+            entries: [(pid: 10, command: "/Applications/Example.app/Contents/MacOS/Example")]
+        )
         let store = makeStore()
-        let original = process(pid: 10, command: "/Applications/Example.app/Contents/MacOS/Example")
-        let restarted = process(pid: 99, command: original.command)
-        XCTAssertTrue(store.save(name: "Example tools", processes: [original]))
+        let restarted = process(pid: 99, command: "/Applications/Example.app/Contents/MacOS/Example")
 
         let result = store.resolve(store.selections[0], in: [restarted])
 
         XCTAssertEqual(result.matched, [restarted])
+        XCTAssertEqual(result.legacyNameMatches, [restarted.identity])
         XCTAssertTrue(result.unmatched.isEmpty)
         XCTAssertTrue(result.ambiguous.isEmpty)
+    }
+
+    /// A new entry without a kernel path would silently take the spoofable
+    /// name-match branch on recall, so saving it is refused with a message that
+    /// names the process.
+    func testSaveRefusesAnEntryWithoutAKernelExecutablePath() {
+        let store = makeStore()
+        let bound = process(
+            pid: 10,
+            command: "/Applications/Example.app/Contents/MacOS/Example",
+            executablePath: "/Applications/Example.app/Contents/MacOS/Example"
+        )
+        let unbound = process(pid: 11, command: "/tmp/Mystery")
+
+        XCTAssertFalse(store.save(name: "Mixed", processes: [bound, unbound]))
+        XCTAssertTrue(store.selections.isEmpty)
+        XCTAssertTrue(store.validationError?.contains("Mystery (PID 11)") == true, store.validationError ?? "")
+
+        XCTAssertTrue(store.save(name: "Bound only", processes: [bound]))
+        XCTAssertEqual(store.selections[0].processes.map(\.executablePath), [bound.executablePath])
     }
 
     func testTrustedExecutablePathWinsOverSpoofableCommand() {
@@ -79,9 +104,8 @@ final class SavedSelectionsStoreTests: XCTestCase {
     }
 
     func testNameFallbackOnlyMatchesWhenUnique() {
+        seedLegacySelection(name: "Example", entries: [(pid: 10, command: "Example")])
         let store = makeStore()
-        let original = process(pid: 10, command: "Example")
-        store.save(name: "Example", processes: [original])
         let first = process(pid: 20, command: "/one/Example")
         let second = process(pid: 21, command: "/two/Example")
 
@@ -95,8 +119,8 @@ final class SavedSelectionsStoreTests: XCTestCase {
 
     func testDuplicateNamesAreRejectedAndRenamePersists() {
         let store = makeStore()
-        store.save(name: "Editors", processes: [process(pid: 1, command: "Editor")])
-        XCTAssertFalse(store.save(name: " editors ", processes: [process(pid: 2, command: "Other")]))
+        store.save(name: "Editors", processes: [process(pid: 1, command: "/bin/Editor", executablePath: "/bin/Editor")])
+        XCTAssertFalse(store.save(name: " editors ", processes: [process(pid: 2, command: "/bin/Other", executablePath: "/bin/Other")]))
         XCTAssertTrue(store.rename(store.selections[0], to: "Development"))
 
         let reloaded = makeStore()
@@ -130,6 +154,16 @@ final class SavedSelectionsStoreTests: XCTestCase {
 
     private func makeStore() -> SavedSelectionsStore {
         SavedSelectionsStore(userDefaults: defaults, key: key)
+    }
+
+    /// Writes a pre-path-capture payload exactly as an older build stored it.
+    private func seedLegacySelection(name: String, entries: [(pid: Int32, command: String)]) {
+        let processes = entries.map { entry in
+            #"{"pid":\#(entry.pid),"command":"\#(entry.command)","executableName":"\#(URL(fileURLWithPath: entry.command).lastPathComponent)"}"#
+        }.joined(separator: ",")
+        let pids = entries.map { String($0.pid) }.joined(separator: ",")
+        let json = #"[{"id":"00000000-0000-0000-0000-000000000002","name":"\#(name)","pids":[\#(pids)],"processes":[\#(processes)],"isLegacyUnsupported":false}]"#
+        defaults.set(Data(json.utf8), forKey: key)
     }
 
     private func process(

@@ -62,6 +62,55 @@ final class ProcessSignalIntegrationTests: XCTestCase {
         XCTAssertFalse(child.isRunning)
     }
 
+    /// `kill(pid, 0)` still succeeds for a zombie, which has already exited and
+    /// only awaits `waitpid`. Liveness must consult the kernel state.
+    func testZombieIsNotReportedAlive() throws {
+        var pid: pid_t = 0
+        var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/usr/bin/true"), nil]
+        defer { argv.forEach { free($0) } }
+        XCTAssertEqual(posix_spawn(&pid, "/usr/bin/true", nil, nil, &argv, nil), 0)
+        defer {
+            var status: Int32 = 0
+            _ = waitpid(pid, &status, 0)
+        }
+
+        var isZombie = false
+        for _ in 0..<400 where !isZombie {
+            isZombie = ProcessSignalGuard.isZombie(pid)
+            if !isZombie { usleep(5_000) }
+        }
+        XCTAssertTrue(isZombie, "precondition: the child became a zombie")
+        errno = 0
+        XCTAssertEqual(Darwin.kill(pid, 0), 0, "precondition: kill(pid, 0) succeeds for a zombie")
+
+        XCTAssertFalse(DarwinProcessSignaler().isAlive(pid))
+    }
+
+    /// Signal 0 is harmless, so the guard can be exercised against the real
+    /// kernel: `kill(0, 0)` would succeed, and pid 1 exists, if they were not
+    /// refused before the call.
+    func testSignalGuardRefusesProcessGroupAndLaunchdPIDs() {
+        let signaler = DarwinProcessSignaler()
+
+        XCTAssertEqual(signaler.deliver(0, to: 0), .rejected(errno: EINVAL))
+        XCTAssertFalse(signaler.send(0, to: 1))
+        XCTAssertFalse(signaler.send(0, to: -1))
+        XCTAssertFalse(signaler.isAlive(0))
+        XCTAssertFalse(signaler.isAlive(1))
+    }
+
+    func testDeliveryDistinguishesAVanishedProcessFromARejectedSignal() throws {
+        var pid: pid_t = 0
+        var argv: [UnsafeMutablePointer<CChar>?] = [strdup("/usr/bin/true"), nil]
+        defer { argv.forEach { free($0) } }
+        XCTAssertEqual(posix_spawn(&pid, "/usr/bin/true", nil, nil, &argv, nil), 0)
+        var status: Int32 = 0
+        XCTAssertEqual(waitpid(pid, &status, 0), pid)
+
+        XCTAssertEqual(DarwinProcessSignaler().deliver(0, to: pid), .noSuchProcess)
+        XCTAssertEqual(DarwinProcessSignaler().deliver(0, to: 1), .rejected(errno: EINVAL))
+    }
+
     private func waitForMarker(_ marker: URL) async throws -> Bool {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(2))

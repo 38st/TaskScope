@@ -265,7 +265,8 @@ private struct NoopSignaler: ProcessSignaling {
 private struct NoopLifecycle: ProcessLifecycleServicing {
     func appBundleExists(at path: String) -> Bool { true }
     func settleAfterProcessChange() async {}
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome { .signalled }
+    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .signalled }
+    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .signalled }
     func isProcessNamedRunning(_ name: String) async -> Bool { false }
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }

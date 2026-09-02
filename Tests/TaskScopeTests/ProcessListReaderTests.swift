@@ -62,14 +62,28 @@ final class ProcessListReaderTests: XCTestCase {
         XCTAssertNil(ProcessListReader.parseProcessLine("abc 1 0.0 10 00:01 command"[...]))
     }
 
-    func testProcessListOutputRejectsMixedValidAndMalformedRows() {
+    func testProcessListOutputDropsMalformedRowsAndKeepsValidOnes() throws {
         let valid = "42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 Example"
         let output = "\(valid)\nmalformed partial row"
 
-        XCTAssertEqual(
-            ProcessListReader.parseProcessListOutput(output),
-            .failure(.parseFailed)
-        )
+        let processes = try ProcessListReader.parseProcessListOutput(output).get()
+        XCTAssertEqual(processes.map(\.pid), [42])
+    }
+
+    /// launchd (pid 1) and the kernel task (pid 0) must never become signal
+    /// targets, so the parser drops those rows while keeping the inventory.
+    func testParserDropsPIDsThatMustNeverBeSignalled() throws {
+        let output = """
+        0 0 0.0 100 Sat Jul 26 11:20:17 2026 01:02:03 kernel_task
+        1 0 0.0 100 Sat Jul 26 11:20:17 2026 01:02:03 /sbin/launchd
+        42 1 7.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 Example
+        """
+
+        XCTAssertNil(ProcessListReader.parseProcessLine(
+            "1 0 0.0 100 Sat Jul 26 11:20:17 2026 01:02:03 /sbin/launchd"[...]
+        ))
+        let processes = try ProcessListReader.parseProcessListOutput(output).get()
+        XCTAssertEqual(processes.map(\.pid), [42])
     }
 
     func testStartTimeValidationRejectsPartialMalformedOutput() {

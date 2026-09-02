@@ -101,7 +101,7 @@ final class WatchedAppsStore: ObservableObject {
             if validated.rejectedCount > 0 {
                 let backupKey = persistence.preserveCurrentPayload(
                     suffix: "rejectedMigrationBackup"
-                ) ?? "\(key).rejectedMigrationBackup"
+                )?.key ?? "\(key).rejectedMigrationBackup"
                 allowsPersistence = false
                 recoveredDecodedPayload = true
                 persistenceIssue = "Rejected \(validated.rejectedCount) unsafe or invalid stored preset\(validated.rejectedCount == 1 ? "" : "s"). The first rejected payload is preserved as \(backupKey); review or export the recovered presets, then reset to commit them."

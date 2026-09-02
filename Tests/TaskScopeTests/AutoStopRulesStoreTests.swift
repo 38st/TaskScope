@@ -270,6 +270,81 @@ final class AutoStopRulesStoreTests: XCTestCase {
         await sleeper.resume(returning: false)
     }
 
+    /// `/opt/homebrew/bin/node` is a symlink; the kernel reports the Cellar
+    /// binary as the executable. The rule must match through the link.
+    func testRulePathMatchesTheKernelPathThroughASymlink() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("taskscope-symlink-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let real = directory.appendingPathComponent("RealTool")
+        try Data("#!/bin/sh\n".utf8).write(to: real)
+        let link = directory.appendingPathComponent("linked-tool")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        let store = makeStore()
+        XCTAssertTrue(store.add(AutoStopRule(
+            processName: "RealTool",
+            executablePath: link.path,
+            runtimeMinutes: 1,
+            action: .kill
+        )))
+        XCTAssertEqual(store.rules[0].executablePath, AutoStopRuleValidation.canonicalPath(real.path))
+
+        let kernelPath = AutoStopRuleValidation.canonicalPath(real.path)
+        let running = appProcess(
+            pid: 41,
+            command: kernelPath,
+            elapsed: "10:00",
+            executablePath: kernelPath
+        )
+        var matched: [Int32] = []
+        store.evaluate(runningProcesses: [running]) { _, process in
+            matched.append(process.pid)
+        }
+
+        XCTAssertEqual(matched, [41])
+        XCTAssertTrue(AutoStopRuleValidation.pathsMatch(link.path, real.path))
+        XCTAssertTrue(AutoStopRuleValidation.pathsMatch("/tmp/\(UUID().uuidString)", "/private/tmp/never-exists")
+            == false)
+    }
+
+    /// An outcome written by another build must survive a round trip verbatim
+    /// instead of being decoded as Logged.
+    func testUnknownEventOutcomeRoundTripsInsteadOfBecomingLogged() throws {
+        let json = Data(#"[{"timestamp":0,"processName":"Example","pid":42,"ruleID":"00000000-0000-0000-0000-000000000001","outcome":"vaporized","detail":"x"}]"#.utf8)
+
+        let events = try JSONDecoder().decode([AutoStopEvent].self, from: json)
+        XCTAssertEqual(events[0].outcome, .unknown("vaporized"))
+        XCTAssertEqual(events[0].outcome.label, "Unknown (vaporized)")
+
+        let reencoded = try JSONEncoder().encode(events)
+        XCTAssertTrue(String(decoding: reencoded, as: UTF8.self).contains("\"vaporized\""))
+        XCTAssertEqual(try JSONDecoder().decode([AutoStopEvent].self, from: reencoded), events)
+        XCTAssertEqual(AutoStopEvent.Outcome(rawValue: "stopRequested"), .stopRequested)
+    }
+
+    /// The backup slot keeps the *first* unreadable payload. A later unreadable
+    /// launch must say that its payload was not backed up rather than claiming
+    /// a backup that never happened.
+    func testSecondUnreadableLaunchReportsThatTheEarlierBackupWasKept() {
+        let first = Data([0xAA, 0x01])
+        let second = Data([0xBB, 0x02])
+        userDefaults.set(first, forKey: key)
+        let firstStore = makeStore()
+        XCTAssertTrue(firstStore.rulesRecoveryMessage?.contains("was backed up as") == true)
+
+        userDefaults.set(second, forKey: key)
+        let secondStore = makeStore()
+
+        XCTAssertTrue(
+            secondStore.rulesRecoveryMessage?.contains("was not backed up") == true,
+            secondStore.rulesRecoveryMessage ?? "nil"
+        )
+        XCTAssertEqual(userDefaults.data(forKey: "\(key).corruptBackup"), first)
+        XCTAssertEqual(userDefaults.data(forKey: key), second)
+    }
+
     func testCorruptRulesAndEventsAreBackedUp() {
         let corruptRules = Data([0xFF, 0x01])
         let corruptEvents = Data([0xFE, 0x02])

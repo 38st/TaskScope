@@ -1,9 +1,10 @@
 import Foundation
 
+/// Every termination entry point is scoped to a preset so the implementation
+/// can require the executable directory. There is deliberately no name-only
+/// termination API: a name alone is never sufficient to signal a process.
 protocol ProcessTerminating: Sendable {
     func settleAfterProcessChange() async
-    @discardableResult
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome
     func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome
     func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome
     func isProcessNamedRunning(_ name: String) async -> Bool
@@ -58,14 +59,6 @@ protocol ProcessLifecycleServicing:
     AppBundleLaunching {}
 
 extension ProcessTerminating {
-    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
-        await terminateProcess(named: preset.mainProcessName, forceIfStillRunning: true)
-    }
-
-    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
-        await terminateProcess(named: name, forceIfStillRunning: true)
-    }
-
     func waitForMainProcess(for preset: WatchedAppPreset, timeoutSeconds: TimeInterval) async -> Bool {
         await waitForProcessNamed(preset.mainProcessName, timeoutSeconds: timeoutSeconds)
     }
@@ -80,13 +73,9 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
         await ProcessLifecycleController.settleAfterProcessChange()
     }
 
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome {
-        await ProcessLifecycleController.terminateProcess(
-            named: name,
-            policy: forceIfStillRunning ? .gracefulThenForce : .graceful
-        )
-    }
-
+    /// Both preset terminations escalate to SIGKILL only after the graceful
+    /// window in `ProcessTerminationController` has elapsed with the identity
+    /// still present; the confirmation dialog discloses that window.
     func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
         return await ProcessLifecycleController.terminateProcess(
             named: preset.mainProcessName,

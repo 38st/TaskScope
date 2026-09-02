@@ -218,10 +218,20 @@ private struct P7RealControllerLifecycleService: ProcessLifecycleServicing {
         await ProcessLifecycleController.settleAfterProcessChange(runtime: runtime)
     }
 
-    func terminateProcess(named name: String, forceIfStillRunning: Bool) async -> ProcessTerminationOutcome {
+    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
+        await ProcessLifecycleController.terminateProcess(
+            named: preset.mainProcessName,
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: preset.mainExecutableDirectory,
+            runtime: runtime
+        )
+    }
+
+    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
         await ProcessLifecycleController.terminateProcess(
             named: name,
-            forceIfStillRunning: forceIfStillRunning,
+            forceIfStillRunning: true,
+            expectedExecutableDirectory: preset.bundleContentsDirectory,
             runtime: runtime
         )
     }
