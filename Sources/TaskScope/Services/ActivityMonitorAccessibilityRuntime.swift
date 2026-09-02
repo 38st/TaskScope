@@ -7,7 +7,7 @@ import Foundation
 protocol ActivityMonitorAccessibilityRuntime {
     func isProcessTrusted(prompt: Bool) -> Bool
     func activityMonitorProcessIdentifier() -> pid_t?
-    func selectProcessRow(applicationPID: pid_t, targetPID: Int32) -> ActivityMonitorSelectionAttempt
+    func selectProcessRow(applicationPID: pid_t, targetPID: Int32) async -> ActivityMonitorSelectionAttempt
     func restorePreparedState()
 }
 
@@ -31,7 +31,7 @@ struct SystemActivityMonitorProcessSelector: ActivityMonitorProcessSelecting {
         runtime.restorePreparedState()
     }
 
-    func select(pid: Int32) -> ActivityMonitorSelectionAttempt {
+    func select(pid: Int32) async -> ActivityMonitorSelectionAttempt {
         guard runtime.isProcessTrusted(prompt: true) else {
             return .accessibilityDenied(
                 "macOS has not granted TaskScope permission to select another app's interface."
@@ -42,36 +42,40 @@ struct SystemActivityMonitorProcessSelector: ActivityMonitorProcessSelecting {
             return .notReady
         }
 
-        return runtime.selectProcessRow(applicationPID: applicationPID, targetPID: pid)
+        return await runtime.selectProcessRow(applicationPID: applicationPID, targetPID: pid)
+    }
+}
+
+/// Activity Monitor table state a handoff changed. Held on the main actor
+/// between attempts and handed to the worker for restoration. `AXUIElement` is
+/// a CF type without a Sendable annotation; every element here is used only on
+/// the worker's serial queue.
+struct ActivityMonitorPreparedTableState: @unchecked Sendable {
+    var searchField: AXUIElement?
+    var searchValue = ""
+    /// The search text TaskScope typed; restoration is skipped when the field
+    /// no longer holds it, because the user has moved on.
+    var searchValueSet = ""
+    var allProcessesItem: AXUIElement?
+    var previousProcessScopeItem: AXUIElement?
+    var processScopeChanged = false
+    var processIDItem: AXUIElement?
+    var processIDWasVisible = true
+    var processIDWasShown = false
+    var searchWasChanged = false
+
+    var hasChanges: Bool {
+        processScopeChanged || processIDWasShown || searchWasChanged
     }
 }
 
 @MainActor
 final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibilityRuntime {
     private static let activityMonitorBundleIdentifier = "com.apple.ActivityMonitor"
-    private static let maximumTreeDepth = 12
     private static let restorationDelayNanoseconds: UInt64 = 4_000_000_000
 
-    private struct PreparedProcessTableState {
-        var searchField: AXUIElement?
-        var searchValue = ""
-        /// The search text TaskScope typed; restoration is skipped when the
-        /// field no longer holds it, because the user has moved on.
-        var searchValueSet = ""
-        var allProcessesItem: AXUIElement?
-        var previousProcessScopeItem: AXUIElement?
-        var processScopeChanged = false
-        var processIDItem: AXUIElement?
-        var processIDWasVisible = true
-        var processIDWasShown = false
-        var searchWasChanged = false
-
-        var hasChanges: Bool {
-            processScopeChanged || processIDWasShown || searchWasChanged
-        }
-    }
-
-    private var preparedState: PreparedProcessTableState?
+    private let worker = ActivityMonitorAccessibilityWorker()
+    private var preparedState: ActivityMonitorPreparedTableState?
     private var restorationTask: Task<Void, Never>?
 
     func isProcessTrusted(prompt: Bool) -> Bool {
@@ -91,21 +95,186 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
         ).first?.processIdentifier
     }
 
+    /// Every Accessibility call happens on the worker's queue; only the state
+    /// bookkeeping returns to the main actor.
     func selectProcessRow(
         applicationPID: pid_t,
         targetPID: Int32
-    ) -> ActivityMonitorSelectionAttempt {
+    ) async -> ActivityMonitorSelectionAttempt {
+        let processName = Self.processName(for: targetPID)
+        let outcome = await worker.selectOrPrepare(
+            applicationPID: applicationPID,
+            targetPID: targetPID,
+            processName: processName,
+            existingState: preparedState
+        )
+        preparedState = outcome.preparedState
+        if outcome.preparedState != nil {
+            scheduleProcessTableRestoration()
+        }
+        return outcome.attempt
+    }
+
+    /// Restores immediately (app termination) instead of after the delay.
+    func restorePreparedState() {
+        restorationTask?.cancel()
+        restorationTask = nil
+        guard let state = preparedState else { return }
+        preparedState = nil
+        worker.restoreNow(state)
+    }
+
+    private func scheduleProcessTableRestoration() {
+        restorationTask?.cancel()
+        restorationTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.restorationDelayNanoseconds)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self, let state = self.preparedState else { return }
+            self.preparedState = nil
+            self.restorationTask = nil
+            await self.worker.restore(state)
+        }
+    }
+
+    private static func processName(for pid: Int32) -> String? {
+        if let localizedName = NSRunningApplication(
+            processIdentifier: pid
+        )?.localizedName?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !localizedName.isEmpty {
+            return localizedName
+        }
+
+        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+        let byteCount = proc_name(pid, &buffer, UInt32(buffer.count))
+        guard byteCount > 0 else {
+            return nil
+        }
+        let bytes = buffer
+            .prefix(Int(byteCount))
+            .prefix { $0 != 0 }
+            .map { UInt8(bitPattern: $0) }
+        let name = String(decoding: bytes, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+}
+
+/// Identifies Activity Monitor menu items by title rather than by position, so a
+/// menu that gained or lost an item cannot make TaskScope press the wrong one.
+/// Failure to match means the corresponding table change is simply not made.
+enum ActivityMonitorMenuMatcher {
+    static let allProcessesTitles: Set<String> = ["all processes"]
+    static let pidColumnTitles: Set<String> = ["pid", "process id"]
+
+    static func allProcessesIndex(titles: [String?]) -> Int? {
+        titles.firstIndex { allProcessesTitles.contains(normalized($0)) }
+    }
+
+    static func pidColumnIndex(titles: [String?]) -> Int? {
+        titles.firstIndex { pidColumnTitles.contains(normalized($0)) }
+    }
+
+    /// The contiguous run of titled items around `index`, bounded by menu
+    /// separators (items with no title). The process-scope radio group lives in
+    /// exactly one such run.
+    static func scopeGroupRange(titles: [String?], around index: Int) -> Range<Int> {
+        guard titles.indices.contains(index) else { return index..<index }
+        var lower = index
+        while lower > 0, !isSeparator(titles[lower - 1]) {
+            lower -= 1
+        }
+        var upper = index + 1
+        while upper < titles.count, !isSeparator(titles[upper]) {
+            upper += 1
+        }
+        return lower..<upper
+    }
+
+    private static func normalized(_ title: String?) -> String {
+        (title ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func isSeparator(_ title: String?) -> Bool {
+        normalized(title).isEmpty
+    }
+}
+
+/// Runs all Accessibility traffic on one serial queue. AX calls are synchronous
+/// IPC into Activity Monitor; performed on the main actor for every row and
+/// cell, up to eight attempts, they froze TaskScope's own UI.
+final class ActivityMonitorAccessibilityWorker: @unchecked Sendable {
+    struct Outcome: @unchecked Sendable {
+        var attempt: ActivityMonitorSelectionAttempt
+        var preparedState: ActivityMonitorPreparedTableState?
+    }
+
+    private static let maximumTreeDepth = 12
+    private let queue = DispatchQueue(
+        label: "TaskScope.ActivityMonitorAccessibility",
+        qos: .userInitiated
+    )
+
+    func selectOrPrepare(
+        applicationPID: pid_t,
+        targetPID: Int32,
+        processName: String?,
+        existingState: ActivityMonitorPreparedTableState?
+    ) async -> Outcome {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                continuation.resume(
+                    returning: self.performSelectOrPrepare(
+                        applicationPID: applicationPID,
+                        targetPID: targetPID,
+                        processName: processName,
+                        existingState: existingState
+                    )
+                )
+            }
+        }
+    }
+
+    func restore(_ state: ActivityMonitorPreparedTableState) async {
+        await withCheckedContinuation { continuation in
+            queue.async {
+                self.performRestore(state)
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Synchronous variant for application termination, where an async hop
+    /// would never complete.
+    func restoreNow(_ state: ActivityMonitorPreparedTableState) {
+        queue.sync {
+            performRestore(state)
+        }
+    }
+
+    private func performSelectOrPrepare(
+        applicationPID: pid_t,
+        targetPID: Int32,
+        processName: String?,
+        existingState: ActivityMonitorPreparedTableState?
+    ) -> Outcome {
         let application = AXUIElementCreateApplication(applicationPID)
 
         if let rowSelection = selectVisibleRow(in: application, targetPID: targetPID) {
-            return rowSelection
+            return Outcome(attempt: rowSelection, preparedState: existingState)
         }
 
         // A user's existing search or process-scope choice can hide an otherwise
         // valid PID. Normalize only the state needed for a visible handoff, then
         // let the coordinator retry after Activity Monitor refreshes its table.
-        prepareProcessTable(in: application, targetPID: targetPID)
-        return .notReady
+        let state = prepareProcessTable(
+            in: application,
+            processName: processName,
+            existingState: existingState
+        )
+        return Outcome(attempt: .notReady, preparedState: state.hasChanges ? state : nil)
     }
 
     private func selectVisibleRow(
@@ -123,6 +292,7 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
                 remainingDepth: Self.maximumTreeDepth
             ),
             let columns = elements(outline, attribute: kAXColumnsAttribute),
+            // Resolved once per outline, not once per row.
             let pidColumnIndex = ActivityMonitorPIDCellMatcher.pidColumnIndex(
                 in: columns.map { string($0, attribute: kAXIdentifierAttribute) }
             ),
@@ -132,24 +302,15 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
 
             for row in rows {
                 guard let cells = elements(row, attribute: kAXChildrenAttribute),
-                      let pidCellIndex = ActivityMonitorPIDCellMatcher.cellIndex(
-                          columnRanges: cells.map {
-                              indexRange(
-                                  $0,
-                                  attribute: kAXColumnIndexRangeAttribute
-                              )
-                          },
-                          containing: pidColumnIndex
-                      ) else {
+                      let pidCell = pidCell(in: cells, pidColumnIndex: pidColumnIndex) else {
                     continue
                 }
 
-                let pidCell = cells[pidCellIndex]
                 let pidValueMatches = ActivityMonitorPIDCellMatcher.matches(
                     value: value(pidCell, attribute: kAXValueAttribute),
                     targetPID: targetPID
                 )
-                let childValueMatches = elements(
+                let childValueMatches = pidValueMatches ? false : (elements(
                     pidCell,
                     attribute: kAXChildrenAttribute
                 )?.contains(where: {
@@ -157,7 +318,7 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
                         value: value($0, attribute: kAXValueAttribute),
                         targetPID: targetPID
                     )
-                }) ?? false
+                }) ?? false)
                 guard pidValueMatches || childValueMatches else {
                     continue
                 }
@@ -185,19 +346,41 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
         return nil
     }
 
+    /// Reads only the PID cell of a row. The cell at the column's index is
+    /// checked against its own column range first; only when the row omits
+    /// empty cells does this fall back to scanning every cell's range.
+    private func pidCell(in cells: [AXUIElement], pidColumnIndex: Int) -> AXUIElement? {
+        if cells.indices.contains(pidColumnIndex),
+           let range = indexRange(cells[pidColumnIndex], attribute: kAXColumnIndexRangeAttribute),
+           ActivityMonitorPIDCellMatcher.cellIndex(columnRanges: [range], containing: pidColumnIndex) == 0 {
+            return cells[pidColumnIndex]
+        }
+        guard let index = ActivityMonitorPIDCellMatcher.cellIndex(
+            columnRanges: cells.map { indexRange($0, attribute: kAXColumnIndexRangeAttribute) },
+            containing: pidColumnIndex
+        ) else {
+            return nil
+        }
+        return cells[index]
+    }
+
     private func prepareProcessTable(
         in application: AXUIElement,
-        targetPID: Int32
-    ) {
-        var state = preparedState ?? captureProcessTableState(in: application)
+        processName: String?,
+        existingState: ActivityMonitorPreparedTableState?
+    ) -> ActivityMonitorPreparedTableState {
+        var state = existingState ?? captureProcessTableState(in: application)
 
+        // Each change is recorded only after the menu confirms it took effect,
+        // so restoration never presses an item that was not actually toggled.
         if !state.processScopeChanged,
            let allProcessesItem = state.allProcessesItem,
            let previousProcessScopeItem = state.previousProcessScopeItem,
            AXUIElementPerformAction(
                allProcessesItem,
                kAXPressAction as CFString
-           ) == .success {
+           ) == .success,
+           isMarked(allProcessesItem) {
             state.previousProcessScopeItem = previousProcessScopeItem
             state.processScopeChanged = true
         }
@@ -208,12 +391,13 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
            AXUIElementPerformAction(
                processIDItem,
                kAXPressAction as CFString
-           ) == .success {
+           ) == .success,
+           isMarked(processIDItem) {
             state.processIDWasShown = true
         }
 
         if !state.searchWasChanged,
-           let processName = processName(for: targetPID),
+           let processName,
            let searchField = state.searchField,
            state.searchValue != processName,
            AXUIElementSetAttributeValue(
@@ -226,38 +410,13 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
             state.searchWasChanged = true
         }
 
-        preparedState = state.hasChanges ? state : nil
-        if state.hasChanges {
-            scheduleProcessTableRestoration()
-        }
-    }
-
-    private func processName(for pid: Int32) -> String? {
-        if let localizedName = NSRunningApplication(
-            processIdentifier: pid
-        )?.localizedName?.trimmingCharacters(in: .whitespacesAndNewlines),
-        !localizedName.isEmpty {
-            return localizedName
-        }
-
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        let byteCount = proc_name(pid, &buffer, UInt32(buffer.count))
-        guard byteCount > 0 else {
-            return nil
-        }
-        let bytes = buffer
-            .prefix(Int(byteCount))
-            .prefix { $0 != 0 }
-            .map { UInt8(bitPattern: $0) }
-        let name = String(decoding: bytes, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty ? nil : name
+        return state
     }
 
     private func captureProcessTableState(
         in application: AXUIElement
-    ) -> PreparedProcessTableState {
-        var state = PreparedProcessTableState()
+    ) -> ActivityMonitorPreparedTableState {
+        var state = ActivityMonitorPreparedTableState()
 
         if let window = elements(application, attribute: kAXWindowsAttribute)?.first,
            let searchField = firstDescendant(
@@ -273,58 +432,36 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
             return state
         }
 
-        if viewMenuItems.indices.contains(4) {
-            let allProcessesItem = viewMenuItems[4]
+        let viewTitles = viewMenuItems.map { string($0, attribute: kAXTitleAttribute) }
+        if let allProcessesIndex = ActivityMonitorMenuMatcher.allProcessesIndex(titles: viewTitles) {
+            let allProcessesItem = viewMenuItems[allProcessesIndex]
             state.allProcessesItem = allProcessesItem
-            let allProcessesIsSelected = isMarked(allProcessesItem)
-            if !allProcessesIsSelected {
-                let upperBound = min(viewMenuItems.count, 13)
-                state.previousProcessScopeItem = viewMenuItems[4..<upperBound]
-                    .first(where: isMarked)
+            if !isMarked(allProcessesItem) {
+                let group = ActivityMonitorMenuMatcher.scopeGroupRange(
+                    titles: viewTitles,
+                    around: allProcessesIndex
+                )
+                state.previousProcessScopeItem = viewMenuItems[group].first(where: isMarked)
             }
         }
 
         if let columnsMenu = viewMenuItems.first,
            let submenu = elements(columnsMenu, attribute: kAXChildrenAttribute)?.first,
-           let processIDItem = elements(
-               submenu,
-               attribute: kAXChildrenAttribute
-           )?.first {
-            state.processIDItem = processIDItem
-            state.processIDWasVisible = isMarked(processIDItem)
+           let columnItems = elements(submenu, attribute: kAXChildrenAttribute) {
+            let columnTitles = columnItems.map { string($0, attribute: kAXTitleAttribute) }
+            if let pidIndex = ActivityMonitorMenuMatcher.pidColumnIndex(titles: columnTitles) {
+                state.processIDItem = columnItems[pidIndex]
+                state.processIDWasVisible = isMarked(columnItems[pidIndex])
+            }
         }
 
         return state
     }
 
-    private func scheduleProcessTableRestoration() {
-        restorationTask?.cancel()
-        restorationTask = Task { @MainActor [weak self] in
-            do {
-                try await Task.sleep(nanoseconds: Self.restorationDelayNanoseconds)
-            } catch {
-                return
-            }
-            guard !Task.isCancelled else { return }
-            self?.restorePreparedProcessTableState()
-        }
-    }
-
-    /// Restores immediately (app termination) instead of after the delay.
-    func restorePreparedState() {
-        restorationTask?.cancel()
-        restorationTask = nil
-        restorePreparedProcessTableState()
-    }
-
-    /// Each field is put back only when it still holds the value TaskScope
-    /// set. If the user changed the search, the scope, or the column since the
+    /// Each field is put back only when it still holds the value TaskScope set.
+    /// If the user changed the search, the scope, or the column since the
     /// handoff, their choice wins and that field is left alone.
-    private func restorePreparedProcessTableState() {
-        guard let state = preparedState else { return }
-        preparedState = nil
-        restorationTask = nil
-
+    private func performRestore(_ state: ActivityMonitorPreparedTableState) {
         if state.searchWasChanged,
            let searchField = state.searchField,
            string(searchField, attribute: kAXValueAttribute) ?? "" == state.searchValueSet {
@@ -364,7 +501,8 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
 
         // The View menu is identified structurally, without localized labels:
         // its first item is the Columns submenu, whose first child contains the
-        // long list of selectable process columns.
+        // long list of selectable process columns. Individual items inside it
+        // are then matched by title.
         for menuBarItem in menuBarItems {
             guard let menu = elements(menuBarItem, attribute: kAXChildrenAttribute)?.first,
                   let items = elements(menu, attribute: kAXChildrenAttribute),

@@ -77,11 +77,16 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
     static let shared = NotificationService()
 
     @Published private(set) var authorizationState: AuthorizationState = .unknown
+    /// `UNUserNotificationCenter` aborts the process when there is no app
+    /// bundle (the bare SwiftPM executable, `swift test`). Every method that
+    /// touches the center is a no-op unless this is true.
+    let isAvailable: Bool
     private var baseline = ProcessNotificationBaseline()
 
     override private init() {
+        isAvailable = Bundle.main.bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame
         super.init()
-        guard Bundle.main.bundleURL.pathExtension.caseInsensitiveCompare("app") == .orderedSame else {
+        guard isAvailable else {
             return
         }
         UNUserNotificationCenter.current().delegate = self
@@ -89,12 +94,14 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
     }
 
     func requestAuthorization() async {
+        guard isAvailable else { return }
         let center = UNUserNotificationCenter.current()
         _ = try? await center.requestAuthorization(options: [.alert])
         await refreshAuthorizationStatus()
     }
 
     func refreshAuthorizationStatus() async {
+        guard isAvailable else { return }
         let settings = await UNUserNotificationCenter.current().notificationSettings()
         authorizationState = Self.authorizationState(for: settings.authorizationStatus)
     }
@@ -161,6 +168,7 @@ final class NotificationService: NSObject, ObservableObject, UNUserNotificationC
     }
 
     private func notify(title: String, body: String) {
+        guard isAvailable else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

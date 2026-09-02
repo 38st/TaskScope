@@ -143,7 +143,30 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         XCTAssertEqual(runtime.restoreCount, 1)
     }
 
-    func testSystemSelectorRequestsAccessibilityAndReturnsDenialWithoutSelecting() {
+    /// Menu items are matched by title, never by position, and the scope
+    /// group is bounded by separators so a marked item elsewhere in the View
+    /// menu is never mistaken for the previous process scope.
+    func testMenuMatcherFindsItemsByTitleAndBoundsTheScopeGroupBySeparators() {
+        let viewTitles: [String?] = [
+            "Columns", "Dock Icon", "Update Frequency", "",
+            "All Processes", "All Processes, Hierarchically", "My Processes", "System Processes",
+            "", "Filter Processes", "Show Deltas for Process"
+        ]
+
+        let allIndex = ActivityMonitorMenuMatcher.allProcessesIndex(titles: viewTitles)
+        XCTAssertEqual(allIndex, 4)
+        XCTAssertEqual(
+            ActivityMonitorMenuMatcher.scopeGroupRange(titles: viewTitles, around: 4),
+            4..<8
+        )
+        XCTAssertEqual(ActivityMonitorMenuMatcher.allProcessesIndex(titles: ["Columns", "Todos los procesos"]), nil)
+        XCTAssertEqual(ActivityMonitorMenuMatcher.pidColumnIndex(titles: ["% CPU", "Threads", "PID", "User"]), 2)
+        XCTAssertEqual(ActivityMonitorMenuMatcher.pidColumnIndex(titles: ["% CPU", "Process ID"]), 1)
+        XCTAssertNil(ActivityMonitorMenuMatcher.pidColumnIndex(titles: ["% CPU", "PIDs", "User"]))
+        XCTAssertEqual(ActivityMonitorMenuMatcher.scopeGroupRange(titles: viewTitles, around: 42), 42..<42)
+    }
+
+    func testSystemSelectorRequestsAccessibilityAndReturnsDenialWithoutSelecting() async {
         let runtime = FakeActivityMonitorAccessibilityRuntime(
             trusted: false,
             applicationPID: 700,
@@ -151,7 +174,7 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         )
         let selector = SystemActivityMonitorProcessSelector(runtime: runtime)
 
-        let result = selector.select(pid: 42)
+        let result = await selector.select(pid: 42)
 
         guard case .accessibilityDenied = result else {
             return XCTFail("Expected an Accessibility denial, got \(result)")
@@ -160,7 +183,7 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         XCTAssertTrue(runtime.selectionRequests.isEmpty)
     }
 
-    func testSystemSelectorRetriesWhenActivityMonitorHasNotRegisteredYet() {
+    func testSystemSelectorRetriesWhenActivityMonitorHasNotRegisteredYet() async {
         let runtime = FakeActivityMonitorAccessibilityRuntime(
             trusted: true,
             applicationPID: nil,
@@ -168,12 +191,13 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         )
         let selector = SystemActivityMonitorProcessSelector(runtime: runtime)
 
-        XCTAssertEqual(selector.select(pid: 42), .notReady)
+        let result = await selector.select(pid: 42)
+        XCTAssertEqual(result, .notReady)
         XCTAssertEqual(runtime.promptValues, [true])
         XCTAssertTrue(runtime.selectionRequests.isEmpty)
     }
 
-    func testSystemSelectorForwardsExactPIDToAccessibilityRuntime() {
+    func testSystemSelectorForwardsExactPIDToAccessibilityRuntime() async {
         let runtime = FakeActivityMonitorAccessibilityRuntime(
             trusted: true,
             applicationPID: 700,
@@ -181,7 +205,8 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         )
         let selector = SystemActivityMonitorProcessSelector(runtime: runtime)
 
-        XCTAssertEqual(selector.select(pid: 42), .selected)
+        let result = await selector.select(pid: 42)
+        XCTAssertEqual(result, .selected)
         XCTAssertEqual(runtime.selectionRequests, [.init(applicationPID: 700, targetPID: 42)])
     }
 
@@ -325,7 +350,7 @@ private final class FakeActivityMonitorProcessSelector: ActivityMonitorProcessSe
         self.results = results
     }
 
-    func select(pid: Int32) -> ActivityMonitorSelectionAttempt {
+    func select(pid: Int32) async -> ActivityMonitorSelectionAttempt {
         requestedPIDs.append(pid)
         return results.isEmpty ? .notReady : results.removeFirst()
     }
@@ -377,7 +402,7 @@ private final class FakeActivityMonitorAccessibilityRuntime:
     func selectProcessRow(
         applicationPID: pid_t,
         targetPID: Int32
-    ) -> ActivityMonitorSelectionAttempt {
+    ) async -> ActivityMonitorSelectionAttempt {
         selectionRequests.append(
             .init(applicationPID: applicationPID, targetPID: targetPID)
         )

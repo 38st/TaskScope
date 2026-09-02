@@ -522,7 +522,7 @@ enum ProcessLifecycleController {
             || normalized.contains("no such process") {
             return .notLoaded
         }
-        return .failed(detail.isEmpty ? "launchctl exited with status \(result.exitCode)." : detail)
+        return .failed(detail.isEmpty ? "launchctl \(result.failureDescription)." : detail)
     }
 
     static func systemLaunchDaemonReadiness(

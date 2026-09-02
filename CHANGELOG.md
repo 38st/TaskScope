@@ -158,6 +158,32 @@ All notable changes to TaskScope are documented in this file. The project uses
   keystroke, and any pending write is flushed on quit.
 - Onboarding copy says to right-click a row, and onboarding is offered on the
   first interactive activation rather than only for an interactive launch.
+- A cancellation that races a command's launch can no longer report
+  "cancelled" while the child keeps running: the stop claims completion under
+  the same lock the launch checks, and a command that had already exited
+  reports its real exit instead of a cancellation.
+- Local tools run under `zsh -f`, so a user's `.zshenv` cannot alias them,
+  print into their output, or change their locale; children also start with
+  default signal dispositions.
+- A child terminated by a signal is reported as "terminated by SIGTERM" rather
+  than "exited with status 15".
+- Child exits are observed with a dispatch source and a non-blocking reap
+  instead of one blocked worker thread per command.
+- Activity Monitor Accessibility traversal runs off the main actor, resolves
+  the PID column once, and reads only that cell per row, so an exact-PID
+  handoff no longer freezes TaskScope's own window.
+- Activity Monitor menu items are matched by title ("All Processes", "PID")
+  and each change is confirmed by the menu's own checkmark before it is
+  recorded for restoration; an unmatched menu leaves the table untouched.
+- Notification requests are no-ops when TaskScope runs unbundled instead of
+  crashing the process.
+- Re-registering an unchanged hotkey is skipped; changing it unregisters the
+  old combination first and restores it if the new one is refused.
+- Turning Launch at Login off still attempts to unregister an "Unavailable"
+  registration and shows the error if that fails.
+- An interactive launch that is not active when the launch grace period ends
+  stays a regular app and presents on the next activation instead of being
+  demoted to an accessory with its windows hidden.
 - Removed a pipe-reader teardown race in command execution and strengthened
   cancellation near child exit.
 - Preserved full executable paths in the process display schema and saved

@@ -140,6 +140,22 @@ final class LaunchContextTests: XCTestCase {
         )
     }
 
+    /// An interactive launch that is not yet active when the cold-open grace
+    /// period ends keeps its interactive intent and presents on the next
+    /// activation; it is never demoted to an accessory app.
+    func testInactiveInteractiveLaunchPresentsOnNextActivationWithoutDemotion() {
+        XCTAssertEqual(
+            TaskScopeInteractiveLaunchPresentation.resolve(isActive: false),
+            .presentOnNextActivation
+        )
+        XCTAssertEqual(
+            TaskScopeInteractiveLaunchPresentation.resolve(isActive: true),
+            .presentNow
+        )
+        XCTAssertFalse(TaskScopeInteractiveLaunchPresentation.presentOnNextActivation.demotesToAccessory)
+        XCTAssertFalse(TaskScopeInteractiveLaunchPresentation.presentNow.demotesToAccessory)
+    }
+
     func testIncomingURLOnlyConvertsStartupLaunchToBackground() {
         XCTAssertEqual(
             TaskScopeLaunchContext.receivingURL(
@@ -208,6 +224,26 @@ final class LoginItemManagerTests: XCTestCase {
         XCTAssertEqual(manager.message, "Launch at Login is on.")
     }
 
+    /// A `.notFound` registration (bundle moved or replaced) can only be
+    /// cleared by an unregister attempt; the thrown error must be surfaced.
+    func testDisablingAnUnavailableRegistrationStillAttemptsUnregisterAndSurfacesTheError() {
+        let service = FakeLoginItemService(state: .notFound)
+        let manager = LoginItemManager(service: service)
+
+        manager.setEnabled(false)
+        XCTAssertEqual(service.unregisterCount, 1)
+
+        let failing = FakeLoginItemService(state: .notFound)
+        failing.unregisterError = LoginItemTestError.refused
+        let failingManager = LoginItemManager(service: failing)
+
+        failingManager.setEnabled(false)
+
+        XCTAssertEqual(failing.unregisterCount, 1)
+        XCTAssertTrue(failingManager.message?.contains("Could not update Launch at Login") == true)
+        XCTAssertTrue(failingManager.message?.contains("The system refused the change.") == true)
+    }
+
     func testActivationRefreshUpdatesLoginAndNotificationState() async {
         var events: [String] = []
 
@@ -220,8 +256,17 @@ final class LoginItemManagerTests: XCTestCase {
     }
 }
 
+private enum LoginItemTestError: LocalizedError {
+    case refused
+
+    var errorDescription: String? {
+        "The system refused the change."
+    }
+}
+
 private final class FakeLoginItemService: LoginItemServicing {
     var state: LoginItemState
+    var unregisterError: Error?
     private(set) var registerCount = 0
     private(set) var unregisterCount = 0
     private(set) var openSettingsCount = 0
@@ -237,6 +282,9 @@ private final class FakeLoginItemService: LoginItemServicing {
 
     func unregister() throws {
         unregisterCount += 1
+        if let unregisterError {
+            throw unregisterError
+        }
         state = .notRegistered
     }
 

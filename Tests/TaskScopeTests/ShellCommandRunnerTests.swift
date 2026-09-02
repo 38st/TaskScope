@@ -37,6 +37,98 @@ final class ShellCommandRunnerTests: XCTestCase {
         XCTAssertTrue(result.stdout.contains("\u{FFFD}"))
     }
 
+    /// `-f` (NO_RCS) keeps a user's `.zshenv` from aliasing the tools TaskScope
+    /// parses or printing into their output.
+    func testChildShellSkipsStartupFiles() async {
+        XCTAssertEqual(ShellCommandRunner.shellArguments, ["/bin/zsh", "-f", "-c"])
+
+        let result = await ShellCommandRunner.run("[[ -o rcs ]] && echo rcs || echo norcs")
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "norcs")
+    }
+
+    func testTerminationBySignalIsReportedAsSuch() async {
+        let signalled = await ShellCommandRunner.run("kill -TERM $$")
+        let exited = await ShellCommandRunner.run("exit 7")
+
+        XCTAssertEqual(signalled.terminatedBySignal, SIGTERM)
+        XCTAssertFalse(signalled.succeeded)
+        XCTAssertEqual(signalled.failureDescription, "terminated by SIGTERM")
+        XCTAssertNil(exited.terminatedBySignal)
+        XCTAssertEqual(exited.failureDescription, "exited with status 7")
+    }
+
+    /// A stop that races the spawn must never report "cancelled" while the
+    /// child keeps running unkilled: whenever the result is a cancellation, the
+    /// command's side effect must never appear afterwards.
+    func testCancellationRacingStartNeverLeavesTheChildRunningUnreported() async throws {
+        for iteration in 0..<30 {
+            let marker = FileManager.default.temporaryDirectory
+                .appendingPathComponent("taskscope-cancel-race-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: marker) }
+            let command = "/bin/sleep 0.05; /usr/bin/touch \(ShellCommandRunner.shellQuoted(marker.path))"
+            let task = Task {
+                await ShellCommandRunner.run(command, timeout: 5)
+            }
+            if iteration % 2 == 0 {
+                await Task.yield()
+            }
+            task.cancel()
+            let result = await task.value
+
+            if result.exitCode == ShellCommandRunner.cancelledExitCode {
+                try? await Task.sleep(nanoseconds: 150_000_000)
+                XCTAssertFalse(
+                    FileManager.default.fileExists(atPath: marker.path),
+                    "iteration \(iteration): the command ran to completion after being reported cancelled"
+                )
+            } else {
+                XCTAssertEqual(result.exitCode, 0, "iteration \(iteration): \(result)")
+            }
+        }
+    }
+
+    func testCommandThatExitedBeforeCancellationReportsItsRealExit() async {
+        let task = Task {
+            await ShellCommandRunner.run("exit 3", timeout: 5)
+        }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        task.cancel()
+
+        let result = await task.value
+
+        XCTAssertEqual(result.exitCode, 3)
+        XCTAssertNil(result.terminatedBySignal)
+        XCTAssertFalse(result.stderr.contains("cancelled"))
+    }
+
+    /// Exit notification comes from a dispatch source plus a non-blocking
+    /// reap, not from one blocked worker thread per command; many concurrent
+    /// short commands must all complete.
+    func testManyConcurrentShortCommandsAllCompleteAndAreReaped() async {
+        let results = await withTaskGroup(of: ShellCommandResult.self) { group in
+            for index in 0..<24 {
+                group.addTask {
+                    await ShellCommandRunner.run("/usr/bin/printf '%s' \(index); exit \(index % 3)", timeout: 5)
+                }
+            }
+            var collected: [ShellCommandResult] = []
+            for await result in group {
+                collected.append(result)
+            }
+            return collected
+        }
+
+        XCTAssertEqual(results.count, 24)
+        for result in results {
+            let index = Int32(result.stdout) ?? -1
+            XCTAssertGreaterThanOrEqual(index, 0, "unexpected output: \(result)")
+            XCTAssertEqual(result.exitCode, index % 3)
+            XCTAssertNil(result.terminatedBySignal)
+        }
+    }
+
     func testRunCapturesOutputAndExitStatus() async {
         let result = await ShellCommandRunner.run(
             "/usr/bin/printf 'standard output'; /usr/bin/printf 'standard error' >&2; exit 7"

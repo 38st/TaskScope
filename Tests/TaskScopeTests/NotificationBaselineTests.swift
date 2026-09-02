@@ -54,6 +54,22 @@ final class NotificationBaselineTests: XCTestCase {
         XCTAssertFalse(NotificationService.canDeliver(for: .notDetermined))
     }
 
+    /// `swift test` runs unbundled. `UNUserNotificationCenter` aborts the
+    /// process in that situation, so every center-touching method must be a
+    /// no-op when the service is unavailable.
+    @MainActor
+    func testUnbundledServiceIsUnavailableAndNeverTouchesTheNotificationCenter() async {
+        let service = NotificationService.shared
+
+        XCTAssertFalse(service.isAvailable)
+        await service.requestAuthorization()
+        await service.refreshAuthorizationStatus()
+        service.prime(initialRunningNames: ["Example"])
+        service.diffAndNotify(currentRunningNames: ["Example", "Other"])
+
+        XCTAssertEqual(service.authorizationState, .unknown)
+    }
+
     func testForegroundPresentationUsesBannerWithoutSound() {
         let options = NotificationService.foregroundPresentationOptions
         XCTAssertTrue(options.contains(.banner))

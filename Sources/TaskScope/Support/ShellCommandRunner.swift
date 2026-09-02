@@ -51,6 +51,11 @@ enum ShellCommandRunner {
         return sanitized
     }
 
+    /// The shell is started with `-f` (NO_RCS) so a user's `.zshenv` cannot
+    /// alias or redefine the tools TaskScope parses, print into their output,
+    /// or change the locale.
+    static let shellArguments = ["/bin/zsh", "-f", "-c"]
+
     static func extendedRegexLiteral(_ value: String) -> String {
         let metacharacters = CharacterSet(charactersIn: "\\.^$|?*+()[]{}")
         return value.unicodeScalars.map { scalar in
@@ -80,12 +85,15 @@ enum ShellCommandRunner {
         private var processStarted = false
         private var processIdentifier: pid_t?
         private var childExitCode: Int32?
+        private var childTerminationSignal: Int32?
+        private var childReaped = false
         private var stopEscalationFinished = false
         private var terminalOverride: (message: String, exitCode: Int32)?
         private var timeoutTask: Task<Void, Never>?
         private var killFallbackTask: Task<Void, Never>?
         private var outputSource: DispatchSourceRead?
         private var errorSource: DispatchSourceRead?
+        private var exitSource: DispatchSourceProcess?
 
         init(command: String, timeout: TimeInterval) {
             self.command = command
@@ -102,7 +110,11 @@ enum ShellCommandRunner {
                 continuation.resume(returning: pendingResult)
                 return
             }
-            guard !completionScheduled else {
+            // A stop request that arrived first (the task was cancelled before
+            // this body ran, or cancellation raced this call) has claimed the
+            // completion under this same lock. Never spawn behind it: the child
+            // would run unkilled while the caller was told it was cancelled.
+            guard !completionScheduled, terminalOverride == nil else {
                 stateLock.unlock()
                 return
             }
@@ -113,23 +125,14 @@ enum ShellCommandRunner {
             case let .success(pid):
                 processIdentifier = pid
                 processStarted = true
+                let source = makeExitSource(for: pid)
+                exitSource = source
                 stateLock.unlock()
 
-                DispatchQueue.global(qos: .utility).async { [weak self] in
-                    var status: Int32 = 0
-                    var waitedPID: pid_t
-                    repeat {
-                        waitedPID = Darwin.waitpid(pid, &status, 0)
-                    } while waitedPID == -1 && errno == EINTR
-
-                    let exitCode: Int32
-                    if waitedPID == pid {
-                        exitCode = Self.exitCode(fromWaitStatus: status)
-                    } else {
-                        exitCode = -1
-                    }
-                    self?.childDidExit(exitCode: exitCode)
-                }
+                source.resume()
+                // kqueue reports transitions only. If the child exited before the
+                // source was armed, this explicit non-blocking reap catches it.
+                reapIfExited(pid)
 
                 let newTimeoutTask = Task { [weak self] in
                     guard let self else { return }
@@ -169,31 +172,78 @@ enum ShellCommandRunner {
             )
         }
 
+        /// Replaces a blocking `waitpid` on a worker thread: the exit source
+        /// fires on the I/O queue and the child is reaped with WNOHANG.
+        private func makeExitSource(for pid: pid_t) -> DispatchSourceProcess {
+            let source = DispatchSource.makeProcessSource(
+                identifier: pid,
+                eventMask: .exit,
+                queue: ioQueue
+            )
+            source.setEventHandler { [weak self] in
+                self?.reapIfExited(pid)
+            }
+            return source
+        }
+
+        private func reapIfExited(_ pid: pid_t) {
+            var status: Int32 = 0
+            var waitedPID: pid_t
+            repeat {
+                waitedPID = Darwin.waitpid(pid, &status, WNOHANG)
+            } while waitedPID == -1 && errno == EINTR
+            guard waitedPID == pid else { return }
+
+            stateLock.lock()
+            guard !childReaped else {
+                stateLock.unlock()
+                return
+            }
+            childReaped = true
+            let source = exitSource
+            exitSource = nil
+            stateLock.unlock()
+            source?.cancel()
+
+            let (exitCode, signal) = Self.exitStatus(fromWaitStatus: status)
+            childDidExit(exitCode: exitCode, terminationSignal: signal)
+        }
+
         private func requestStop(message: String, exitCode: Int32) {
             stateLock.lock()
-            guard !completed else {
+            guard !completed, !completionScheduled else {
+                stateLock.unlock()
+                return
+            }
+            // The child has already exited; its real exit is what gets reported,
+            // not a cancellation or timeout that lost the race by a moment.
+            guard childExitCode == nil else {
                 stateLock.unlock()
                 return
             }
             if terminalOverride == nil {
                 terminalOverride = (message, exitCode)
             }
-            let didStart = processStarted
-            stateLock.unlock()
-
-            guard didStart else {
-                scheduleImmediateFinish(
+            guard processStarted else {
+                // Claim completion under the same lock hold that observed "not
+                // started", so a concurrent `start()` bails instead of spawning.
+                completionScheduled = true
+                stateLock.unlock()
+                finishOnIOQueue(
                     ShellCommandResult(
                         command: command,
                         stdout: outputCapture.string,
                         stderr: message,
                         exitCode: exitCode
-                    )
+                    ),
+                    closeWritersFirst: true
                 )
                 return
             }
+            let processIdentifier = self.processIdentifier
+            stateLock.unlock()
 
-            guard let processIdentifier = currentProcessIdentifier() else {
+            guard let processIdentifier else {
                 finishStoppedCommand()
                 return
             }
@@ -225,9 +275,10 @@ enum ShellCommandRunner {
             return processIdentifier
         }
 
-        private func childDidExit(exitCode: Int32) {
+        private func childDidExit(exitCode: Int32, terminationSignal: Int32?) {
             stateLock.lock()
             childExitCode = exitCode
+            childTerminationSignal = terminationSignal
             let stopping = terminalOverride != nil
             stateLock.unlock()
 
@@ -288,6 +339,7 @@ enum ShellCommandRunner {
             }
             completionScheduled = true
             let terminalOverride = self.terminalOverride
+            let terminationSignal = childTerminationSignal
             stateLock.unlock()
 
             ioQueue.async { [self] in
@@ -310,7 +362,10 @@ enum ShellCommandRunner {
                         command: command,
                         stdout: outputCapture.string.trimmingCharacters(in: .whitespacesAndNewlines),
                         stderr: reportedError,
-                        exitCode: terminalOverride?.exitCode ?? exitCode
+                        exitCode: terminalOverride?.exitCode ?? exitCode,
+                        // A signal TaskScope itself sent to stop the command is
+                        // not the child's own termination story.
+                        terminatedBySignal: terminalOverride == nil ? terminationSignal : nil
                     )
                 )
             }
@@ -324,12 +379,19 @@ enum ShellCommandRunner {
             }
             completionScheduled = true
             stateLock.unlock()
+            finishOnIOQueue(result, closeWritersFirst: true)
+        }
 
+        /// Drains and closes the pipes on the I/O queue, then completes. The
+        /// caller must already hold the completion claim (`completionScheduled`).
+        private func finishOnIOQueue(_ result: ShellCommandResult, closeWritersFirst: Bool) {
             ioQueue.async { [self] in
                 // A cancellation can win before `start` configures nonblocking
                 // readers or spawns the child. Close the writers first so an
                 // otherwise blocking drain observes EOF immediately.
-                closePipeWriters()
+                if closeWritersFirst {
+                    closePipeWriters()
+                }
                 drainAvailableData(from: standardOutput, into: outputCapture)
                 drainAvailableData(from: standardError, into: errorCapture)
                 cancelReadSources()
@@ -355,6 +417,8 @@ enum ShellCommandRunner {
 
             timeoutTask?.cancel()
             killFallbackTask?.cancel()
+            // The exit source stays armed until the child is reaped, so a
+            // stopped command is never left as a zombie.
             closePipeWriters()
             continuation?.resume(returning: result)
         }
@@ -420,12 +484,28 @@ enum ShellCommandRunner {
                 guard errorCode == 0 else { return .failure(errorCode) }
             }
 
-            errorCode = posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP))
+            // The child starts with default signal dispositions and an empty
+            // signal mask regardless of what the parent inherited (a host that
+            // ignores SIGTERM would otherwise make the stop path's SIGTERM a
+            // no-op and misreport a signalled child as a normal exit).
+            var defaultSignals = sigset_t()
+            sigfillset(&defaultSignals)
+            errorCode = posix_spawnattr_setsigdefault(&attributes, &defaultSignals)
+            guard errorCode == 0 else { return .failure(errorCode) }
+            var emptyMask = sigset_t()
+            sigemptyset(&emptyMask)
+            errorCode = posix_spawnattr_setsigmask(&attributes, &emptyMask)
+            guard errorCode == 0 else { return .failure(errorCode) }
+
+            errorCode = posix_spawnattr_setflags(
+                &attributes,
+                Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK)
+            )
             guard errorCode == 0 else { return .failure(errorCode) }
             errorCode = posix_spawnattr_setpgroup(&attributes, 0)
             guard errorCode == 0 else { return .failure(errorCode) }
 
-            let arguments = ["/bin/zsh", "-c", command]
+            let arguments = ShellCommandRunner.shellArguments + [command]
             var argv = arguments.map { strdup($0) } + [nil]
             defer { argv.dropLast().forEach { free($0) } }
 
@@ -488,12 +568,12 @@ enum ShellCommandRunner {
             try? standardError.fileHandleForWriting.close()
         }
 
-        private static func exitCode(fromWaitStatus status: Int32) -> Int32 {
+        private static func exitStatus(fromWaitStatus status: Int32) -> (exitCode: Int32, signal: Int32?) {
             let signal = status & 0x7f
             if signal == 0 {
-                return (status >> 8) & 0xff
+                return ((status >> 8) & 0xff, nil)
             }
-            return signal
+            return (signal, signal)
         }
     }
 

@@ -49,7 +49,7 @@ enum ProcessListReader {
             return .failure(cancellation)
         }
         guard result.succeeded else {
-            let detail = result.stderr.isEmpty ? "ps exited with status \(result.exitCode)." : result.stderr
+            let detail = result.stderr.isEmpty ? "ps \(result.failureDescription)." : result.stderr
             return .failure(.commandFailed(detail))
         }
 
@@ -230,7 +230,7 @@ enum ProcessListReader {
     ) -> Result<[Int32: String], ProcessInventoryError> {
         guard result.succeeded else {
             let detail = result.stderr.isEmpty
-                ? "Identity validation exited with status \(result.exitCode)."
+                ? "Identity validation \(result.failureDescription)."
                 : result.stderr
             return .failure(.commandFailed(detail))
         }

@@ -1,6 +1,45 @@
 import AppKit
 import Carbon.HIToolbox
 
+/// The Carbon calls behind hotkey registration, injectable for tests.
+protocol HotkeyRegistrationBackend {
+    @MainActor func installEventHandler(for manager: HotkeyManager) -> OSStatus
+    @MainActor func register(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        identifier: EventHotKeyID
+    ) -> (status: OSStatus, reference: EventHotKeyRef?)
+    @MainActor func unregister(_ reference: EventHotKeyRef)
+}
+
+/// The real Carbon registration calls. Stateless, so it is safe to share.
+struct CarbonHotkeyRegistrationBackend: HotkeyRegistrationBackend {
+    @MainActor func installEventHandler(for manager: HotkeyManager) -> OSStatus {
+        manager.installCarbonEventHandlerIfNeeded()
+    }
+
+    @MainActor func register(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        identifier: EventHotKeyID
+    ) -> (status: OSStatus, reference: EventHotKeyRef?) {
+        var reference: EventHotKeyRef?
+        let status = RegisterEventHotKey(
+            keyCode,
+            modifiers,
+            identifier,
+            GetApplicationEventTarget(),
+            0,
+            &reference
+        )
+        return (status, reference)
+    }
+
+    @MainActor func unregister(_ reference: EventHotKeyRef) {
+        UnregisterEventHotKey(reference)
+    }
+}
+
 @MainActor
 final class HotkeyManager: ObservableObject {
     enum RegistrationStatus: Equatable {
@@ -46,14 +85,19 @@ final class HotkeyManager: ObservableObject {
     nonisolated(unsafe) private var eventHandler: EventHandlerRef?
     private let defaults: UserDefaults
     private let defaultsKey: String
+    private let backend: any HotkeyRegistrationBackend
     private var nextRegistrationID: UInt32 = 1
+    /// The combination `hotkeyRef` currently stands for.
+    private var registeredShortcut: (keyCode: UInt32, modifiers: UInt32)?
 
     init(
         defaults: UserDefaults = .standard,
-        defaultsKey: String = "TaskScope.hotkey.v1"
+        defaultsKey: String = "TaskScope.hotkey.v1",
+        backend: any HotkeyRegistrationBackend = CarbonHotkeyRegistrationBackend()
     ) {
         self.defaults = defaults
         self.defaultsKey = defaultsKey
+        self.backend = backend
         let saved = defaults.dictionary(forKey: defaultsKey)
         hotkeyEnabled = saved?["enabled"] as? Bool ?? true
         keyCode = (saved?["keyCode"] as? UInt32) ?? UInt32(kVK_ANSI_T)
@@ -101,9 +145,16 @@ final class HotkeyManager: ObservableObject {
 
     func unregister() {
         if let ref = hotkeyRef {
-            UnregisterEventHotKey(ref)
+            backend.unregister(ref)
             hotkeyRef = nil
+            registeredShortcut = nil
         }
+    }
+
+    /// True while a Carbon registration is active. Tests use it to observe
+    /// that an unchanged shortcut is not re-registered.
+    var isRegistered: Bool {
+        hotkeyRef != nil
     }
 
     var displayString: String {
@@ -229,9 +280,24 @@ final class HotkeyManager: ObservableObject {
         }
     }
 
+    /// Registers `keyCode`/`modifiers`. An unchanged, already registered
+    /// combination is left alone (re-registering it would conflict with
+    /// itself). Otherwise the previous combination is unregistered first; if
+    /// the new one is refused, the previous one is registered again so the
+    /// user is not left without a hotkey, and the status says whether that
+    /// restoration succeeded.
     private func registerCandidate(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        let requested = carbonModifierFlags(modifiers)
+        if hotkeyRef != nil,
+           let registeredShortcut,
+           registeredShortcut.keyCode == keyCode,
+           registeredShortcut.modifiers == requested {
+            registrationStatus = .registered
+            return true
+        }
+
         let previousShortcutRemainsActive = hotkeyRef != nil
-        let handlerStatus = installEventHandlerIfNeeded()
+        let handlerStatus = backend.installEventHandler(for: self)
         guard handlerStatus == noErr else {
             registrationStatus = .handlerUnavailable(
                 handlerStatus,
@@ -239,31 +305,46 @@ final class HotkeyManager: ObservableObject {
             )
             return false
         }
-        let identifier = EventHotKeyID(signature: OSType(0x54534350), id: nextRegistrationID)
-        nextRegistrationID &+= 1
-        var candidate: EventHotKeyRef?
-        let status = RegisterEventHotKey(
-            keyCode,
-            carbonModifierFlags(modifiers),
-            identifier,
-            GetApplicationEventTarget(),
-            0,
-            &candidate
-        )
-        guard status == noErr, let candidate else {
+
+        let previous = registeredShortcut
+        if let old = hotkeyRef {
+            backend.unregister(old)
+            hotkeyRef = nil
+            registeredShortcut = nil
+        }
+
+        let registration = backend.register(keyCode: keyCode, modifiers: requested, identifier: nextIdentifier())
+        guard registration.status == noErr, let candidate = registration.reference else {
+            var restored = false
+            if let previous {
+                let restoration = backend.register(
+                    keyCode: previous.keyCode,
+                    modifiers: previous.modifiers,
+                    identifier: nextIdentifier()
+                )
+                if restoration.status == noErr, let reference = restoration.reference {
+                    hotkeyRef = reference
+                    registeredShortcut = previous
+                    restored = true
+                }
+            }
             registrationStatus = .conflict(
-                status,
-                previousShortcutRemainsActive: previousShortcutRemainsActive
+                registration.status,
+                previousShortcutRemainsActive: restored
             )
             return false
         }
 
-        if let old = hotkeyRef {
-            UnregisterEventHotKey(old)
-        }
         hotkeyRef = candidate
+        registeredShortcut = (keyCode, requested)
         registrationStatus = .registered
         return true
+    }
+
+    private func nextIdentifier() -> EventHotKeyID {
+        let identifier = EventHotKeyID(signature: OSType(0x54534350), id: nextRegistrationID)
+        nextRegistrationID &+= 1
+        return identifier
     }
 
     private func carbonModifierFlags(_ flags: UInt32) -> UInt32 {
@@ -283,7 +364,7 @@ final class HotkeyManager: ObservableObject {
         ], forKey: defaultsKey)
     }
 
-    private func installEventHandlerIfNeeded() -> OSStatus {
+    func installCarbonEventHandlerIfNeeded() -> OSStatus {
         guard eventHandler == nil else { return noErr }
         var eventSpec = EventTypeSpec(
             eventClass: OSType(kEventClassKeyboard),

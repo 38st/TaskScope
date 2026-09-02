@@ -70,6 +70,23 @@ enum TaskScopeLaunchPhase: Equatable, Sendable {
     case running
 }
 
+/// How an interactive launch presents its windows once the cold-open grace
+/// period has elapsed. Neither outcome changes the activation policy: an
+/// interactive launch stays a regular app and is never demoted to an
+/// accessory just because it was not yet active.
+enum TaskScopeInteractiveLaunchPresentation: Equatable, Sendable {
+    case presentNow
+    case presentOnNextActivation
+
+    static func resolve(isActive: Bool) -> TaskScopeInteractiveLaunchPresentation {
+        isActive ? .presentNow : .presentOnNextActivation
+    }
+
+    var demotesToAccessory: Bool {
+        false
+    }
+}
+
 @MainActor
 enum TaskScopeExternalStateRefresh {
     static func perform(

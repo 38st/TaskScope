@@ -77,6 +77,52 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertEqual(manager.modifiers, UInt32(cmdKey | shiftKey), "a rejected update leaves the configuration alone")
     }
 
+    func testUnchangedShortcutIsNotReRegisteredAndAChangeUnregistersTheOldOneFirst() {
+        let suite = "TaskScope.HotkeyManagerTests.backend"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let backend = FakeHotkeyBackend()
+        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: backend)
+
+        manager.register()
+        manager.register()
+        XCTAssertEqual(manager.registrationStatus, .registered)
+        XCTAssertEqual(backend.events, ["register:T:768"], "an unchanged, registered shortcut must not be registered again")
+
+        XCTAssertTrue(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | controlKey)))
+        XCTAssertEqual(
+            backend.events,
+            ["register:T:768", "unregister:1", "register:K:4352"],
+            "the old combination is unregistered before the new one is registered"
+        )
+        XCTAssertTrue(manager.isRegistered)
+    }
+
+    func testRefusedNewShortcutRestoresThePreviousOneAndSaysSo() {
+        let suite = "TaskScope.HotkeyManagerTests.conflict"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let backend = FakeHotkeyBackend()
+        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: backend)
+        manager.register()
+        backend.refusedKeyCodes = [UInt32(kVK_ANSI_K)]
+
+        XCTAssertFalse(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey)))
+
+        XCTAssertEqual(
+            manager.registrationStatus,
+            .conflict(OSStatus(eventHotKeyExistsErr), previousShortcutRemainsActive: true)
+        )
+        XCTAssertEqual(
+            backend.events,
+            ["register:T:768", "unregister:1", "register:K:256", "register:T:768"]
+        )
+        XCTAssertEqual(manager.keyCode, UInt32(kVK_ANSI_T))
+        XCTAssertTrue(manager.isRegistered)
+    }
+
     func testUnsupportedAtomicUpdateLeavesPreviousConfiguration() {
         let suite = "TaskScope.HotkeyManagerTests"
         let defaults = UserDefaults(suiteName: suite)!
@@ -93,6 +139,22 @@ final class HotkeyManagerTests: XCTestCase {
             return XCTFail("Expected an unsupported status, got \(manager.registrationStatus)")
         }
         XCTAssertTrue(reason.contains("supported key"), reason)
+    }
+
+    func testHotkeyIsNotAvailableWhileDisabled() {
+        let suite = "TaskScope.HotkeyManagerTests.disabled"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let backend = FakeHotkeyBackend()
+        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: backend)
+        manager.register()
+
+        manager.hotkeyEnabled = false
+
+        XCTAssertFalse(manager.isRegistered)
+        XCTAssertEqual(manager.registrationStatus, .disabled)
+        XCTAssertEqual(backend.events.last, "unregister:1")
     }
 
     func testConflictMessageOnlyClaimsPreviousShortcutWhenOneRemainsActive() {
@@ -127,5 +189,35 @@ final class HotkeyManagerTests: XCTestCase {
             ).message,
             "TaskScope could not activate the global hotkey handler."
         )
+    }
+}
+
+/// Records registration traffic and hands out distinct fake references.
+@MainActor
+private final class FakeHotkeyBackend: HotkeyRegistrationBackend {
+    private(set) var events: [String] = []
+    var refusedKeyCodes: Set<UInt32> = []
+    private var nextReference = 1
+
+    func installEventHandler(for manager: HotkeyManager) -> OSStatus {
+        noErr
+    }
+
+    func register(
+        keyCode: UInt32,
+        modifiers: UInt32,
+        identifier: EventHotKeyID
+    ) -> (status: OSStatus, reference: EventHotKeyRef?) {
+        events.append("register:\(HotkeyManager.keyName(for: keyCode) ?? "?"):\(modifiers)")
+        guard !refusedKeyCodes.contains(keyCode) else {
+            return (OSStatus(eventHotKeyExistsErr), nil)
+        }
+        let reference = OpaquePointer(bitPattern: nextReference)!
+        nextReference += 1
+        return (noErr, reference)
+    }
+
+    func unregister(_ reference: EventHotKeyRef) {
+        events.append("unregister:\(Int(bitPattern: UnsafeRawPointer(reference)))")
     }
 }

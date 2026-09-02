@@ -48,7 +48,8 @@ protocol ActivityMonitorProcessChecking {
 
 @MainActor
 protocol ActivityMonitorProcessSelecting {
-    func select(pid: Int32) -> ActivityMonitorSelectionAttempt
+    /// Async so the Accessibility traversal can run off the main actor.
+    func select(pid: Int32) async -> ActivityMonitorSelectionAttempt
     /// Puts back any Activity Monitor state a handoff changed, without waiting
     /// for the scheduled restoration delay.
     func restorePreparedState()
@@ -120,7 +121,7 @@ final class ActivityMonitorCoordinator: ActivityMonitorCoordinating {
                 return .missingProcess
             }
 
-            switch selector.select(pid: pid) {
+            switch await selector.select(pid: pid) {
             case .selected:
                 return .success
             case .accessibilityDenied(let detail):

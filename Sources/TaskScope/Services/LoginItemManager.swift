@@ -81,7 +81,10 @@ final class LoginItemManager: ObservableObject {
                 if service.state == .notRegistered {
                     try service.register()
                 }
-            } else if service.state == .enabled || service.state == .requiresApproval {
+            } else if service.state != .notRegistered {
+                // `.notFound` still gets an unregister attempt: a stale
+                // registration for a moved or replaced bundle can only be
+                // cleared this way, and the thrown error is surfaced.
                 try service.unregister()
             }
             refresh()

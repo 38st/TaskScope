@@ -142,14 +142,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         startAutomaticWindowSuppression()
     }
 
+    /// An interactive launch that is not active when the launch grace period
+    /// ends keeps its interactive intent: the app stays a regular (Dock) app
+    /// and its windows are presented on the next activation
+    /// (`applicationDidBecomeActive` -> `promoteInteractiveLaunch`). Demoting
+    /// to an accessory here hid a Dock-launched app whose activation was
+    /// merely slow.
     private func finalizeInactiveInteractiveLaunch() {
-        NSApp.setActivationPolicy(.accessory)
+        let presentation = TaskScopeInteractiveLaunchPresentation.resolve(isActive: false)
+        precondition(!presentation.demotesToAccessory)
         hideAutomaticWindows()
-        NSApp.deactivate()
-        if let previous = previouslyFrontmostApplication,
-           previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            previous.activate()
-        }
         startAutomaticWindowSuppression()
     }
 
