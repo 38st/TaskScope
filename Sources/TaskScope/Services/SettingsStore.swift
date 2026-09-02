@@ -3,6 +3,10 @@ import Foundation
 
 @MainActor
 final class SettingsStore: ObservableObject {
+    /// The memory slider's grid. 1024 (the default) is on it: 128 + 14 × 64.
+    nonisolated static let memoryThresholdRange: ClosedRange<Double> = 128...8192
+    nonisolated static let memoryThresholdStep: Double = 64
+
     @Published var refreshIntervalSeconds: Double {
         didSet { normalizeAndSave() }
     }
@@ -27,8 +31,10 @@ final class SettingsStore: ObservableObject {
     @Published var selectedSectionRaw: String {
         didSet { normalizeAndSave() }
     }
+    /// Typed on every keystroke; persisted after a short quiet period rather than
+    /// hitting UserDefaults per character.
     @Published var searchText: String {
-        didSet { normalizeAndSave() }
+        didSet { normalizeAndScheduleSearchSave() }
     }
     @Published var sortKeyRaw: String {
         didSet { normalizeAndSave() }
@@ -38,16 +44,20 @@ final class SettingsStore: ObservableObject {
     private let persistence: RecoveringCodableStorage<CodableSettings>
     private var isNormalizing = false
     private var allowsPersistence: Bool
+    private let searchPersistenceDelay: TimeInterval
+    private var pendingSearchSave: Task<Void, Never>?
 
     init(
         userDefaults: UserDefaults = .standard,
-        key: String = "TaskScope.settings.v1"
+        key: String = "TaskScope.settings.v1",
+        searchPersistenceDelay: TimeInterval = 0.5
     ) {
         let persistence = RecoveringCodableStorage<CodableSettings>(
             userDefaults: userDefaults,
             key: key
         )
         self.persistence = persistence
+        self.searchPersistenceDelay = max(0, searchPersistenceDelay)
         let result = persistence.load()
         let decoded: CodableSettings
         if persistence.rawData == nil {
@@ -97,6 +107,32 @@ final class SettingsStore: ObservableObject {
         allowsPersistence = true
         recoveryMessage = nil
         normalizeAndSave()
+    }
+
+    /// Writes any debounced search text immediately (app termination).
+    func flushPendingWrites() {
+        guard pendingSearchSave != nil else { return }
+        pendingSearchSave?.cancel()
+        pendingSearchSave = nil
+        save()
+    }
+
+    private func normalizeAndScheduleSearchSave() {
+        guard !isNormalizing else { return }
+        let normalized = currentSettings.normalized()
+        if normalized.searchText != searchText {
+            isNormalizing = true
+            searchText = normalized.searchText
+            isNormalizing = false
+        }
+        pendingSearchSave?.cancel()
+        let delay = searchPersistenceDelay
+        pendingSearchSave = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            self.pendingSearchSave = nil
+            self.save()
+        }
     }
 
     private func normalizeAndSave() {
@@ -259,7 +295,10 @@ final class SettingsStore: ObservableObject {
             value.refreshIntervalSeconds = min(60, max(2, refreshIntervalSeconds))
             value.processListLimit = min(200, max(10, processListLimit))
             value.cpuHighlightThreshold = min(100, max(1, cpuHighlightThreshold))
-            value.memHighlightThresholdMB = min(8192, max(100, memHighlightThresholdMB))
+            value.memHighlightThresholdMB = min(
+                SettingsStore.memoryThresholdRange.upperBound,
+                max(SettingsStore.memoryThresholdRange.lowerBound, memHighlightThresholdMB)
+            )
             if TaskScopeSection(rawValue: selectedSectionRaw) == nil {
                 value.selectedSectionRaw = TaskScopeSection.processes.rawValue
             }

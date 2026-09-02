@@ -5,6 +5,9 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published private(set) var launchContext: TaskScopeLaunchContext
     @Published private(set) var windowPresentationAllowed: Bool
+    /// Work that must happen before the process exits (restoring Activity
+    /// Monitor state, flushing debounced settings writes).
+    var willTerminate: (() -> Void)?
     private let previouslyFrontmostApplication: NSRunningApplication?
     private var launchPhase = TaskScopeLaunchPhase.starting
     private var interactiveLaunchTask: Task<Void, Never>?
@@ -47,6 +50,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         } else {
             scheduleInteractiveLaunch()
         }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        willTerminate?()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -221,6 +228,10 @@ struct TaskScopeApp: App {
     @State private var didRequestOnboarding = false
     @State private var commandCoordinator: AppCommandCoordinator?
     @State private var notificationEnablement = NotificationEnablementCoordinator()
+    /// One coordinator for the app's lifetime. Constructing it per view init
+    /// created a new Accessibility runtime on every body evaluation, whose
+    /// pending restoration then ran against a deallocated runtime.
+    @State private var activityMonitor: ActivityMonitorCoordinator
 
     init() {
         let systemInventory = SystemProcessInventory()
@@ -264,6 +275,7 @@ struct TaskScopeApp: App {
         _autoStopRules = StateObject(wrappedValue: autoStopRules)
         _processHistory = StateObject(wrappedValue: processHistory)
         _commandCoordinator = State(initialValue: coordinator)
+        _activityMonitor = State(initialValue: ActivityMonitorCoordinator())
     }
 
     var body: some Scene {
@@ -279,14 +291,15 @@ struct TaskScopeApp: App {
                         autoStopRules: autoStopRules,
                         history: processHistory,
                         presentationStyle: .expandedWindow,
-                        openFullWindow: nil
+                        openFullWindow: nil,
+                        activityMonitor: activityMonitor
                     )
                     .frame(minWidth: 760, minHeight: 560)
                     .environmentObject(settings)
                     .environmentObject(watchedApps)
                     .task {
                         await bootstrapRuntimeIfNeeded()
-                        if appDelegate.launchContext == .interactive {
+                        if appDelegate.windowPresentationAllowed {
                             openOnboardingIfNeeded()
                         }
                     }
@@ -320,7 +333,8 @@ struct TaskScopeApp: App {
                 presentationStyle: .menuBarCompact,
                 openFullWindow: {
                     showTaskScopeWindow()
-                }
+                },
+                activityMonitor: activityMonitor
             )
             .frame(width: 480, height: 600)
             .environmentObject(settings)
@@ -376,7 +390,15 @@ struct TaskScopeApp: App {
         }
         .task {
             await bootstrapRuntimeIfNeeded()
-            if appDelegate.launchContext == .interactive {
+            if appDelegate.windowPresentationAllowed {
+                openOnboardingIfNeeded()
+            }
+        }
+        // Onboarding is gated on window presentation being allowed, not on the
+        // launch context, so a background launch that is later activated by the
+        // user is still offered onboarding on that first interactive activation.
+        .onChange(of: appDelegate.windowPresentationAllowed) { _, allowed in
+            if allowed {
                 openOnboardingIfNeeded()
             }
         }
@@ -444,6 +466,10 @@ struct TaskScopeApp: App {
         processManager.enableNotifications = settings.enableNotifications
         HotkeyManager.shared.onShow = {
             showTaskScopeWindow()
+        }
+        appDelegate.willTerminate = {
+            activityMonitor.restoreActivityMonitorState()
+            settings.flushPendingWrites()
         }
         configurePolling()
         autoStopRules.start(

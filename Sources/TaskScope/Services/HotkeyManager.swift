@@ -8,7 +8,8 @@ final class HotkeyManager: ObservableObject {
         case registered
         case conflict(OSStatus, previousShortcutRemainsActive: Bool)
         case handlerUnavailable(OSStatus, previousShortcutRemainsActive: Bool)
-        case unsupported
+        /// The combination was refused; the payload explains why.
+        case unsupported(String)
 
         var message: String {
             switch self {
@@ -22,7 +23,7 @@ final class HotkeyManager: ObservableObject {
                 previousShortcutRemainsActive
                     ? "TaskScope could not activate the new hotkey handler. The previous shortcut remains active."
                     : "TaskScope could not activate the global hotkey handler."
-            case .unsupported: "Choose a supported key with at least one modifier."
+            case .unsupported(let reason): reason
             }
         }
     }
@@ -74,8 +75,8 @@ final class HotkeyManager: ObservableObject {
             registrationStatus = .disabled
             return
         }
-        guard Self.isSupported(keyCode: keyCode, modifiers: modifiers) else {
-            registrationStatus = .unsupported
+        if let reason = Self.validationFailure(keyCode: keyCode, modifiers: modifiers) {
+            registrationStatus = .unsupported(reason)
             return
         }
         _ = registerCandidate(keyCode: keyCode, modifiers: modifiers)
@@ -83,8 +84,8 @@ final class HotkeyManager: ObservableObject {
 
     @discardableResult
     func updateShortcut(keyCode: UInt32, modifiers: UInt32) -> Bool {
-        guard Self.isSupported(keyCode: keyCode, modifiers: modifiers) else {
-            registrationStatus = .unsupported
+        if let reason = Self.validationFailure(keyCode: keyCode, modifiers: modifiers) {
+            registrationStatus = .unsupported(reason)
             return false
         }
 
@@ -116,8 +117,49 @@ final class HotkeyManager: ObservableObject {
     }
 
     static func isSupported(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        validationFailure(keyCode: keyCode, modifiers: modifiers) == nil
+    }
+
+    /// Why a combination is refused as a global hotkey, or nil when it is
+    /// acceptable. Shift or Option alone would intercept ordinary typing in
+    /// every app, and a handful of combinations are owned by macOS.
+    static func validationFailure(keyCode: UInt32, modifiers: UInt32) -> String? {
+        guard keyName(for: keyCode) != nil else {
+            return "Choose a supported key (letters, digits, function keys, arrows, Space, Return, Tab, or Delete)."
+        }
         let supportedModifiers = UInt32(cmdKey | shiftKey | optionKey | controlKey)
-        return modifiers & supportedModifiers != 0 && keyName(for: keyCode) != nil
+        let flags = modifiers & supportedModifiers
+        guard flags & UInt32(cmdKey | controlKey) != 0 else {
+            return "A global hotkey needs Command or Control. Shift or Option alone would intercept ordinary typing in every app."
+        }
+        if let reserved = reservedShortcutDescription(keyCode: keyCode, modifiers: flags) {
+            return "\(reserved) is reserved by macOS. Choose another combination."
+        }
+        return nil
+    }
+
+    /// Combinations macOS handles itself; registering them either fails or
+    /// hijacks a system feature.
+    static func reservedShortcutDescription(keyCode: UInt32, modifiers: UInt32) -> String? {
+        let command = UInt32(cmdKey)
+        let shift = UInt32(shiftKey)
+        let option = UInt32(optionKey)
+        switch (Int(keyCode), modifiers) {
+        case (kVK_ANSI_Q, command):
+            return "⌘Q (Quit)"
+        case (kVK_ANSI_Q, command | shift):
+            return "⌘⇧Q (Log Out)"
+        case (kVK_Tab, command), (kVK_Tab, command | shift):
+            return "⌘Tab (app switcher)"
+        case (kVK_Space, command):
+            return "⌘Space (Spotlight)"
+        case (kVK_Space, command | option):
+            return "⌘⌥Space (Finder search)"
+        case (kVK_ANSI_3, command | shift), (kVK_ANSI_4, command | shift), (kVK_ANSI_5, command | shift):
+            return "⌘⇧\(keyName(for: keyCode) ?? "") (screenshots)"
+        default:
+            return nil
+        }
     }
 
     static func keyName(for code: UInt32) -> String? {

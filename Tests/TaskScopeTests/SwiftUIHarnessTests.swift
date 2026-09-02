@@ -47,6 +47,156 @@ final class SwiftUIHarnessTests: XCTestCase {
             "/Applications/Forged.app"
         )
     }
+
+    /// The bundle is the last path component ending in `.app`, never the first
+    /// `.app` substring, so `my.apps` and `Foo.application` do not truncate it.
+    func testInferredAppPathMatchesTheLastBundleComponentNotTheFirstSubstring() {
+        var process = process(pid: 70, parentPID: 1, name: "Tool")
+
+        process.executablePath = "/Users/me/my.apps/Tool"
+        XCTAssertEqual(
+            QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Tool"),
+            "/Applications/Tool.app"
+        )
+        process.executablePath = "/Applications/Foo.application/Bar.app/Contents/MacOS/Bar"
+        XCTAssertEqual(
+            QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Tool"),
+            "/Applications/Foo.application/Bar.app"
+        )
+        process.executablePath = "/Applications/Outer.app/Contents/Frameworks/Helper.app/Contents/MacOS/Helper"
+        XCTAssertEqual(
+            QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Tool"),
+            "/Applications/Outer.app/Contents/Frameworks/Helper.app"
+        )
+        process.executablePath = "/Applications/Weird.APP/Contents/MacOS/Weird"
+        XCTAssertEqual(
+            QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Tool"),
+            "/Applications/Weird.APP"
+        )
+    }
+
+    /// The quick sheet opened in Create mode for one process must not rewrite
+    /// another process's rule just because the typed name matches it.
+    func testQuickRuleCreateWithACollidingNameDoesNotMutateTheExistingRule() async {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.autoStopRules
+        let examplePath = "/Applications/Example.app/Contents/MacOS/Example"
+        XCTAssertTrue(store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 5,
+            action: .prompt
+        )))
+        let original = store.rules[0]
+        let other = process(pid: 70, parentPID: 1, name: "Other")
+
+        let collision = QuickAutoStopRuleSaver.save(
+            into: store,
+            processName: "Example",
+            observedExecutablePath: other.executablePath,
+            runtimeMinutes: 9,
+            action: .kill,
+            existingRule: QuickAutoStopRuleSaver.existingRule(for: other, in: store)
+        )
+
+        XCTAssertEqual(
+            collision.error,
+            "An auto-stop rule for Example already exists. Right-click a process named Example to update it."
+        )
+        XCTAssertEqual(store.rules, [original], "Create mode must not overwrite the existing rule")
+
+        let example = process(pid: 71, parentPID: 1, name: "Example")
+        let update = QuickAutoStopRuleSaver.save(
+            into: store,
+            processName: "Example",
+            observedExecutablePath: example.executablePath,
+            runtimeMinutes: 9,
+            action: .kill,
+            existingRule: QuickAutoStopRuleSaver.existingRule(for: example, in: store)
+        )
+
+        XCTAssertNil(update.error)
+        XCTAssertEqual(update.statusMessage, "Updated auto-stop rule for Example.")
+        XCTAssertEqual(store.rules.map(\.runtimeMinutes), [9])
+        XCTAssertEqual(store.rules.map(\.executablePath), [examplePath])
+    }
+
+    /// A stale list still has rows; when the filter matches none of them the
+    /// filter empty state (with Clear Search & Filter) must show, not
+    /// "Process List Unavailable".
+    func testStaleListWithNoSearchMatchesShowsTheFilterEmptyState() async throws {
+        let needle = process(pid: 71, parentPID: 1, name: "Needle")
+        let inventory = UIScriptedInventory(results: [
+            .success([needle]),
+            .failure(.commandFailed("ps timed out"))
+        ])
+        let fixture = await makeFixture(inventory: inventory)
+        defer { fixture.stores.cleanup() }
+        await fixture.manager.loadProcessList(showMessage: false)
+        XCTAssertEqual(fixture.manager.processLoadError, "ps timed out", "precondition: stale list")
+        fixture.stores.settings.searchText = "nomatch"
+
+        let inspected = try makePopover(fixture: fixture, confirmationState: ProcessConfirmationState()).inspect()
+
+        XCTAssertNoThrow(try inspected.find(text: "No Matching Processes"))
+        XCTAssertNoThrow(try inspected.find(button: "Clear Search & Filter"))
+        XCTAssertNoThrow(try inspected.find(text: "Process list is stale"))
+        XCTAssertThrowsError(try inspected.find(text: "Process List Unavailable"))
+    }
+
+    func testFailedFirstLoadShowsTheErrorAndRetryInsteadOfIdle() async throws {
+        let inventory = UIScriptedInventory(results: [.failure(.commandFailed("ps timed out"))])
+        let fixture = await makeFixture(inventory: inventory)
+        defer { fixture.stores.cleanup() }
+        XCTAssertFalse(fixture.manager.hasLoadedProcessList)
+        XCTAssertEqual(fixture.manager.processLoadError, "ps timed out")
+
+        let inspected = try makePopover(fixture: fixture, confirmationState: ProcessConfirmationState()).inspect()
+
+        XCTAssertNoThrow(try inspected.find(text: "Process List Unavailable"))
+        XCTAssertNoThrow(try inspected.find(text: "ps timed out"))
+        XCTAssertNoThrow(try inspected.find(button: "Retry"))
+        XCTAssertThrowsError(try inspected.find(text: "Idle Until Needed"))
+    }
+
+    func testRuleEditorSheetRendersTheValidationErrorItWasGiven() throws {
+        let rule = AutoStopRule(processName: "Example", runtimeMinutes: 5, action: .kill)
+        let sheet = AutoStopRuleEditorSheet(
+            rule: rule,
+            validationError: "Auto Stop requires a trusted executable path.",
+            onSave: { _ in },
+            onCancel: {}
+        )
+
+        XCTAssertNoThrow(try sheet.inspect().find(text: "Auto Stop requires a trusted executable path."))
+        XCTAssertNoThrow(try sheet.inspect().find(button: "Cancel"))
+    }
+
+    /// Deleting the built-in preset while Keep Off is on would orphan its
+    /// persistent launchd override; the refusal names the way out.
+    func testDeletingTheGlobalProtectPresetIsRefusedWhileKeepOffIsOn() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.keepGlobalProtectOff = true
+        let view = SettingsView(
+            settings: fixture.stores.settings,
+            watchedApps: fixture.stores.watchedApps,
+            autoStopRules: fixture.stores.autoStopRules
+        )
+
+        try view.inspect().find(button: "Delete").tap()
+        XCTAssertEqual(fixture.stores.watchedApps.presets.map(\.id), [WatchedAppPreset.globalProtectID])
+        XCTAssertTrue(
+            SettingsView.presetDeletionRefusal(for: .globalProtect, keepGlobalProtectOff: true)?
+                .contains("Turn off Keep GlobalProtect Off") == true
+        )
+        XCTAssertNil(SettingsView.presetDeletionRefusal(for: .globalProtect, keepGlobalProtectOff: false))
+
+        fixture.stores.settings.keepGlobalProtectOff = false
+        try view.inspect().find(button: "Delete").tap()
+        XCTAssertTrue(fixture.stores.watchedApps.presets.isEmpty)
+    }
     func testProcessRowScopesAccessibilitySummaryAndPreservesActions() throws {
         let target = process(
             pid: 70,
@@ -64,10 +214,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             isHighlightedMEM: true,
             showsExpandedMetrics: true,
             stopAction: {},
-            toggleSelection: {},
-            detailAction: {},
-            forceStopAction: {},
-            copyCommandAction: {}
+            toggleSelection: {}
         )
         let inspected = try row.inspect()
         let stack = try inspected.find(ViewType.HStack.self)
@@ -491,10 +638,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             isHighlightedCPU: false,
             isHighlightedMEM: false,
             stopAction: {},
-            toggleSelection: { selectionAttempts += 1 },
-            detailAction: {},
-            forceStopAction: {},
-            copyCommandAction: {}
+            toggleSelection: { selectionAttempts += 1 }
         )
 
         let selectionButton = try row.inspect().findAll(ViewType.Button.self)[0]
@@ -558,8 +702,13 @@ final class SwiftUIHarnessTests: XCTestCase {
         let tabView = try inspected.find(ViewType.TabView.self)
         let frame = try tabView.fixedFrame()
 
-        XCTAssertEqual(frame.width, 520)
-        XCTAssertEqual(frame.height, 540)
+        XCTAssertEqual(frame.width, SettingsView.windowSize.width)
+        XCTAssertEqual(frame.height, SettingsView.windowSize.height)
+        // Every sheet must fit inside the window that presents it.
+        for sheet in [SettingsView.presetEditorSheetSize, SettingsView.importPreviewSheetSize, SettingsView.dryRunSheetSize] {
+            XCTAssertLessThanOrEqual(sheet.width, SettingsView.windowSize.width)
+            XCTAssertLessThanOrEqual(sheet.height, SettingsView.windowSize.height)
+        }
         XCTAssertEqual(NotificationService.shared.authorizationState, .unknown)
 
         for expectedText in [
@@ -650,7 +799,10 @@ final class SwiftUIHarnessTests: XCTestCase {
     }
 
     private func makeFixture(processes: [AppProcess]) async -> UIFixture {
-        let inventory = UIInventory(processes: processes)
+        await makeFixture(inventory: UIInventory(processes: processes))
+    }
+
+    private func makeFixture(inventory: any ProcessInventoryProviding) async -> UIFixture {
         let signaler = UIRecordingSignaler()
         let manager = ProcessManager(
             processInventory: inventory,
@@ -688,7 +840,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         )
     }
 
-    private func makeStores(inventory: UIInventory) -> UIStores {
+    private func makeStores(inventory: any ProcessInventoryProviding) -> UIStores {
         let suiteName = "TaskScope.UI.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
@@ -727,9 +879,6 @@ private struct TreeVisibilityHarness: View {
 
     @State private var keyboardSelectedPID: Int32?
     @State private var pendingTermination: AppProcess?
-    @State private var detailProcess: AppProcess?
-    @State private var detailData: ProcessDetail?
-    @State private var detailFailed = false
 
     var body: some View {
         ProcessTreeRow(
@@ -739,15 +888,11 @@ private struct TreeVisibilityHarness: View {
             processManager: manager,
             keyboardSelectedPid: $keyboardSelectedPID,
             pendingTermination: $pendingTermination,
-            detailProcess: $detailProcess,
-            detailData: $detailData,
-            detailFailed: $detailFailed,
             expandedPids: Binding(
                 get: { disclosure.expandedPIDs },
                 set: { disclosure.expandedPIDs = $0 }
             ),
             showsExpandedMetrics: false,
-            openInActivityMonitor: { _ in },
             contextMenuContent: { _ in EmptyView() }
         )
     }
@@ -756,6 +901,22 @@ private struct TreeVisibilityHarness: View {
 @MainActor
 private final class TreeDisclosureModel: ObservableObject {
     @Published var expandedPIDs: Set<Int32> = []
+}
+
+private final class UIScriptedInventory: ProcessInventoryProviding, @unchecked Sendable {
+    private let lock = NSLock()
+    private var results: [Result<[AppProcess], ProcessInventoryError>]
+
+    init(results: [Result<[AppProcess], ProcessInventoryError>]) {
+        self.results = results
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        lock.withLock {
+            guard !results.isEmpty else { return .failure(.commandFailed("exhausted")) }
+            return results.count == 1 ? results[0] : results.removeFirst()
+        }
+    }
 }
 
 private struct UIInventory: ProcessInventoryProviding {

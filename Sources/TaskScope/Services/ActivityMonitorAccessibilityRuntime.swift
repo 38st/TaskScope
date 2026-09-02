@@ -8,6 +8,11 @@ protocol ActivityMonitorAccessibilityRuntime {
     func isProcessTrusted(prompt: Bool) -> Bool
     func activityMonitorProcessIdentifier() -> pid_t?
     func selectProcessRow(applicationPID: pid_t, targetPID: Int32) -> ActivityMonitorSelectionAttempt
+    func restorePreparedState()
+}
+
+extension ActivityMonitorAccessibilityRuntime {
+    func restorePreparedState() {}
 }
 
 @MainActor
@@ -20,6 +25,10 @@ struct SystemActivityMonitorProcessSelector: ActivityMonitorProcessSelecting {
 
     init(runtime: any ActivityMonitorAccessibilityRuntime) {
         self.runtime = runtime
+    }
+
+    func restorePreparedState() {
+        runtime.restorePreparedState()
     }
 
     func select(pid: Int32) -> ActivityMonitorSelectionAttempt {
@@ -46,6 +55,9 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
     private struct PreparedProcessTableState {
         var searchField: AXUIElement?
         var searchValue = ""
+        /// The search text TaskScope typed; restoration is skipped when the
+        /// field no longer holds it, because the user has moved on.
+        var searchValueSet = ""
         var allProcessesItem: AXUIElement?
         var previousProcessScopeItem: AXUIElement?
         var processScopeChanged = false
@@ -210,6 +222,7 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
                processName as CFString
            ) == .success {
             _ = AXUIElementPerformAction(searchField, kAXConfirmAction as CFString)
+            state.searchValueSet = processName
             state.searchWasChanged = true
         }
 
@@ -297,12 +310,24 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
         }
     }
 
+    /// Restores immediately (app termination) instead of after the delay.
+    func restorePreparedState() {
+        restorationTask?.cancel()
+        restorationTask = nil
+        restorePreparedProcessTableState()
+    }
+
+    /// Each field is put back only when it still holds the value TaskScope
+    /// set. If the user changed the search, the scope, or the column since the
+    /// handoff, their choice wins and that field is left alone.
     private func restorePreparedProcessTableState() {
         guard let state = preparedState else { return }
         preparedState = nil
         restorationTask = nil
 
-        if state.searchWasChanged, let searchField = state.searchField {
+        if state.searchWasChanged,
+           let searchField = state.searchField,
+           string(searchField, attribute: kAXValueAttribute) ?? "" == state.searchValueSet {
             if AXUIElementSetAttributeValue(
                 searchField,
                 kAXValueAttribute as CFString,
@@ -311,10 +336,15 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
                 _ = AXUIElementPerformAction(searchField, kAXConfirmAction as CFString)
             }
         }
-        if state.processScopeChanged, let item = state.previousProcessScopeItem {
+        if state.processScopeChanged,
+           let allProcessesItem = state.allProcessesItem,
+           isMarked(allProcessesItem),
+           let item = state.previousProcessScopeItem {
             _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
         }
-        if state.processIDWasShown, let item = state.processIDItem {
+        if state.processIDWasShown,
+           let item = state.processIDItem,
+           isMarked(item) {
             _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
         }
     }

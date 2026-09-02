@@ -49,11 +49,23 @@ protocol ActivityMonitorProcessChecking {
 @MainActor
 protocol ActivityMonitorProcessSelecting {
     func select(pid: Int32) -> ActivityMonitorSelectionAttempt
+    /// Puts back any Activity Monitor state a handoff changed, without waiting
+    /// for the scheduled restoration delay.
+    func restorePreparedState()
+}
+
+extension ActivityMonitorProcessSelecting {
+    func restorePreparedState() {}
 }
 
 @MainActor
 protocol ActivityMonitorCoordinating {
     func openAndSelect(pid: Int32) async -> ActivityMonitorHandoffOutcome
+    func restoreActivityMonitorState()
+}
+
+extension ActivityMonitorCoordinating {
+    func restoreActivityMonitorState() {}
 }
 
 @MainActor
@@ -125,6 +137,12 @@ final class ActivityMonitorCoordinator: ActivityMonitorCoordinating {
         }
 
         return .timedOut(lastError: lastError)
+    }
+
+    /// Called on app termination so a handoff whose restoration delay has not
+    /// elapsed still leaves Activity Monitor as the user had it.
+    func restoreActivityMonitorState() {
+        selector.restorePreparedState()
     }
 }
 

@@ -37,7 +37,7 @@ struct OnboardingView: View {
                 OnboardingRow(
                     icon: "stop.circle",
                     title: "Stop Processes",
-                    description: "Select a row to inspect it, then use its Stop button or context menu. Force Stop is an explicit immediate kill."
+                    description: "Right-click a row to inspect it or copy its command, then use its Stop button or context menu. Force Stop is an explicit immediate kill."
                 )
                 OnboardingRow(
                     icon: "gearshape",

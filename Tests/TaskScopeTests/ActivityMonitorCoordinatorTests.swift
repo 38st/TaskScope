@@ -121,6 +121,28 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         XCTAssertEqual(selector.requestedPIDs, [654])
     }
 
+    /// App termination restores Activity Monitor immediately instead of
+    /// waiting for the scheduled delay that would never fire.
+    func testRestoreRequestReachesTheSelectorAndTheRuntime() {
+        let selector = FakeActivityMonitorProcessSelector(results: [])
+        let coordinator = makeCoordinator(
+            opener: FakeActivityMonitorOpener(),
+            checker: FakeActivityMonitorProcessChecker(results: []),
+            selector: selector
+        )
+
+        coordinator.restoreActivityMonitorState()
+        XCTAssertEqual(selector.restoreCount, 1)
+
+        let runtime = FakeActivityMonitorAccessibilityRuntime(
+            trusted: true,
+            applicationPID: 700,
+            result: .selected
+        )
+        SystemActivityMonitorProcessSelector(runtime: runtime).restorePreparedState()
+        XCTAssertEqual(runtime.restoreCount, 1)
+    }
+
     func testSystemSelectorRequestsAccessibilityAndReturnsDenialWithoutSelecting() {
         let runtime = FakeActivityMonitorAccessibilityRuntime(
             trusted: false,
@@ -297,6 +319,7 @@ private final class FakeActivityMonitorProcessChecker: ActivityMonitorProcessChe
 private final class FakeActivityMonitorProcessSelector: ActivityMonitorProcessSelecting {
     private var results: [ActivityMonitorSelectionAttempt]
     private(set) var requestedPIDs: [Int32] = []
+    private(set) var restoreCount = 0
 
     init(results: [ActivityMonitorSelectionAttempt]) {
         self.results = results
@@ -305,6 +328,10 @@ private final class FakeActivityMonitorProcessSelector: ActivityMonitorProcessSe
     func select(pid: Int32) -> ActivityMonitorSelectionAttempt {
         requestedPIDs.append(pid)
         return results.isEmpty ? .notReady : results.removeFirst()
+    }
+
+    func restorePreparedState() {
+        restoreCount += 1
     }
 }
 
@@ -322,6 +349,11 @@ private final class FakeActivityMonitorAccessibilityRuntime:
     private let result: ActivityMonitorSelectionAttempt
     private(set) var promptValues: [Bool] = []
     private(set) var selectionRequests: [SelectionRequest] = []
+    private(set) var restoreCount = 0
+
+    func restorePreparedState() {
+        restoreCount += 1
+    }
 
     init(
         trusted: Bool,

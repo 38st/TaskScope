@@ -229,7 +229,10 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(manager.selectionSnapshot().isEmpty)
     }
 
-    func testSelectionIsPrunedWhenProcessFallsOutsideRefreshedDisplayLimit() async {
+    /// The selection is reconciled against the full inventory, not the top-N
+    /// display slice, so a process that drops below the display limit on the
+    /// next poll stays selected. Only an exited or recycled identity is pruned.
+    func testSelectionSurvivesWhenProcessFallsOutsideRefreshedDisplayLimit() async {
         let target = process(pid: 42, cpu: 90, name: "Target")
         let other = process(pid: 43, cpu: 10, name: "Other")
         let promoted = process(pid: 44, cpu: 100, name: "Promoted")
@@ -249,7 +252,33 @@ final class ProcessManagerTests: XCTestCase {
         await manager.loadProcessList()
 
         XCTAssertEqual(manager.processes.map(\.pid), [promoted.pid])
-        XCTAssertTrue(manager.selectedPids.isEmpty)
+        XCTAssertEqual(manager.selectedPids, [target.pid])
+        XCTAssertEqual(manager.selectionSnapshot(), [target.identity])
+    }
+
+    /// A row surfaced by search can rank below the display limit. Selecting it
+    /// and then polling, or changing the sort, must not deselect it.
+    func testSearchedSelectionBelowTheDisplayLimitSurvivesRefreshAndSortChange() async {
+        let hotA = process(pid: 91, cpu: 90, memory: 10, name: "HotA")
+        let hotB = process(pid: 92, cpu: 80, memory: 20, name: "HotB")
+        let needle = process(pid: 93, cpu: 1, memory: 5, name: "Needle")
+        let inventory = FakeProcessInventory(results: [.success([hotA, hotB, needle])])
+        let manager = makeManager(inventory: inventory)
+        manager.processListLimitProvider = { 2 }
+
+        await manager.loadProcessList()
+        XCTAssertEqual(manager.processes.map(\.pid), [91, 92])
+        XCTAssertEqual(manager.displayProcesses { $0.name == "Needle" }.map(\.pid), [93])
+        manager.toggleSelection(needle.pid)
+        XCTAssertEqual(manager.selectedPids, [93])
+
+        await manager.loadProcessList()
+        XCTAssertEqual(manager.selectedPids, [93], "a poll must not deselect a row outside the display slice")
+
+        manager.sortKey = .memory
+        XCTAssertEqual(manager.selectedPids, [93], "a sort change must not deselect a row outside the display slice")
+        manager.sortKey = .name
+        XCTAssertEqual(manager.selectedProcessesSnapshot().map(\.pid), [93])
     }
 
     func testSelectUsesOnlyProvidedVisibleProcesses() async {

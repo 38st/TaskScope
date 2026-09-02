@@ -45,8 +45,46 @@ final class SettingsStoreTests: XCTestCase {
 
         store.refreshIntervalSeconds = 1_000
         store.processListLimit = -5
+        store.memHighlightThresholdMB = 10
         XCTAssertEqual(store.refreshIntervalSeconds, 60)
         XCTAssertEqual(store.processListLimit, 10)
+        XCTAssertEqual(store.memHighlightThresholdMB, SettingsStore.memoryThresholdRange.lowerBound)
+    }
+
+    /// The slider's grid must be able to reach the default value.
+    func testMemorySliderGridContainsTheDefault() {
+        let defaultValue = SettingsStore(userDefaults: defaults, key: key).memHighlightThresholdMB
+        let range = SettingsStore.memoryThresholdRange
+        let step = SettingsStore.memoryThresholdStep
+
+        XCTAssertEqual(defaultValue, 1024)
+        XCTAssertTrue(range.contains(defaultValue))
+        XCTAssertEqual((defaultValue - range.lowerBound).truncatingRemainder(dividingBy: step), 0)
+    }
+
+    /// Search text is typed one character at a time; each keystroke used to
+    /// rewrite UserDefaults. The write is debounced and can be flushed.
+    func testSearchTextPersistenceIsDebounced() async throws {
+        let store = SettingsStore(userDefaults: defaults, key: key, searchPersistenceDelay: 0.05)
+
+        store.searchText = "a"
+        store.searchText = "ab"
+        XCTAssertNil(persistedSearchText(), "no write may happen while typing continues")
+
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(persistedSearchText(), "ab")
+
+        store.searchText = "abc"
+        store.flushPendingWrites()
+        XCTAssertEqual(persistedSearchText(), "abc")
+    }
+
+    private func persistedSearchText() -> String? {
+        guard let data = defaults.data(forKey: key),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return object["searchText"] as? String
     }
 
     func testCorruptSettingsAreBackedUpBeforeDefaultsAreUsed() {

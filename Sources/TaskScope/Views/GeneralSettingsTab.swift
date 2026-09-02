@@ -37,7 +37,11 @@ struct GeneralSettingsTab: View {
                 HStack {
                     Text("Memory (MB)")
                     Spacer()
-                    Slider(value: $settings.memHighlightThresholdMB, in: 100...8192, step: 64)
+                    Slider(
+                        value: $settings.memHighlightThresholdMB,
+                        in: SettingsStore.memoryThresholdRange,
+                        step: SettingsStore.memoryThresholdStep
+                    )
                     Text(String(format: "%.0f", settings.memHighlightThresholdMB))
                         .monospacedDigit().frame(width: 44, alignment: .trailing)
                 }

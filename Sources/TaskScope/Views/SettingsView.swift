@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State private var newRuleMinutes = 5
     @State private var newRuleAction: AutoStopRule.Action = .prompt
     @State private var editingRule: AutoStopRule?
+    @State private var editingRuleError: String?
+    @State private var presetDeletionError: String?
     @State private var exportError: String?
     @State private var importError: String?
     @State private var presetValidationError: String?
@@ -31,7 +33,7 @@ struct SettingsView: View {
             autoStopTab.tabItem { Label("Auto-Stop", systemImage: "timer") }
             hotkeyTab.tabItem { Label("Hotkey", systemImage: "keyboard") }
         }
-        .frame(width: 520, height: 540)
+        .frame(width: Self.windowSize.width, height: Self.windowSize.height)
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in
             switch result {
             case .success(let url):
@@ -43,12 +45,20 @@ struct SettingsView: View {
         .sheet(item: $editingRule) { rule in
             AutoStopRuleEditorSheet(
                 rule: rule,
+                validationError: editingRuleError,
                 onSave: { updated in
                     if autoStopRules.update(updated) {
                         editingRule = nil
+                        editingRuleError = nil
+                    } else {
+                        editingRuleError = autoStopRules.validationError
+                            ?? "The auto-stop rule could not be saved."
                     }
                 },
-                onCancel: { editingRule = nil }
+                onCancel: {
+                    editingRule = nil
+                    editingRuleError = nil
+                }
             )
         }
         .sheet(isPresented: $showPresetEditor) {
@@ -61,6 +71,12 @@ struct SettingsView: View {
             lifecycleDryRunSheet(for: preset)
         }
     }
+
+    /// Every sheet is sized to fit inside this window.
+    static let windowSize = CGSize(width: 640, height: 600)
+    static let presetEditorSheetSize = CGSize(width: 600, height: 540)
+    static let importPreviewSheetSize = CGSize(width: 600, height: 540)
+    static let dryRunSheetSize = CGSize(width: 560, height: 440)
 
     private var generalTab: some View {
         GeneralSettingsTab(
@@ -110,6 +126,12 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal)
             }
+            if let presetDeletionError {
+                Text(presetDeletionError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+            }
 
             List {
                 ForEach(watchedApps.presets) { preset in
@@ -132,6 +154,11 @@ struct SettingsView: View {
                                 }
                                 .buttonStyle(.borderless)
                             }
+                            Button("Delete", role: .destructive) {
+                                deletePreset(preset)
+                            }
+                            .buttonStyle(.borderless)
+                            .accessibilityLabel("Delete preset \(preset.displayName)")
                             Toggle("", isOn: Binding(
                                 get: { preset.notificationsEnabled },
                                 set: { newValue in
@@ -142,6 +169,7 @@ struct SettingsView: View {
                             ))
                             .labelsHidden()
                             .help("Notifications for this preset")
+                            .accessibilityLabel("Notifications for \(preset.displayName)")
                         }
                         Text("Main: \(preset.mainProcessName)").font(.caption).foregroundStyle(.secondary)
                         Text("Helpers: \(preset.helperProcessNames.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
@@ -154,11 +182,20 @@ struct SettingsView: View {
                         }
                     }
                     .padding(.vertical, 4)
+                    .contextMenu {
+                        Button("Delete Preset", role: .destructive) {
+                            deletePreset(preset)
+                        }
+                    }
                 }
                 .onMove { from, to in
                     watchedApps.move(from: from, to: to)
                 }
-                .onDelete { watchedApps.remove(at: $0) }
+                .onDelete { offsets in
+                    for preset in offsets.compactMap({ watchedApps.presets.indices.contains($0) ? watchedApps.presets[$0] : nil }) {
+                        deletePreset(preset)
+                    }
+                }
             }
             .disabled(watchedApps.isReadOnlyAfterCorruption)
 
@@ -230,7 +267,7 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 620, height: 560)
+        .frame(width: Self.presetEditorSheetSize.width, height: Self.presetEditorSheetSize.height)
     }
 
     @ViewBuilder
@@ -314,7 +351,7 @@ struct SettingsView: View {
                 }
             }
             .padding(20)
-            .frame(width: 680, height: 560)
+            .frame(width: Self.importPreviewSheetSize.width, height: Self.importPreviewSheetSize.height)
         } else {
             Text("No import preview is available.")
                 .padding()
@@ -342,7 +379,7 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 640, height: 460)
+        .frame(width: Self.dryRunSheetSize.width, height: Self.dryRunSheetSize.height)
     }
 
     static func lifecycleDryRunOperations(for preset: WatchedAppPreset) -> [String] {
@@ -417,6 +454,7 @@ struct SettingsView: View {
                                 set: { autoStopRules.setEnabled($0, for: rule) }
                             ))
                             .labelsHidden()
+                            .accessibilityLabel("Enable rule \(rule.processName)")
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(rule.processName).fontWeight(.medium)
@@ -540,6 +578,32 @@ struct SettingsView: View {
 
     private var hotkeyTab: some View {
         HotkeySettingsView()
+    }
+
+    /// Deleting the built-in GlobalProtect preset while Keep Off is on would
+    /// orphan its persistent launchd disable override: nothing left in the app
+    /// could clear it. The message names the way out.
+    static func presetDeletionRefusal(
+        for preset: WatchedAppPreset,
+        keepGlobalProtectOff: Bool
+    ) -> String? {
+        guard preset.id == WatchedAppPreset.globalProtectID, keepGlobalProtectOff else { return nil }
+        return "Turn off Keep GlobalProtect Off (or choose Open) before deleting the built-in preset. Its user launch agents are disabled by a persistent launchd override that deleting the preset would not clear."
+    }
+
+    private func deletePreset(_ preset: WatchedAppPreset) {
+        if let refusal = Self.presetDeletionRefusal(
+            for: preset,
+            keepGlobalProtectOff: settings.keepGlobalProtectOff
+        ) {
+            presetDeletionError = refusal
+            return
+        }
+        if watchedApps.remove(preset) {
+            presetDeletionError = nil
+        } else {
+            presetDeletionError = watchedApps.validationError
+        }
     }
 
     private func prepareNewPreset() {

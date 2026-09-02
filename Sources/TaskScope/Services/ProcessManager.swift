@@ -168,12 +168,6 @@ final class ProcessManager: ObservableObject {
         )
     }
 
-    func restrictSelection(to visibleProcesses: [AppProcess]) {
-        let visibleIdentities = Set(visibleProcesses.map(\.identity))
-        selectedIdentities = selectedIdentities.filter { visibleIdentities.contains($0.value) }
-        selectedPids = Set(selectedIdentities.keys)
-    }
-
     func selectionSnapshot() -> [ProcessIdentity] {
         fullProcessInventory.compactMap { selectedIdentities[$0.pid] }
     }
@@ -974,9 +968,13 @@ final class ProcessManager: ObservableObject {
         }
     }
 
+    /// The selection is reconciled against the *full* inventory, not the top-N
+    /// display slice: a process selected through search can rank below the
+    /// display limit and must survive a poll or a sort change. Exited or
+    /// recycled PIDs are still pruned because their identity is gone.
     private func publishDisplayProcesses() {
         processes = displayProcesses()
-        reconcileSelection(with: processes)
+        reconcileSelection(with: fullProcessInventory)
     }
 
     private func sorted(_ inventory: [AppProcess]) -> [AppProcess] {

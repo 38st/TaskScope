@@ -118,6 +118,46 @@ All notable changes to TaskScope are documented in this file. The project uses
 - A slow inventory read that finishes late no longer overwrites a newer cached
   result, and failed reads are never cached.
 - Process detail keeps internal runs of spaces in the command.
+- A process selected through search that ranks below the display limit stays
+  selected across polls and sort changes; the selection is reconciled against
+  the full inventory and pruned only when a process exits or its pid is
+  recycled.
+- Typing a search, switching tree mode, or collapsing a node no longer
+  deselects hidden rows; batch actions act on the full selection, which the
+  confirmation lists.
+- A global hotkey now requires Command or Control, and combinations macOS
+  reserves (for example ⌘Q, ⌘Tab, ⌘Space) are refused with an explanation.
+- Creating a quick auto-stop rule with a name that matches another process's
+  rule is refused instead of silently overwriting that rule with a different
+  executable path.
+- The process list takes keyboard focus when a row is clicked, so arrow keys,
+  Return, and Escape work without Full Keyboard Access.
+- One Activity Monitor coordinator lives for the app's lifetime, its
+  restoration runs on quit, and a field the user changed after the handoff is
+  left alone.
+- A search with no matches on a stale list shows the filter empty state with
+  Clear Search & Filter, and a failed first load shows the error with Retry
+  instead of "Idle Until Needed".
+- The rule editor shows the store's validation error inside the sheet, and the
+  rule editor and rename sheets close with Escape.
+- Every watched preset row has a Delete button and context-menu item; deleting
+  the built-in GlobalProtect preset is refused while Keep GlobalProtect Off is
+  on, with the way out explained.
+- Filtered tree ancestors expand once per filter change, so a node collapsed
+  while searching stays collapsed, and disclosure state for exited processes
+  is forgotten.
+- Notification and rule-enable toggles carry accessibility labels.
+- Settings sheets fit inside the Settings window.
+- The memory highlight slider's grid includes its 1024 MB default.
+- The process detail sheet ignores a read that finishes after the sheet moved
+  to another process.
+- The batch confirmation describes the captured targets, not live state.
+- The inferred app path for "Watch This Process" uses the last path component
+  ending in `.app`.
+- Search text is persisted after a short pause in typing instead of on every
+  keystroke, and any pending write is flushed on quit.
+- Onboarding copy says to right-click a row, and onboarding is offered on the
+  first interactive activation rather than only for an interactive launch.
 - Removed a pipe-reader teardown race in command execution and strengthened
   cancellation near child exit.
 - Preserved full executable paths in the process display schema and saved

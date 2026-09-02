@@ -63,6 +63,67 @@ final class QuickWatchedPresetFormState: ObservableObject {
     }
 }
 
+/// Saves the quick auto-stop sheet's draft honouring the mode the sheet was
+/// opened in. In Create mode a typed name that collides with an existing rule is
+/// refused rather than silently rewriting that rule with a different process's
+/// executable path.
+@MainActor
+enum QuickAutoStopRuleSaver {
+    struct Outcome: Equatable {
+        var error: String?
+        var statusMessage: String?
+    }
+
+    static func existingRule(for process: AppProcess, in rules: AutoStopRulesStore) -> AutoStopRule? {
+        rules.rules.first { $0.processName.caseInsensitiveCompare(process.name) == .orderedSame }
+    }
+
+    static func save(
+        into rules: AutoStopRulesStore,
+        processName: String,
+        observedExecutablePath: String?,
+        runtimeMinutes: Int,
+        action: AutoStopRule.Action,
+        existingRule: AutoStopRule?
+    ) -> Outcome {
+        let trimmedName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            return Outcome(error: "Process name is required.")
+        }
+
+        if let existing = existingRule {
+            guard rules.update(AutoStopRule(
+                id: existing.id,
+                processName: trimmedName,
+                executablePath: observedExecutablePath ?? existing.executablePath,
+                runtimeMinutes: runtimeMinutes,
+                action: action,
+                isEnabled: existing.isEnabled
+            )) else {
+                return Outcome(error: rules.validationError ?? "The auto-stop rule could not be updated.")
+            }
+            return Outcome(statusMessage: "Updated auto-stop rule for \(trimmedName).")
+        }
+
+        if let collision = rules.rules.first(where: {
+            $0.processName.caseInsensitiveCompare(trimmedName) == .orderedSame
+        }) {
+            return Outcome(
+                error: "An auto-stop rule for \(collision.processName) already exists. Right-click a process named \(collision.processName) to update it."
+            )
+        }
+        guard rules.add(AutoStopRule(
+            processName: trimmedName,
+            executablePath: observedExecutablePath,
+            runtimeMinutes: runtimeMinutes,
+            action: action
+        )) else {
+            return Outcome(error: rules.validationError ?? "The auto-stop rule could not be added.")
+        }
+        return Outcome(statusMessage: "Added auto-stop rule for \(trimmedName).")
+    }
+}
+
 struct QuickAutoStopRuleSheet: View {
     let process: AppProcess
     let existingRule: AutoStopRule?
@@ -252,13 +313,19 @@ struct QuickWatchedPresetSheet: View {
         return names
     }
 
+    /// The bundle is the last path *component* ending in `.app`, bounded by a
+    /// separator or the end of the string. A substring match would stop at
+    /// `/Users/me/my.apps/Tool` or at `Foo.application`.
     static func inferredAppPath(for process: AppProcess?, fallbackName: String) -> String {
         guard let process else { return "/Applications/\(fallbackName).app" }
 
         let executablePath = process.executablePath?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if let range = executablePath.range(of: ".app", options: [.caseInsensitive]) {
-            return String(executablePath[..<range.upperBound])
+        let components = executablePath.split(separator: "/", omittingEmptySubsequences: false)
+        if let bundleIndex = components.lastIndex(where: {
+            $0.count > ".app".count && $0.lowercased().hasSuffix(".app")
+        }) {
+            return components[...bundleIndex].joined(separator: "/")
         }
 
         return "/Applications/\(process.name).app"

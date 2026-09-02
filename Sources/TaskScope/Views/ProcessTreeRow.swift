@@ -7,12 +7,8 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
     @ObservedObject var processManager: ProcessManager
     @Binding var keyboardSelectedPid: Int32?
     @Binding var pendingTermination: AppProcess?
-    @Binding var detailProcess: AppProcess?
-    @Binding var detailData: ProcessDetail?
-    @Binding var detailFailed: Bool
     @Binding var expandedPids: Set<Int32>
     var showsExpandedMetrics: Bool
-    var openInActivityMonitor: (Int32) -> Void
     @ViewBuilder var contextMenuContent: (AppProcess) -> ContextMenuContent
 
     var body: some View {
@@ -28,22 +24,7 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
                     showsExpandedMetrics: showsExpandedMetrics,
                     leadingInset: 20 + CGFloat(depth) * 16,
                     stopAction: { pendingTermination = node.process },
-                    toggleSelection: { processManager.toggleSelection(node.process.pid) },
-                    detailAction: {
-                        detailData = nil
-                        detailFailed = false
-                        detailProcess = node.process
-                    },
-                    forceStopAction: {
-                        pendingTermination = node.process
-                    },
-                    copyCommandAction: {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(
-                            node.process.executablePath ?? node.process.command,
-                            forType: .string
-                        )
-                    }
+                    toggleSelection: { processManager.toggleSelection(node.process.pid) }
                 )
 
                 if !node.children.isEmpty {
@@ -99,12 +80,8 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
                         processManager: processManager,
                         keyboardSelectedPid: $keyboardSelectedPid,
                         pendingTermination: $pendingTermination,
-                        detailProcess: $detailProcess,
-                        detailData: $detailData,
-                        detailFailed: $detailFailed,
                         expandedPids: $expandedPids,
                         showsExpandedMetrics: showsExpandedMetrics,
-                        openInActivityMonitor: openInActivityMonitor,
                         contextMenuContent: contextMenuContent
                     )
                 }

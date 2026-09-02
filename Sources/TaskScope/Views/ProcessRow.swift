@@ -11,9 +11,6 @@ struct ProcessRow: View {
     var leadingInset: CGFloat = 0
     var stopAction: () -> Void
     var toggleSelection: () -> Void
-    var detailAction: () -> Void
-    var forceStopAction: () -> Void
-    var copyCommandAction: () -> Void
 
     var body: some View {
         HStack(spacing: 10) {

@@ -28,6 +28,20 @@ final class ProcessConfirmationState: ObservableObject {
     struct PendingBatchTermination: Equatable {
         let targets: [ProcessIdentity]
         let mode: TerminationMode
+
+        /// Describes exactly the captured targets, so the dialog cannot drift
+        /// from what will be signalled if the live state changes meanwhile.
+        var message: String {
+            let names = targets.prefix(3).map { identity in
+                let component = URL(fileURLWithPath: identity.command).lastPathComponent
+                return component.isEmpty ? identity.command : component
+            }
+            let suffix = targets.count > names.count
+                ? " and \(targets.count - names.count) more"
+                : ""
+            let action = mode == .force ? "Force stop" : "Stop"
+            return "\(action) \(targets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
+        }
     }
 
     enum PresetAction: String, Equatable {
@@ -73,15 +87,6 @@ final class ProcessConfirmationState: ObservableObject {
     }
 
     var batchMessage: String {
-        let batchTargets = pendingBatchTermination?.targets ?? []
-        let names = batchTargets.prefix(3).map { identity in
-            let component = URL(fileURLWithPath: identity.command).lastPathComponent
-            return component.isEmpty ? identity.command : component
-        }
-        let suffix = batchTargets.count > names.count
-            ? " and \(batchTargets.count - names.count) more"
-            : ""
-        let action = pendingBatchTermination?.mode == .force ? "Force stop" : "Stop"
-        return "\(action) \(batchTargets.count) selected processes: \(names.joined(separator: ", "))\(suffix)."
+        pendingBatchTermination?.message ?? ""
     }
 }

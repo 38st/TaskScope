@@ -39,7 +39,7 @@ struct HotkeySettingsView: View {
                             : Color.orange
                     )
 
-                Text("Default: ⌘⇧T shows the TaskScope window.")
+                Text("Default: ⌘⇧T shows the TaskScope window. A hotkey needs Command or Control; ⌘Q, ⌘Tab, and ⌘Space are reserved by macOS.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -85,6 +85,10 @@ private struct RecordingListenerView: NSViewRepresentable {
                 if mods.contains(.shift) { carbonMods |= UInt32(shiftKey) }
                 if mods.contains(.option) { carbonMods |= UInt32(optionKey) }
                 if mods.contains(.control) { carbonMods |= UInt32(controlKey) }
+                // A bare key is ordinary typing. Everything else is handed to
+                // the manager, which validates it (Command or Control required,
+                // system-reserved combinations refused) and explains a rejection
+                // in the status line.
                 if carbonMods == 0 { return event }
                 onRecord(UInt32(event.keyCode), carbonMods)
                 return nil

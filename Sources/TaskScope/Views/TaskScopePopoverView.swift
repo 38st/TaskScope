@@ -30,6 +30,9 @@ struct TaskScopePopoverView: View {
     @State private var quickAutoStopProcess: AppProcess?
     @State private var quickPresetDraft: QuickWatchedPresetDraft?
     @State private var registeredExtendedMetrics = false
+    /// The list must own focus for `.onKeyPress` to receive arrow, Return, and
+    /// Escape without Full Keyboard Access; tapping a row moves focus here.
+    @FocusState private var processListFocused: Bool
 
     @MainActor
     init(
@@ -109,8 +112,15 @@ struct TaskScopePopoverView: View {
             if let pid = keyboardSelectedPid, !newProcesses.contains(where: { $0.pid == pid }) {
                 keyboardSelectedPid = nil
             }
-            expandFilteredTreeAncestors()
         }
+        .onChange(of: processManager.inventoryGeneration) { _, _ in
+            // Forget disclosure state for processes that no longer exist; a
+            // recycled pid must not inherit an old expansion.
+            let livePIDs = Set(processManager.inventorySnapshot.map(\.pid))
+            expandedTreePids = expandedTreePids.intersection(livePIDs)
+        }
+        // Ancestors are expanded once per *filter* change, never on every poll,
+        // so a node collapsed while searching stays collapsed.
         .onChange(of: settings.searchText) { _, _ in
             expandFilteredTreeAncestors()
         }
@@ -122,9 +132,16 @@ struct TaskScopePopoverView: View {
                 expandFilteredTreeAncestors()
             }
         }
-        .onChange(of: renderedProcessIdentities) { _, _ in
-            processManager.restrictSelection(to: renderedSelectionProcesses)
+        .onChange(of: keyboardSelectedPid) { _, pid in
+            if pid != nil {
+                processListFocused = true
+            }
         }
+        // Selection is deliberately *not* pruned to the rows currently rendered:
+        // typing a search, toggling tree mode, or collapsing a node changes what
+        // is visible, not what the user chose. ProcessManager prunes on
+        // inventory liveness only, and batch actions act on the full selection,
+        // which the dialog lists.
     }
 
     private var terminationConfirmationContent: some View {
@@ -175,8 +192,8 @@ struct TaskScopePopoverView: View {
             Button("Cancel", role: .cancel) {
                 confirmationState.clearBatch()
             }
-        } message: { _ in
-            Text(confirmationState.batchMessage)
+        } message: { pending in
+            Text(pending.message)
         }
     }
 
@@ -228,7 +245,11 @@ struct TaskScopePopoverView: View {
             .task(id: process.pid) {
                 detailData = nil
                 detailFailed = false
-                if let result = await processManager.detail(for: process) {
+                let result = await processManager.detail(for: process)
+                // The sheet may have moved to another process, or closed,
+                // while the read was in flight.
+                guard !Task.isCancelled, detailProcess?.pid == process.pid else { return }
+                if let result {
                     detailData = result
                 } else {
                     detailFailed = true
@@ -314,9 +335,7 @@ struct TaskScopePopoverView: View {
         .sheet(item: $quickAutoStopProcess) { process in
             QuickAutoStopRuleSheet(
                 process: process,
-                existingRule: autoStopRules.rules.first { rule in
-                    rule.processName.caseInsensitiveCompare(process.name) == .orderedSame
-                },
+                existingRule: QuickAutoStopRuleSaver.existingRule(for: process, in: autoStopRules),
                 onSave: { processName, runtimeMinutes, action in
                     saveQuickAutoStopRule(
                         processName: processName,
@@ -586,31 +605,13 @@ struct TaskScopePopoverView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 16)
 
-            if processManager.hasLoadedProcessList, filteredProcesses.isEmpty {
-                VStack(spacing: 10) {
-                    Image(systemName: processManager.processLoadError == nil ? "line.3.horizontal.decrease.circle" : "exclamationmark.triangle")
-                        .font(.system(size: 28))
-                        .foregroundStyle(.secondary)
-                    Text(processManager.processLoadError == nil ? "No Matching Processes" : "Process List Unavailable")
-                        .font(.headline)
-                    Text(processManager.processLoadError ?? "Adjust the search or filter to show processes.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    HStack {
-                        if processManager.processLoadError == nil {
-                            Button("Clear Search & Filter") {
-                                settings.searchText = ""
-                                filterMode = .all
-                            }
-                        }
-                        Button("Retry") {
-                            Task { await processManager.loadProcessList() }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(24)
+            if !processManager.hasLoadedProcessList, let error = processManager.processLoadError {
+                firstLoadFailedState(error: error)
+            } else if processManager.hasLoadedProcessList, filteredProcesses.isEmpty {
+                // Rows exist but the filter matched none of them; the stale-list
+                // banner above already reports a failed refresh, so this state is
+                // only about the filter.
+                noMatchingProcessesState
             } else if processManager.hasLoadedProcessList {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -624,12 +625,8 @@ struct TaskScopePopoverView: View {
                                         processManager: processManager,
                                         keyboardSelectedPid: $keyboardSelectedPid,
                                         pendingTermination: pendingTerminationBinding,
-                                        detailProcess: $detailProcess,
-                                        detailData: $detailData,
-                                        detailFailed: $detailFailed,
                                         expandedPids: $expandedTreePids,
                                         showsExpandedMetrics: isExpandedWindow,
-                                        openInActivityMonitor: { openInActivityMonitor(pid: $0) },
                                         contextMenuContent: { process in
                                             processContextMenu(for: process)
                                         }
@@ -642,6 +639,7 @@ struct TaskScopePopoverView: View {
                                         .contentShape(Rectangle())
                                         .onTapGesture {
                                             keyboardSelectedPid = process.pid
+                                            processListFocused = true
                                         }
                                         .contextMenu {
                                             processContextMenu(for: process)
@@ -650,6 +648,9 @@ struct TaskScopePopoverView: View {
                             }
                         }
                     }
+                    .focusable()
+                    .focused($processListFocused)
+                    .focusEffectDisabled()
                     .onKeyPress(.upArrow) {
                         moveKeyboard(by: -1, in: keyboardNavigationProcesses, proxy: proxy)
                         return .handled
@@ -690,6 +691,46 @@ struct TaskScopePopoverView: View {
                 }
             }
         }
+    }
+
+    private func firstLoadFailedState(error: String) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text("Process List Unavailable")
+                .font(.headline)
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Retry") {
+                Task { await processManager.loadProcessList() }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var noMatchingProcessesState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.system(size: 28))
+                .foregroundStyle(.secondary)
+            Text("No Matching Processes")
+                .font(.headline)
+            Text("Adjust the search or filter to show processes.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button("Clear Search & Filter") {
+                settings.searchText = ""
+                filterMode = .all
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
     }
 
     private var presetsView: some View {
@@ -774,14 +815,6 @@ struct TaskScopePopoverView: View {
             in: treeRoots,
             expandedPIDs: expandedTreePids
         )
-    }
-
-    private var renderedSelectionProcesses: [AppProcess] {
-        treeMode ? visibleTreeProcesses : filteredProcesses
-    }
-
-    private var renderedProcessIdentities: [ProcessIdentity] {
-        renderedSelectionProcesses.map(\.identity)
     }
 
     private var terminationConfirmationBinding: Binding<Bool> {
@@ -886,21 +919,7 @@ struct TaskScopePopoverView: View {
             isHighlightedMEM: process.memoryMB >= settings.memHighlightThresholdMB,
             showsExpandedMetrics: isExpandedWindow,
             stopAction: { confirmationState.requestTermination(process) },
-            toggleSelection: { processManager.toggleSelection(process.pid) },
-            detailAction: {
-                detailData = nil
-                detailProcess = process
-            },
-            forceStopAction: {
-                confirmationState.requestTermination(process, mode: .force)
-            },
-            copyCommandAction: {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(
-                    process.executablePath ?? process.command,
-                    forType: .string
-                )
-            }
+            toggleSelection: { processManager.toggleSelection(process.pid) }
         )
     }
 
@@ -1045,38 +1064,23 @@ struct TaskScopePopoverView: View {
         runtimeMinutes: Int,
         action: AutoStopRule.Action
     ) -> String? {
-        let trimmedName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return "Process name is required." }
-        let observedExecutablePath = quickAutoStopProcess?.executablePath
-
-        if let existing = autoStopRules.rules.first(where: {
-            $0.processName.caseInsensitiveCompare(trimmedName) == .orderedSame
-        }) {
-            guard autoStopRules.update(AutoStopRule(
-                id: existing.id,
-                processName: trimmedName,
-                executablePath: observedExecutablePath ?? existing.executablePath,
-                runtimeMinutes: runtimeMinutes,
-                action: action,
-                isEnabled: existing.isEnabled
-            )) else {
-                return autoStopRules.validationError ?? "The auto-stop rule could not be updated."
-            }
-            processManager.setMessage("Updated auto-stop rule for \(trimmedName).")
-        } else {
-            guard autoStopRules.add(
-                AutoStopRule(
-                    processName: trimmedName,
-                    executablePath: observedExecutablePath,
-                    runtimeMinutes: runtimeMinutes,
-                    action: action
-                )
-            ) else {
-                return autoStopRules.validationError ?? "The auto-stop rule could not be added."
-            }
-            processManager.setMessage("Added auto-stop rule for \(trimmedName).")
+        // The sheet was opened in Create or Update mode for the right-clicked
+        // process; the save must honour that mode, not re-resolve by the typed
+        // name, which could overwrite another process's rule.
+        let outcome = QuickAutoStopRuleSaver.save(
+            into: autoStopRules,
+            processName: processName,
+            observedExecutablePath: quickAutoStopProcess?.executablePath,
+            runtimeMinutes: runtimeMinutes,
+            action: action,
+            existingRule: quickAutoStopProcess.flatMap { QuickAutoStopRuleSaver.existingRule(for: $0, in: autoStopRules) }
+        )
+        if let error = outcome.error {
+            return error
         }
-
+        if let status = outcome.statusMessage {
+            processManager.setMessage(status)
+        }
         quickAutoStopProcess = nil
         return nil
     }

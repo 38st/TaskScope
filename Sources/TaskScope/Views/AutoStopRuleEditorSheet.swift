@@ -2,15 +2,20 @@ import SwiftUI
 
 struct AutoStopRuleEditorSheet: View {
     @State private var draft: AutoStopRule
+    /// The store's rejection for the last save attempt, rendered inside the
+    /// sheet where the user can see it.
+    let validationError: String?
     let onSave: (AutoStopRule) -> Void
     let onCancel: () -> Void
 
     init(
         rule: AutoStopRule,
+        validationError: String? = nil,
         onSave: @escaping (AutoStopRule) -> Void,
         onCancel: @escaping () -> Void
     ) {
         _draft = State(initialValue: rule)
+        self.validationError = validationError
         self.onSave = onSave
         self.onCancel = onCancel
     }
@@ -48,11 +53,20 @@ struct AutoStopRuleEditorSheet: View {
 
             Toggle("Enabled", isOn: $draft.isEnabled)
 
+            if let validationError {
+                Text(validationError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityLabel("Could not save rule: \(validationError)")
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
                 Button("Save") { onSave(draft) }
                     .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
                     .disabled(draft.processName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
