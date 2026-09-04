@@ -435,8 +435,11 @@ enum ShellCommandRunner {
                 fileDescriptor: outputDescriptor,
                 queue: ioQueue
             )
-            outputSource.setEventHandler { [outputCapture] in
+            outputSource.setEventHandler { [outputCapture, outputSource] in
                 Self.drain(descriptor: outputDescriptor, into: outputCapture)
+                if outputCapture.isAtEOF {
+                    outputSource.cancel()
+                }
             }
             outputSource.setCancelHandler {
                 try? outputHandle.close()
@@ -446,8 +449,11 @@ enum ShellCommandRunner {
                 fileDescriptor: errorDescriptor,
                 queue: ioQueue
             )
-            errorSource.setEventHandler { [errorCapture] in
+            errorSource.setEventHandler { [errorCapture, errorSource] in
                 Self.drain(descriptor: errorDescriptor, into: errorCapture)
+                if errorCapture.isAtEOF {
+                    errorSource.cancel()
+                }
             }
             errorSource.setCancelHandler {
                 try? errorHandle.close()
@@ -536,15 +542,51 @@ enum ShellCommandRunner {
         }
 
         private func drainAvailableData(from pipe: Pipe, into capture: PipeCapture) {
+            // Checked before `fileDescriptor` is touched, not just before the
+            // read: reaching EOF cancels the stream's read source, whose cancel
+            // handler closes this file handle, and `fileDescriptor` raises an
+            // NSFileHandleOperationException on a closed handle. There is
+            // nothing left to read anyway -- EOF means the capture already has
+            // everything the writer sent.
+            guard !capture.isAtEOF else { return }
             Self.drain(descriptor: pipe.fileHandleForReading.fileDescriptor, into: capture)
         }
 
+        /// Reads everything currently available and records whether the stream
+        /// reached EOF. The distinction matters: a pipe stays *permanently*
+        /// readable once its writer closes, so a read source whose handler just
+        /// returns at EOF is re-armed immediately and spins the I/O queue at
+        /// 100% CPU. The source owner cancels on `capture.isAtEOF`.
+        ///
+        /// Once EOF is recorded the descriptor is never read again. Its cancel
+        /// handler closes the file handle, and the number could by then name an
+        /// unrelated reopened file.
         private static func drain(descriptor: Int32, into capture: PipeCapture) {
+            guard !capture.isAtEOF else { return }
             var buffer = [UInt8](repeating: 0, count: 16_384)
             while true {
                 let count = Darwin.read(descriptor, &buffer, buffer.count)
-                guard count > 0 else { return }
-                capture.append(Data(buffer.prefix(count)))
+                if count > 0 {
+                    capture.append(Data(buffer.prefix(count)))
+                    continue
+                }
+                if count == 0 {
+                    capture.markEndOfFile()
+                    return
+                }
+                let readError = errno
+                if readError == EINTR {
+                    continue
+                }
+                // EAGAIN (EWOULDBLOCK on Darwin) only means nothing is ready on
+                // this nonblocking descriptor yet; the writer may still send
+                // more. Any other error is unrecoverable, so it ends the stream
+                // rather than leaving a source armed on a descriptor that can
+                // only fail again.
+                if readError != EAGAIN {
+                    capture.markEndOfFile()
+                }
+                return
             }
         }
 
@@ -580,6 +622,23 @@ enum ShellCommandRunner {
     private final class PipeCapture: @unchecked Sendable {
         private let lock = NSLock()
         private var data = Data()
+        private var reachedEndOfFile = false
+
+        /// True once the writer closed and everything it wrote has been read.
+        var isAtEOF: Bool {
+            lock.lock()
+            defer {
+                lock.unlock()
+            }
+
+            return reachedEndOfFile
+        }
+
+        func markEndOfFile() {
+            lock.lock()
+            reachedEndOfFile = true
+            lock.unlock()
+        }
 
         var string: String {
             lock.lock()

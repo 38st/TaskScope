@@ -337,6 +337,38 @@ final class ShellCommandRunnerTests: XCTestCase {
         return try processIdentifiers(from: marker)
     }
 
+    /// A pipe stays readable forever once its writer closes, so a read source
+    /// whose handler only returns at EOF is re-armed immediately and spins its
+    /// I/O queue at 100% CPU. Any command that finishes writing before it exits
+    /// -- here by closing its own descriptors -- burns a core for the whole of
+    /// its remaining lifetime, and starves the exit source sharing that queue.
+    func testCommandThatClosesOutputEarlyDoesNotSpinTheIOQueue() async {
+        let before = Self.processCPUSeconds()
+
+        let result = await ShellCommandRunner.run(
+            "/usr/bin/printf 'done'; exec 1>&- 2>&-; /bin/sleep 1",
+            timeout: 10
+        )
+
+        let consumed = Self.processCPUSeconds() - before
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "done")
+        XCTAssertLessThan(
+            consumed,
+            0.25,
+            "one second of command burned \(consumed)s of CPU; the read sources are spinning on EOF."
+        )
+    }
+
+    /// CPU consumed by this process only. The spin runs on TaskScope's own I/O
+    /// queue, so a spawned child's time (`RUSAGE_CHILDREN`) would not show it.
+    private static func processCPUSeconds() -> Double {
+        var usage = rusage()
+        guard getrusage(RUSAGE_SELF, &usage) == 0 else { return 0 }
+        return Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1_000_000
+            + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
+    }
+
     private func assertProcessDisappears(
         _ pid: Int32,
         file: StaticString = #filePath,

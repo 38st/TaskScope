@@ -52,6 +52,14 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Fixed
 
+- Every shell command now stops burning a CPU core once its output ends. A pipe
+  stays permanently readable after its writer closes, so the read sources kept
+  firing at EOF and spun their I/O queue at 100% CPU until completion, starving
+  the process-exit source that shares that queue. Each stream's source is now
+  cancelled when it reaches EOF, `read` retries on `EINTR`, and an unrecoverable
+  read error ends the stream instead of re-arming a source that can only fail
+  again. Since `ps` and `nettop` run on every poll tick, this was continuous
+  idle load.
 - Open no longer requests administrator approval for a GlobalProtect daemon that
   launchd already has loaded, and never restarts a loaded daemon: readiness is
   verified from launchd's pid and a fresh process inventory instead of an
