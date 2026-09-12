@@ -33,6 +33,10 @@ Acceptance criteria for remaining source-only:
 
 ### Supported compatibility matrix
 
+The GlobalProtect baseline now has a read-only self-check and an
+[evidence matrix](GLOBALPROTECT_COMPATIBILITY.md). Its fixture tests and live
+observation rows do not establish lifecycle or login/reboot compatibility.
+
 - Record automated builds and manual smoke results separately for the oldest and
   newest supported macOS.
 - Exercise every supported CPU architecture on hardware or an appropriate VM.

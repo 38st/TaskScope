@@ -163,6 +163,49 @@ shows a per-user instance separately as "PanGPS (user)" so it is not mistaken
 for the daemon. If policy or management software restores user agents, consult
 the organization managing the Mac.
 
+### Collect GlobalProtect compatibility evidence
+
+Choose **Compatibility Self-Check** under **Keep GlobalProtect Off** on the
+built-in preset, or in **Settings > Watched Apps > GlobalProtect**. The check
+runs when opened; **Refresh** collects a new observation. It does not toggle
+Keep Off, write preferences, signal processes, load/unload jobs, start the VPN,
+or request administrator approval. Normal TaskScope monitoring and any already
+enabled Keep Off enforcement continue independently.
+
+The preview includes the capture time, macOS version/build, TaskScope
+version/build and process architecture, installed GlobalProtect bundle
+version/build, and Keep Off intent. Bare SwiftPM/test executables have no
+TaskScope bundle version; record the source revision separately in that case.
+For each known `pangpa`, optional `pangps`, and protected system `pangpsd` job,
+it shows plist presence/label validation, the launchd disabled override, and
+loaded state. Missing files do not imply unloaded jobs or cleared overrides.
+**No override** means the plist default applies; it does not mean explicitly
+enabled. Read failures, timeouts, and unknown formats remain unknown.
+
+Process counts distinguish the current user, root, other users, and unverified
+identity/owner. A name-only match is unverified. The protected service process
+is verified only when a root `PanGPS` with a kernel executable path in a known
+product directory matches the system job's launchd PID. Loaded is different
+from running, and neither proves VPN connectivity or policy compatibility.
+Additional/relocated jobs are outside the fixed preset's detection scope.
+
+Review the preview, then choose **Copy Summary** or **Export…**. Both share
+exactly that text; export creates a UTF-8 `.txt` file at your chosen location.
+The summary omits usernames, numeric UIDs/PIDs, hostnames, executable/home
+paths, arguments, unrelated labels, raw command output, and organization/VPN
+configuration. It retains the public GlobalProtect job labels and versions
+needed to compare installations. Nothing is uploaded automatically. Delete
+saved files when no longer needed and replace clipboard contents after sharing.
+
+For a compatibility report, attach the redacted text with the failing action,
+expected/actual result, source revision or release, and installation/signing
+method. For an authorized managed test machine, collect separate before/after
+reports for Keep Off, TaskScope relaunch, login/reboot, and Open/restoration.
+Record which actions were actually tested and whether management restored an
+agent. Do not publish organization names or VPN addresses. Follow the evidence
+matrix and limits in [GLOBALPROTECT_COMPATIBILITY.md](GLOBALPROTECT_COMPATIBILITY.md);
+a read-only observation alone is not a successful lifecycle test.
+
 ## Export and upgrade precautions
 
 Export readable watched presets before a risky upgrade. The current development

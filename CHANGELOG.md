@@ -12,6 +12,12 @@ All notable changes to TaskScope are documented in this file. The project uses
   bounded session history of redacted lifecycle failures. Redaction tests and
   the support/privacy guides specify every exported field and deletion behavior.
 
+- Added a read-only GlobalProtect Compatibility Self-Check with known optional
+  agent installation/label checks, launchd disabled and loaded states,
+  ownership-aware process counts, protected system-service verification, and
+  macOS/TaskScope/GlobalProtect versions. Preview, clipboard, and text export
+  share one redacted summary. Focused tests and a compatibility evidence matrix
+  distinguish simulations and live observations from lifecycle validation.
 - Added versioned preset archives with legacy import compatibility, bounded
   file reads, and a field-by-field, non-mutating import preview.
 - Added stale process-inventory status with the last successful observation and

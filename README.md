@@ -20,6 +20,13 @@ anything. GlobalProtect paths and service behavior vary by product version and
 organization; this integration is not a replacement for an organization's
 supported VPN recovery process.
 
+The built-in preset's **Compatibility Self-Check** reads known launch-agent
+installation and launchd state, separates user processes from the protected
+system service, and includes macOS, TaskScope, and GlobalProtect versions.
+Preview, copy, or export its redacted summary without changing lifecycle state.
+See [support instructions](SUPPORT.md#collect-globalprotect-compatibility-evidence)
+and the [compatibility evidence matrix](GLOBALPROTECT_COMPATIBILITY.md).
+
 > [!IMPORTANT]
 > The 1.0.0 repository release provides source and local-development packaging.
 > It does not provide a Developer ID-signed or notarized public app download.

@@ -179,6 +179,11 @@ struct SettingsView: View {
                         Text("Protected: \(preset.protectedProcessNames.joined(separator: ", "))").font(.caption).foregroundStyle(.secondary)
                         Text("App path: \(preset.appPath)").font(.caption).foregroundStyle(.tertiary)
                         if preset.id == WatchedAppPreset.globalProtectID {
+                            GlobalProtectCompatibilityButton(
+                                keepOffRequested: settings.isReadOnlyAfterCorruption
+                                    ? nil : settings.keepGlobalProtectOff
+                            )
+                            .buttonStyle(.borderless)
                             Text("Built-in lifecycle: \(preset.systemLaunchDaemonJobs.count) protected system daemon\(preset.systemLaunchDaemonJobs.count == 1 ? "" : "s")")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

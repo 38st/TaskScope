@@ -71,6 +71,20 @@ local preset names, so screenshots of it are not redacted. See
 [SUPPORT.md](SUPPORT.md#preview-and-export-support-diagnostics) for the exact
 field inventory, status limitations, export behavior, and deletion steps.
 
+The GlobalProtect Compatibility Self-Check reads only the known product plists
+and version metadata, launchd status, macOS versions, and a fresh basic process
+inventory. It does not read VPN configuration or collect extended network/disk
+metrics. Its preview, clipboard copy, and text export contain the same selected
+fields: capture time, versions/process architecture, Keep Off intent, public
+job labels and state, process counts by owner category, and protected-service
+verification. Raw output, usernames, numeric UIDs/PIDs, hostnames, executable
+paths, arguments, unrelated jobs, and organization/VPN configuration are
+omitted. Unexpected metadata is replaced with an unavailable/redacted state.
+The report remains in memory until the sheet closes; copying uses the system
+clipboard, and exporting writes only to a user-selected destination. Nothing
+is uploaded. Delete saved summaries and replace clipboard contents to remove
+those copies; TaskScope does not manage their later retention or sharing.
+
 A preset export is created only after the user chooses a destination. It
 contains configured preset fields and can reveal organization-specific app
 paths, user launch-agent labels and paths, or process names. The immutable

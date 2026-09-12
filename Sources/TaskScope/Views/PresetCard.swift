@@ -54,6 +54,10 @@ struct PresetCard: View {
                 .accessibilityHint(
                     "Does not disable a protected system launch daemon."
                 )
+                GlobalProtectCompatibilityButton(
+                    keepOffRequested: isKeepOffControlEnabled ? isKeptOff : nil
+                )
+                .buttonStyle(.bordered)
             }
         }
         .padding(12)

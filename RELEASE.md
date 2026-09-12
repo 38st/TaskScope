@@ -92,6 +92,26 @@ is unavailable, test only safe simulations and document the missing external
 coverage. Likewise, do not claim macOS 14, Intel, or universal runtime support
 without the corresponding machine or VM evidence.
 
+### GlobalProtect compatibility evidence gate
+
+Use **Compatibility Self-Check** on the built-in preset and retain the redacted
+export with the tested source revision or artifact identifier. Follow the
+matrix and procedure in
+[GLOBALPROTECT_COMPATIBILITY.md](GLOBALPROTECT_COMPATIBILITY.md). The export
+records actual versions, known optional-agent layout, launchd override/loaded
+states, process ownership counts, and protected-service verification. It does
+not certify VPN health, policy behavior, or persistence across login/reboot.
+
+Keep fixture tests, live read-only observations, and authorized lifecycle smoke
+tests in separate evidence rows. For each claimed GlobalProtect/macOS/CPU
+combination, require before/after reports and manual results for Keep Off,
+TaskScope relaunch, login/reboot persistence, and Open/restoration. Record any
+unknown probe, unexpected label, unverified protected service, or managed-policy
+interference as a coverage gap. Do not promote a row to supported on the basis
+of a passing parser test or a single snapshot. If no managed lifecycle test was
+performed, release notes must explicitly say **GlobalProtect lifecycle
+compatibility unverified** and retain the existing source/development scope.
+
 ## Local source/development release verification
 
 Stage and verify the current-architecture bundle:

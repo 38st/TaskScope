@@ -1,0 +1,37 @@
+TaskScope GlobalProtect compatibility self-check (format 1)
+Captured: 2026-09-12T19:59:00Z
+Read-only observation; not a certification of compatibility or VPN connectivity.
+macOS: 26.6.2 (build 25G83)
+TaskScope: Unavailable (build Unavailable)
+TaskScope process architecture: arm64
+GlobalProtect: 6.3.3-1121 (build Unavailable)
+Keep GlobalProtect Off intent: Unknown (not read or settings unreadable)
+
+Known launch jobs (current GUI user / system):
+pangpa (user agent): com.paloaltonetworks.gp.pangpa
+  Plist: Installed; label verified; plist default enabled
+  launchd override: Disabled (explicit override)
+  launchd service: Not loaded
+pangps (optional user agent): com.paloaltonetworks.gp.pangps
+  Plist: Installed; label verified; plist default enabled
+  launchd override: Disabled (explicit override)
+  launchd service: Not loaded
+pangpsd (protected system service): com.paloaltonetworks.gp.pangpsd
+  Plist: Installed; label verified; plist default enabled
+  launchd override: Enabled (explicit override)
+  launchd service: Not loaded
+
+Process observations:
+GlobalProtect: current user 0, root 0, other user 0, unverified identity/owner 0
+PanGPA: current user 0, root 0, other user 0, unverified identity/owner 0
+PanGPS: current user 0, root 0, other user 0, unverified identity/owner 0
+Counts require a kernel executable path in the known product directories and a known owner. Name-only candidates are unverified.
+Current-user PanGPS is the user instance, not the protected daemon.
+
+Protected system-service process:
+Not verified. See launchd service state above; loaded does not mean running or healthy.
+
+Scope: known built-in paths and labels only; relocated or additional jobs may be missed. Probes are not an atomic snapshot. Policy may change state later.
+No launch jobs, processes, preferences, VPN connections, or permissions were changed by this check. No administrator approval was requested.
+Privacy: usernames, UIDs, PIDs, hostnames, executable/home paths, arguments, unrelated jobs, raw tool output, and organization/VPN configuration are omitted. Nothing is uploaded.
+Manual lifecycle, login/reboot persistence, and managed-policy checks must be recorded separately.
