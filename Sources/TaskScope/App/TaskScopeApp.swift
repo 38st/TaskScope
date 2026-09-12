@@ -350,7 +350,8 @@ struct TaskScopeApp: App {
             SettingsView(
                 settings: settings,
                 watchedApps: watchedApps,
-                autoStopRules: autoStopRules
+                autoStopRules: autoStopRules,
+                processManager: processManager
             )
         }
 

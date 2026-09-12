@@ -182,7 +182,8 @@ final class SwiftUIHarnessTests: XCTestCase {
         let view = SettingsView(
             settings: fixture.stores.settings,
             watchedApps: fixture.stores.watchedApps,
-            autoStopRules: fixture.stores.autoStopRules
+            autoStopRules: fixture.stores.autoStopRules,
+            processManager: fixture.manager
         )
 
         try view.inspect().find(button: "Delete").tap()
@@ -696,7 +697,8 @@ final class SwiftUIHarnessTests: XCTestCase {
         let view = SettingsView(
             settings: fixture.stores.settings,
             watchedApps: fixture.stores.watchedApps,
-            autoStopRules: fixture.stores.autoStopRules
+            autoStopRules: fixture.stores.autoStopRules,
+            processManager: fixture.manager
         )
         let inspected = try view.inspect()
         let tabView = try inspected.find(ViewType.TabView.self)
@@ -716,6 +718,9 @@ final class SwiftUIHarnessTests: XCTestCase {
             "Watched Apps",
             "Auto-Stop",
             "Hotkey",
+            "Support",
+            "Preview Diagnostics",
+            "Clear Failure History",
             "Auto-refresh process list",
             "Notify on watched process changes",
             "GlobalProtect",
@@ -755,7 +760,8 @@ final class SwiftUIHarnessTests: XCTestCase {
                 key: "rules",
                 eventsKey: "events",
                 inventory: UIInventory(processes: [])
-            )
+            ),
+            processManager: ProcessManager(processInventory: UIInventory(processes: []))
         )
         let inspected = try view.inspect()
 

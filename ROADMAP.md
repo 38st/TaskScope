@@ -78,6 +78,15 @@ Remaining work:
 
 ### Privacy-safe support diagnostics
 
+Implemented lifecycle baseline: Settings > Support previews the complete JSON
+before exact copy/save, with versions, permissions, anonymous selected-preset
+identity, user launch-agent status, and the selected preset's recent redacted
+failure summaries. The session history retains at most 20 failures, can be
+cleared, and is never persisted or uploaded. Redaction/retention/export tests and
+the exact field inventory in SUPPORT.md cover this boundary. Toolchain and
+signature diagnostics remain outside this report to avoid private build and
+organization identifiers.
+
 - Let the user preview every file and field before export.
 - Exclude or redact commands, usernames, organization identifiers, preset
   paths, and managed-service data by default.

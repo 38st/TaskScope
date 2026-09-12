@@ -46,8 +46,30 @@ same user's access may be able to read or modify them.
 
 The process-history chart keeps at most 60 samples in memory and does not
 persist them. Pending prompts and current process inventory are also transient.
+Support diagnostics keep at most 20 recent failed lifecycle actions in memory
+across all presets. Entries contain only a local preset UUID for filtering,
+time, action/reason categories, a background-enforcement flag, and failed/missing
+job counts. Raw job labels and error text are discarded at capture. This
+history disappears on app exit or when cleared in Settings > Support.
 
 ## Exports, notifications, and logs
+
+**Settings > Support > Preview Diagnostics** creates a local, redacted JSON
+preview. Only an explicit **Copy JSON** or **Save JSON…** exports its contents;
+both use the exact frozen preview. The report contains TaskScope version/build,
+numeric macOS version and binary architecture, UTC collection/event timestamps,
+permission/login-item status, anonymous selected-preset identity, file-found
+booleans, configured user launch-agent status, and recent lifecycle failure
+categories/counts for that preset. The canonical built-in preset is identified
+as GlobalProtect; custom display names and saved preset UUIDs are excluded.
+
+Diagnostics exclude usernames, commands, organization identifiers, process
+lists/names/PIDs, raw preset paths, job labels, raw errors, logs, signing/team
+identifiers, preferences, and corruption backups. They do not request
+permissions, run lifecycle actions, or upload anything. The picker itself shows
+local preset names, so screenshots of it are not redacted. See
+[SUPPORT.md](SUPPORT.md#preview-and-export-support-diagnostics) for the exact
+field inventory, status limitations, export behavior, and deletion steps.
 
 A preset export is created only after the user chooses a destination. It
 contains configured preset fields and can reveal organization-specific app
@@ -96,6 +118,10 @@ deleting TaskScope's preferences.
 - Corruption backups remain until the preferences domain is removed or they are
   deliberately deleted during recovery.
 - Preset export files remain wherever the user saved them.
+- Support diagnostics history retains the latest 20 failures in memory until
+  cleared in Settings > Support or the app exits. Saved diagnostics files and
+  clipboard copies remain under the user's control; clearing history does not
+  erase them or alter an already-open preview.
 - The Keep GlobalProtect Off launchd override lives in launchd's per-user
   database, not in TaskScope's preferences. It remains until the control is
   turned off, Open is chosen, or it is cleared manually with

@@ -191,6 +191,20 @@ Required invariants:
 
 ### Preferences, exports, and recovery
 
+Support diagnostics are a separate export boundary from preset backups. The
+report model accepts fixed status/action/reason categories, booleans, counts,
+timestamps, and strictly numeric version metadata. It never serializes raw
+presets, command results, inventory, logs, or error strings. Custom preset UUIDs
+are used only for in-memory filtering and replaced with a report-local reference;
+only a verified built-in identity receives the fixed GlobalProtect kind.
+Lifecycle failure retention is bounded to 20 session entries and raw job data is
+reduced to counts at capture. Collection performs read-only permission/file/job
+checks without administrator prompts or lifecycle mutation. The entire JSON is
+previewed before explicit copy/save, using the same immutable byte buffer.
+Tests exercise adversarial names, commands, paths, errors, metadata, identity
+spoofing, retention, and equality of preview/file contents. This does not redact
+ordinary lifecycle sheets, preset exports, picker screenshots, or local logs.
+
 Standard preferences store settings, preset/rule data, saved process matching
 fields, event history, and corruption backups. They are local but not encrypted
 or protected from the current user.

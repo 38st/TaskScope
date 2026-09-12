@@ -1,0 +1,70 @@
+import ApplicationServices
+import Foundation
+
+struct SupportDiagnosticsCollector {
+    var runtime: ProcessLifecycleRuntime = .live
+
+    /// Inspects only the selected preset's configured user jobs. No inventory,
+    /// privilege prompt, lifecycle mutation or log collection is performed.
+    func inspectPreset(
+        _ preset: WatchedAppPreset, keepOffRequested: Bool
+    ) async -> SupportDiagnosticsReport.Preset {
+        var agents: [SupportDiagnosticsReport.LaunchAgent] = []
+        for (index, job) in preset.lifecycleUserLaunchAgentJobs.enumerated() {
+            let state: SupportDiagnosticsReport.LaunchAgent.State
+            if Task.isCancelled {
+                state = .unknown
+            } else {
+                let result = await runtime.runCommand(
+                    "/bin/launchctl print \(ShellCommandRunner.shellQuoted("gui/\(runtime.userID)/\(job.label)"))",
+                    5
+                )
+                // Cancellation/timeouts cannot establish that a job is absent,
+                // even if partial output contains a service-not-found message.
+                if Task.isCancelled || result.terminatedBySignal != nil || result.exitCode < 0 {
+                    state = .unknown
+                } else {
+                    switch ProcessLifecycleController.launchJobInspection(from: result) {
+                    case .loaded: state = .loaded
+                    case .notLoaded: state = .notLoaded
+                    case .failed: state = .unknown
+                    }
+                }
+            }
+            agents.append(.init(
+                number: index + 1, required: job.isRequired,
+                plistFound: runtime.fileExists(job.plistPath), state: state
+            ))
+        }
+        return .init(
+            kind: preset.hasSupportedGlobalProtectIdentity ? .builtInGlobalProtect : .custom,
+            appBundleFound: runtime.fileExists(preset.appPath),
+            keepOffRequested: keepOffRequested, userLaunchAgents: agents
+        )
+    }
+
+    @MainActor
+    static func permissions(notificationsEnabled: Bool) async -> SupportDiagnosticsReport.Permissions {
+        let service = NotificationService.shared
+        await service.refreshAuthorizationStatus()
+        let notifications: SupportDiagnosticsReport.Permissions.Notification
+        switch service.authorizationState {
+        case .unknown: notifications = .unknown
+        case .notDetermined: notifications = .notRequested
+        case .denied: notifications = .denied
+        case .authorized: notifications = .allowed
+        case .provisional: notifications = .provisional
+        }
+        let login: SupportDiagnosticsReport.Permissions.LoginItem
+        switch SystemLoginItemService().state {
+        case .notRegistered: login = .off
+        case .enabled: login = .on
+        case .requiresApproval: login = .requiresApproval
+        case .notFound: login = .unavailable
+        }
+        return .init(
+            notifications: notifications, notificationsEnabledInApp: notificationsEnabled,
+            accessibilityGranted: AXIsProcessTrusted(), launchAtLogin: login
+        )
+    }
+}

@@ -250,6 +250,14 @@ auto-stop events. Process chart history is limited to 60 in-memory samples.
 Process or preset names can also appear in local notifications and macOS Unified
 Log error messages. Preset exports contain the configured lifecycle fields.
 
+For support, use **Settings > Support > Preview Diagnostics** to review a
+redacted report before copying or saving its exact JSON. It includes versions,
+permissions, anonymous selected-preset identity, user launch-agent status, and
+recent lifecycle failure categories. It excludes commands, usernames,
+organization identifiers, process lists, raw errors, and preset paths. The
+latest 20 lifecycle failures stay in memory until cleared or the app exits;
+nothing is uploaded. See [the field-by-field export guide](SUPPORT.md#preview-and-export-support-diagnostics).
+
 Read [PRIVACY.md](PRIVACY.md) for storage, retention, logging, deletion, and
 permission details. Report suspected vulnerabilities according to
 [SECURITY.md](SECURITY.md); never place sensitive process or organization data

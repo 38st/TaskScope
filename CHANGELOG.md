@@ -7,6 +7,11 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Added
 
+- Added previewable support diagnostics in Settings with exact JSON copy/save,
+  anonymous preset references, permission and user launch-agent status, and a
+  bounded session history of redacted lifecycle failures. Redaction tests and
+  the support/privacy guides specify every exported field and deletion behavior.
+
 - Added versioned preset archives with legacy import compatibility, bounded
   file reads, and a field-by-field, non-mutating import preview.
 - Added stale process-inventory status with the last successful observation and

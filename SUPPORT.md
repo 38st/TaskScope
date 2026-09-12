@@ -23,6 +23,71 @@ Use a GitHub bug report for a reproducible non-security defect. Do not use a
 public issue for a vulnerability or private conduct report; follow
 [SECURITY.md](SECURITY.md) and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
+## Preview and export support diagnostics
+
+Open **Settings > Support**, choose the preset involved in the failure, and
+choose **Preview Diagnostics**. Choose **No preset** for app and permission
+information only. The preset picker shows local display names so you can choose
+the right entry; those names are not part of the report. A screenshot of the
+picker or an ordinary lifecycle report can still expose private information.
+
+The preview shows the complete, read-only JSON snapshot. **Copy JSON** copies
+that exact text to the clipboard. **Save JSON…** asks for a destination and writes
+one UTF-8 file, named `TaskScope-diagnostics.json` by default, containing exactly
+the preview bytes. There are no extra files, logs, hidden fields, or attachments.
+Canceling the save dialog writes nothing. **Done** closes the preview without
+exporting. Close and generate another preview to refresh its contents; changes
+to permissions, presets, or lifecycle history never silently change an open
+preview. TaskScope does not send the report anywhere. Share it yourself only
+after reviewing it.
+
+Schema version 1 includes exactly these fields:
+
+| Field | What you can review and export |
+| --- | --- |
+| `schemaVersion`, `app` | Report format version and the fixed name `TaskScope`. |
+| `version`, `build` | Numeric app version/build from the app bundle, or `unavailable` for absent or nonnumeric metadata. No bundle identifier, signing identity, team identifier, or toolchain paths. |
+| `macOS`, `architecture` | Numeric macOS major/minor/patch version and the architecture of the running TaskScope binary (`arm64`, `x86_64`, or `unknown`), which can differ from hardware under translation. |
+| `capturedAt` | UTC timestamp when collection completed. Status reads occur over the collection interval, not as an atomic system snapshot. |
+| `permissions` | Notification authorization (`unknown`, `notRequested`, `denied`, `allowed`, or `provisional`), the app notification toggle, Accessibility granted boolean, and Launch at Login (`off`, `on`, `requiresApproval`, or `unavailable`). Administrator authorization explicitly says `not queried; requested per privileged action`; it is not a persistent grant or a claim that approval was given. |
+| `selectedPreset` | Omitted when no preset is chosen. Otherwise: the report-local reference `selected-preset`, kind (`builtInGlobalProtect` or `custom`), app-bundle found boolean, Keep Off requested boolean, and the user launch-agent entries below. Custom preset names and saved UUIDs are omitted; the reference has meaning only within this report. |
+| `selectedPreset.userLaunchAgents` | Each configured user agent's one-based number in preset order, required boolean, plist-found boolean, and current state (`loaded`, `notLoaded`, or `unknown`). An empty array means no user agents are configured. No labels or paths are included. |
+| `recentLifecycleFailures` | Newest first, only for the selected preset: UTC event time, action (`open`, `quitApp`, `quitHelpers`, `close`, `keepOff`, or `allowToRun`), background-enforcement boolean, fixed reason category, failed-job count, and missing-job count. An empty array means no retained failures for that selection. |
+
+Failure reasons are `appBundleMissing`, `inventoryUnavailable`,
+`systemServiceFailed`, `userLaunchAgentFailed`, `launchFailed`, `signalRejected`,
+`verificationUnavailable`, `stillRunning`, or the fallback `incomplete`.
+Counts refer to job results in that action attempt; an early failure can have
+zero job failures. They do not contain job labels or raw error details, and
+cannot identify a particular organization's managed-service policy.
+
+Collection reads notification, Accessibility, and login-item state without
+requesting permission. It checks configured file existence and reads the
+selected preset's user launch-agent load status without changing any jobs,
+opening apps, signaling processes, requesting administrator access, or reading
+the process inventory or logs. Failed, canceled, and timed-out status reads
+remain `unknown`. A false file-found value can also mean the path is inaccessible.
+Loaded does not guarantee a process is healthy. Keep Off reports TaskScope's
+saved intent, not verification of launchd's persistent disable override. No
+protected system-daemon inspection is performed by diagnostics.
+
+The session history retains the latest **20 failed lifecycle actions across all
+presets**, then filters to the selected preset for export. It includes actions
+executed through the UI and automation, and marks background Keep Off
+enforcement. Successful actions, skipped enforcement, individual process stops,
+auto-stop event history, and failures from earlier app sessions are excluded.
+New entries evict the oldest. **Clear Failure History** or quitting TaskScope
+clears this in-memory history. Clearing history does not change an existing
+preview, clipboard content, or saved file. Delete saved reports yourself and
+replace clipboard contents if you want to remove those copies.
+
+There is no unredacted diagnostics mode. Usernames, commands, organization
+identifiers, process names/PIDs/full process lists, preset names/UUIDs, app/plist
+paths, launch-job labels, raw errors, Unified Logs, preference payloads, and
+corruption backups are excluded. Ordinary **Watched Apps > Export** is a separate
+preset backup feature and includes configured names and paths; it is not a
+privacy-safe support report.
+
 ## Common recovery steps
 
 ### App will not start or Shortcuts cannot discover actions

@@ -7,6 +7,7 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var watchedApps: WatchedAppsStore
     @ObservedObject var autoStopRules: AutoStopRulesStore
+    let processManager: ProcessManager
     @ObservedObject private var notificationService = NotificationService.shared
 
     @StateObject private var presetForm = WatchedPresetFormState()
@@ -32,6 +33,8 @@ struct SettingsView: View {
             watchedAppsTab.tabItem { Label("Watched Apps", systemImage: "shield.lefthalf.filled") }
             autoStopTab.tabItem { Label("Auto-Stop", systemImage: "timer") }
             hotkeyTab.tabItem { Label("Hotkey", systemImage: "keyboard") }
+            SupportDiagnosticsView(settings: settings, watchedApps: watchedApps, processManager: processManager)
+                .tabItem { Label("Support", systemImage: "doc.text.magnifyingglass") }
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in

@@ -33,6 +33,11 @@ final class ProcessManager: ObservableObject {
     @Published private(set) var lastSuccessfulInventoryAt: Date?
     @Published private(set) var lifecycleReport: LifecycleReport?
     @Published private(set) var batchActionReport: ProcessBatchActionReport?
+    private(set) var lifecycleDiagnostics = LifecycleDiagnosticsHistory()
+
+    func clearLifecycleDiagnostics() {
+        lifecycleDiagnostics.clear()
+    }
 
     func dismissLifecycleReport() {
         lifecycleReport = nil
@@ -325,25 +330,40 @@ final class ProcessManager: ObservableObject {
             message: "Open did not complete."
         )
         await runAction(kind: .mutation) {
+            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
+            var diagnosticJobs: [LifecycleJobResult] = []
+            defer {
+                if commandResult.status == .failed {
+                    lifecycleDiagnostics.record(
+                        presetID: preset.id, action: .open,
+                        backgroundEnforcement: false, reason: diagnosticReason,
+                        jobs: diagnosticJobs, at: now()
+                    )
+                }
+            }
             guard lifecycle.appBundleExists(at: preset.appPath) else {
                 message = "Could not open \(preset.displayName): app bundle is missing at \(preset.appPath)."
+                diagnosticReason = .appBundleMissing
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
 
             guard case .success(let beforeOpen) = await currentSnapshot(for: preset) else {
                 message = "Could not verify whether \(preset.displayName) is already running; nothing was opened."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
 
             let daemonResult = await lifecycle.ensureSystemLaunchDaemons(for: preset)
+            diagnosticJobs += daemonResult.jobs
             guard daemonResult.succeeded else {
                 lifecycleReport = LifecycleReport(
                     title: "\(preset.displayName) Service Results",
                     jobs: daemonResult.jobs
                 )
                 message = "Could not open \(preset.displayName): \(daemonResult.failureSummary ?? "required service failed")."
+                diagnosticReason = .systemServiceFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -352,12 +372,14 @@ final class ProcessManager: ObservableObject {
             let enableResult: LifecycleBatchResult
             if wasKeptOff {
                 enableResult = await lifecycle.enableUserLaunchAgents(for: preset)
+                diagnosticJobs += enableResult.jobs
                 guard enableResult.succeeded else {
                     lifecycleReport = LifecycleReport(
                         title: "\(preset.displayName) Service Results",
                         jobs: daemonResult.jobs + enableResult.jobs
                     )
                     message = "Could not allow \(preset.displayName) to run: \(enableResult.failureSummary ?? "user launch agent could not be enabled")."
+                    diagnosticReason = .userLaunchAgentFailed
                     commandResult = TaskScopeCommandResult(status: .failed, message: message)
                     return
                 }
@@ -367,12 +389,14 @@ final class ProcessManager: ObservableObject {
             }
 
             let agentResult = await lifecycle.bootstrapUserLaunchAgents(for: preset)
+            diagnosticJobs += agentResult.jobs
             guard agentResult.succeeded else {
                 lifecycleReport = LifecycleReport(
                     title: "\(preset.displayName) Service Results",
                     jobs: daemonResult.jobs + enableResult.jobs + agentResult.jobs
                 )
                 message = "Could not open \(preset.displayName): \(agentResult.failureSummary ?? "required user job failed")."
+                diagnosticReason = .userLaunchAgentFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -394,6 +418,7 @@ final class ProcessManager: ObservableObject {
             } else {
                 guard case .success(let afterServices) = await currentSnapshot(for: preset) else {
                     message = "Could not verify whether \(preset.displayName) started with its services; nothing was opened."
+                    diagnosticReason = .inventoryUnavailable
                     commandResult = TaskScopeCommandResult(status: .failed, message: message)
                     return
                 }
@@ -408,6 +433,7 @@ final class ProcessManager: ObservableObject {
             }
             guard didOpen else {
                 message = "Could not open \(preset.displayName)."
+                diagnosticReason = .launchFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -425,6 +451,7 @@ final class ProcessManager: ObservableObject {
 
             if !refreshed {
                 message = "\(preset.displayName) was launched, but TaskScope could not verify its final state."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if verified || snapshot(for: preset).isMainRunning {
                 let restored = daemonResult.didChangeState
@@ -436,6 +463,7 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else {
                 message = "\(preset.displayName) was launched, but its main process could not be verified."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             }
         }
@@ -465,6 +493,17 @@ final class ProcessManager: ObservableObject {
             message: "Keep Off did not complete."
         )
         await runAction(kind: .mutation) {
+            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
+            var diagnosticJobs: [LifecycleJobResult] = []
+            defer {
+                if commandResult.status == .failed {
+                    lifecycleDiagnostics.record(
+                        presetID: preset.id, action: .keepOff,
+                        backgroundEnforcement: !recordIntent, reason: diagnosticReason,
+                        jobs: diagnosticJobs, at: now()
+                    )
+                }
+            }
             if !recordIntent, isPresetKeptOffProvider?(preset) != true {
                 commandResult = TaskScopeCommandResult(
                     status: .rejected,
@@ -481,6 +520,7 @@ final class ProcessManager: ObservableObject {
                 inventoryWasAvailable = false
             }
             let disableResult = await lifecycle.disableUserLaunchAgents(for: preset)
+            diagnosticJobs += disableResult.jobs
             // Background enforcement runs on every launch and poll tick; only a
             // failure is worth interrupting the user with a report sheet.
             if recordIntent || !disableResult.succeeded {
@@ -496,6 +536,7 @@ final class ProcessManager: ObservableObject {
                 message = disableResult.succeeded
                     ? "Keep Off disabled relaunch jobs, but the process list was unavailable; running processes were not signalled and enforcement will retry."
                     : "Keep Off remains enabled, but TaskScope could neither verify processes nor disable relaunch jobs."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -513,18 +554,23 @@ final class ProcessManager: ObservableObject {
 
             if !disableResult.succeeded {
                 message = "Keep Off is enabled, but launch-agent suppression failed: \(disableResult.failureSummary ?? "unknown failure")."
+                diagnosticReason = .userLaunchAgentFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.inventoryUnavailable) {
                 message = "Keep Off disabled relaunch jobs, but the process list became unavailable before app processes could be stopped."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.signalRejected) {
                 message = "Keep Off disabled relaunch jobs, but a running process rejected the stop signal."
+                diagnosticReason = .signalRejected
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.escalationUnavailable) || !refreshed {
                 message = "Keep Off is enabled, but TaskScope could not verify the final process state."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if nowSnapshot.isMainRunning || nowSnapshot.hasHelpers {
                 message = "Keep Off is enabled, but user-facing GlobalProtect processes may still run."
+                diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else {
                 if !nowSnapshot.protectedRunning.isEmpty {
@@ -551,7 +597,19 @@ final class ProcessManager: ObservableObject {
             message: "Could not allow \(preset.displayName) to run."
         )
         await runAction(kind: .mutation) {
+            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
+            var diagnosticJobs: [LifecycleJobResult] = []
+            defer {
+                if commandResult.status == .failed {
+                    lifecycleDiagnostics.record(
+                        presetID: preset.id, action: .allowToRun,
+                        backgroundEnforcement: false, reason: diagnosticReason,
+                        jobs: diagnosticJobs, at: now()
+                    )
+                }
+            }
             let enableResult = await lifecycle.enableUserLaunchAgents(for: preset)
+            diagnosticJobs += enableResult.jobs
             lifecycleReport = enableResult.jobs.isEmpty
                 ? nil
                 : LifecycleReport(
@@ -560,6 +618,7 @@ final class ProcessManager: ObservableObject {
                 )
             guard enableResult.succeeded else {
                 message = "Keep Off remains enabled: \(enableResult.failureSummary ?? "user launch agent could not be enabled")."
+                diagnosticReason = .userLaunchAgentFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -598,12 +657,25 @@ final class ProcessManager: ObservableObject {
             message: "Quit did not complete."
         )
         await runAction(kind: .mutation) {
+            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
+            var diagnosticJobs: [LifecycleJobResult] = []
+            defer {
+                if commandResult.status == .failed {
+                    lifecycleDiagnostics.record(
+                        presetID: preset.id, action: .quitApp,
+                        backgroundEnforcement: false, reason: diagnosticReason,
+                        jobs: diagnosticJobs, at: now()
+                    )
+                }
+            }
             guard case .success(let before) = await currentSnapshot(for: preset) else {
                 message = "Could not read the process list; \(preset.displayName) was not stopped."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
+            diagnosticJobs += agentResult.jobs
             lifecycleReport = agentResult.jobs.isEmpty
                 ? nil
                 : LifecycleReport(
@@ -616,18 +688,23 @@ final class ProcessManager: ObservableObject {
 
             if termination == .inventoryUnavailable {
                 message = "Could not read the process list; \(preset.displayName) was not stopped."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if termination == .signalRejected {
                 message = "A stop signal was rejected; \(preset.displayName) was not fully stopped."
+                diagnosticReason = .signalRejected
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if termination == .escalationUnavailable {
                 message = "Could not verify \(preset.displayName) before Force Stop; it may still run."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Quit \(preset.displayName), but relaunch jobs failed: \(agentResult.failureSummary ?? "unknown failure")."
+                diagnosticReason = .userLaunchAgentFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !refreshed {
                 message = "Stop was requested, but TaskScope could not verify the final \(preset.displayName) state."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
                 message = "No \(preset.displayName) app found."
@@ -639,6 +716,7 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else {
                 message = "\(preset.displayName) may still run."
+                diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             }
         }
@@ -652,8 +730,20 @@ final class ProcessManager: ObservableObject {
             message: "Helper stop did not complete."
         )
         await runAction(kind: .mutation) {
+            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
+            var diagnosticJobs: [LifecycleJobResult] = []
+            defer {
+                if commandResult.status == .failed {
+                    lifecycleDiagnostics.record(
+                        presetID: preset.id, action: .quitHelpers,
+                        backgroundEnforcement: false, reason: diagnosticReason,
+                        jobs: diagnosticJobs, at: now()
+                    )
+                }
+            }
             guard case .success(let before) = await currentSnapshot(for: preset) else {
                 message = "Could not read the process list; user helpers were not stopped."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -663,6 +753,7 @@ final class ProcessManager: ObservableObject {
                 for: preset,
                 preservingPIDs: before.mainProcessPIDs
             )
+            diagnosticJobs += agentResult.jobs
             lifecycleReport = agentResult.jobs.isEmpty
                 ? nil
                 : LifecycleReport(
@@ -680,18 +771,23 @@ final class ProcessManager: ObservableObject {
             let nowHelpers = snapshot(for: preset).helpersRunning
             if terminationOutcomes.contains(.inventoryUnavailable) {
                 message = "Could not read the process list; user helpers were not stopped."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.signalRejected) {
                 message = "A stop signal was rejected; user helpers were not fully stopped."
+                diagnosticReason = .signalRejected
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.escalationUnavailable) {
                 message = "Could not verify user helpers before Force Stop; they may still run."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Helper stop was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+                diagnosticReason = .userLaunchAgentFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !refreshed {
                 message = "Helper stop was requested, but TaskScope could not verify the final state."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
                 message = "No user helpers found."
@@ -703,6 +799,7 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else {
                 message = "User helpers may still run."
+                diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             }
         }
@@ -716,12 +813,25 @@ final class ProcessManager: ObservableObject {
             message: "Close did not complete."
         )
         await runAction(kind: .mutation) {
+            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
+            var diagnosticJobs: [LifecycleJobResult] = []
+            defer {
+                if commandResult.status == .failed {
+                    lifecycleDiagnostics.record(
+                        presetID: preset.id, action: .close,
+                        backgroundEnforcement: false, reason: diagnosticReason,
+                        jobs: diagnosticJobs, at: now()
+                    )
+                }
+            }
             guard case .success(let before) = await currentSnapshot(for: preset) else {
                 message = "Could not read the process list; \(preset.displayName) was not stopped."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
             let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
+            diagnosticJobs += agentResult.jobs
             lifecycleReport = agentResult.jobs.isEmpty
                 ? nil
                 : LifecycleReport(
@@ -741,27 +851,34 @@ final class ProcessManager: ObservableObject {
             let nowSnap = snapshot(for: preset)
             if terminationOutcomes.contains(.inventoryUnavailable) {
                 message = "Could not read the process list; \(preset.displayName) was not stopped."
+                diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.signalRejected) {
                 message = "A stop signal was rejected; \(preset.displayName) was not fully stopped."
+                diagnosticReason = .signalRejected
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.escalationUnavailable) {
                 message = "Could not verify \(preset.displayName) before Force Stop; it may still run."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !agentResult.succeeded {
                 message = "Close was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
+                diagnosticReason = .userLaunchAgentFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !refreshed {
                 message = "Close was requested, but TaskScope could not verify the final \(preset.displayName) state."
+                diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !before.hasAny && !nowSnap.hasAny {
                 message = "No watched processes found."
                 commandResult = TaskScopeCommandResult(status: .completed, message: message)
             } else if nowSnap.isMainRunning {
                 message = "\(preset.displayName) may still run."
+                diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if !nowSnap.helpersRunning.isEmpty {
                 message = "User helpers may still run."
+                diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else {
                 message = agentResult.didChangeState
