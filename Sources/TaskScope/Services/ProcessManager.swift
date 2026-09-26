@@ -64,10 +64,12 @@ final class ProcessManager: ObservableObject {
     private let snapshotBuilder: WatchedSnapshotBuilder
     private let operationGate = ProcessOperationGate()
     private var operationGateCancellable: AnyCancellable?
-    private var fullProcessInventory: [AppProcess] = [] {
-        didSet {
+    private var listProjection = ProcessListProjection()
+    private var fullProcessInventory: [AppProcess] {
+        get { listProjection.inventory }
+        set {
+            listProjection = ProcessListProjection(inventory: newValue)
             inventoryGeneration &+= 1
-            invalidateDerivedLists()
         }
     }
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
@@ -75,16 +77,6 @@ final class ProcessManager: ObservableObject {
     private let now: () -> Date
     private var successfulInventoryReads: UInt64 = 0
     private var lastInventoryFailure: String?
-
-    private struct DisplayListKey: Hashable {
-        var query: ProcessListQuery
-        var limit: Int
-        var sortKey: ProcessSortKey
-    }
-
-    private var sortedInventoryCache: (sortKey: ProcessSortKey, processes: [AppProcess])?
-    private var displayListCache: [DisplayListKey: [AppProcess]] = [:]
-    private var treeRootsCache: [DisplayListKey: [ProcessTreeNode]] = [:]
 
     init(
         processInventory: any ProcessInventoryProviding = SystemProcessInventory(),
@@ -184,65 +176,27 @@ final class ProcessManager: ObservableObject {
     func displayProcesses(
         matching predicate: (AppProcess) -> Bool = { _ in true }
     ) -> [AppProcess] {
-        let limit = processListLimitProvider?() ?? 80
-        return Array(
-            sortedInventory()
-                .lazy
-                .filter(predicate)
-                .prefix(max(0, limit))
+        listProjection.displayProcesses(
+            sortKey: sortKey,
+            limit: processListLimitProvider?() ?? 80,
+            matching: predicate
         )
     }
 
-    /// The sorted, filtered, limited list for `query`, memoized per inventory
-    /// generation, sort key, and limit. SwiftUI evaluates the list several
-    /// times per body pass; only the first evaluation does any work.
+    /// The sorted, filtered, limited list for `query`, memoized per inventory,
+    /// sort key, and limit by the projection.
     func displayProcesses(for query: ProcessListQuery) -> [AppProcess] {
-        let key = DisplayListKey(
-            query: query,
-            limit: processListLimitProvider?() ?? 80,
-            sortKey: sortKey
+        listProjection.displayProcesses(
+            for: query, sortKey: sortKey, limit: processListLimitProvider?() ?? 80
         )
-        if let cached = displayListCache[key] {
-            return cached
-        }
-        let list = displayProcesses(matching: query.matches)
-        displayListCache[key] = list
-        return list
     }
 
-    /// Tree roots giving every `query` match its ancestor context, memoized
-    /// like `displayProcesses(for:)`.
+    /// Tree roots give every displayed match its ancestor context from the full
+    /// inventory, including ancestors outside the display limit.
     func treeRoots(for query: ProcessListQuery) -> [ProcessTreeNode] {
-        let key = DisplayListKey(
-            query: query,
-            limit: processListLimitProvider?() ?? 80,
-            sortKey: sortKey
+        listProjection.treeRoots(
+            for: query, sortKey: sortKey, limit: processListLimitProvider?() ?? 80
         )
-        if let cached = treeRootsCache[key] {
-            return cached
-        }
-        let roots = ProcessTreeBuilder.build(
-            from: fullProcessInventory,
-            ppidMap: ppidMap,
-            matchingPIDs: Set(displayProcesses(for: query).map(\.pid))
-        )
-        treeRootsCache[key] = roots
-        return roots
-    }
-
-    private func invalidateDerivedLists() {
-        sortedInventoryCache = nil
-        displayListCache.removeAll(keepingCapacity: true)
-        treeRootsCache.removeAll(keepingCapacity: true)
-    }
-
-    private func sortedInventory() -> [AppProcess] {
-        if let sortedInventoryCache, sortedInventoryCache.sortKey == sortKey {
-            return sortedInventoryCache.processes
-        }
-        let processes = sorted(fullProcessInventory)
-        sortedInventoryCache = (sortKey, processes)
-        return processes
     }
 
     func selectedProcessesSnapshot() -> [AppProcess] {
@@ -534,13 +488,7 @@ final class ProcessManager: ObservableObject {
                 return
             }
 
-            var terminationOutcomes: [ProcessTerminationOutcome] = []
-            for (index, name) in preset.killableNames.enumerated() {
-                let outcome = index == 0
-                    ? await lifecycle.terminateMainProcess(for: preset)
-                    : await lifecycle.terminateHelperProcess(named: name, for: preset)
-                terminationOutcomes.append(outcome)
-            }
+            let terminationOutcomes = await terminateProcesses(for: preset, scope: .all)
             await lifecycle.settleAfterProcessChange()
             let refreshed = await refreshAfterMutation()
             let nowSnapshot = snapshot(for: preset)
@@ -645,242 +593,75 @@ final class ProcessManager: ObservableObject {
 
     @discardableResult
     func quitMainApp(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
-        var commandResult = TaskScopeCommandResult(
-            status: .failed,
-            message: "Quit did not complete."
-        )
-        await runAction(kind: .mutation) {
-            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
-            var diagnosticJobs: [LifecycleJobResult] = []
-            defer {
-                if commandResult.status == .failed {
-                    lifecycleDiagnostics.record(
-                        presetID: preset.id, action: .quitApp,
-                        backgroundEnforcement: false, reason: diagnosticReason,
-                        jobs: diagnosticJobs, at: now()
-                    )
-                }
-            }
-            guard case .success(let before) = await currentSnapshot(for: preset) else {
-                message = "Could not read the process list; \(preset.displayName) was not stopped."
-                diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-                return
-            }
-            let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
-            diagnosticJobs += agentResult.jobs
-            lifecycleReport = agentResult.jobs.isEmpty
-                ? nil
-                : LifecycleReport(
-                    title: "\(preset.displayName) Relaunch Jobs",
-                    jobs: agentResult.jobs
-                )
-            let termination = await lifecycle.terminateMainProcess(for: preset)
-            await lifecycle.settleAfterProcessChange()
-            let refreshed = await refreshAfterMutation()
-
-            if termination == .inventoryUnavailable {
-                message = "Could not read the process list; \(preset.displayName) was not stopped."
-                diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if termination == .signalRejected {
-                message = "A stop signal was rejected; \(preset.displayName) was not fully stopped."
-                diagnosticReason = .signalRejected
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if termination == .escalationUnavailable {
-                message = "Could not verify \(preset.displayName) before Force Stop; it may still run."
-                diagnosticReason = .verificationUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !agentResult.succeeded {
-                message = "Quit \(preset.displayName), but relaunch jobs failed: \(agentResult.failureSummary ?? "unknown failure")."
-                diagnosticReason = .userLaunchAgentFailed
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !refreshed {
-                message = "Stop was requested, but TaskScope could not verify the final \(preset.displayName) state."
-                diagnosticReason = .verificationUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !before.isMainRunning && !snapshot(for: preset).isMainRunning {
-                message = "No \(preset.displayName) app found."
-                commandResult = TaskScopeCommandResult(status: .completed, message: message)
-            } else if !snapshot(for: preset).isMainRunning {
-                message = agentResult.didChangeState
-                    ? "\(preset.displayName) quit and launch agents unloaded."
-                    : "\(preset.displayName) quit."
-                commandResult = TaskScopeCommandResult(status: .completed, message: message)
-            } else {
-                message = "\(preset.displayName) may still run."
-                diagnosticReason = .stillRunning
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            }
-        }
-        return commandResult
+        await stop(preset, scope: .app)
     }
 
     @discardableResult
     func quitHelpers(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
-        var commandResult = TaskScopeCommandResult(
-            status: .failed,
-            message: "Helper stop did not complete."
-        )
-        await runAction(kind: .mutation) {
-            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
-            var diagnosticJobs: [LifecycleJobResult] = []
-            defer {
-                if commandResult.status == .failed {
-                    lifecycleDiagnostics.record(
-                        presetID: preset.id, action: .quitHelpers,
-                        backgroundEnforcement: false, reason: diagnosticReason,
-                        jobs: diagnosticJobs, at: now()
-                    )
-                }
-            }
-            guard case .success(let before) = await currentSnapshot(for: preset) else {
-                message = "Could not read the process list; user helpers were not stopped."
-                diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-                return
-            }
-            // A launch agent whose Program is the main binary must stay loaded,
-            // otherwise Quit Helpers would quit the app itself.
-            let agentResult = await lifecycle.unloadUserLaunchAgents(
-                for: preset,
-                preservingPIDs: before.mainProcessPIDs
-            )
-            diagnosticJobs += agentResult.jobs
-            lifecycleReport = agentResult.jobs.isEmpty
-                ? nil
-                : LifecycleReport(
-                    title: "\(preset.displayName) Relaunch Jobs",
-                    jobs: agentResult.jobs
-                )
-            var terminationOutcomes: [ProcessTerminationOutcome] = []
-            for name in preset.helperProcessNames {
-                let outcome = await lifecycle.terminateHelperProcess(named: name, for: preset)
-                terminationOutcomes.append(outcome)
-            }
-            await lifecycle.settleAfterProcessChange()
-            let refreshed = await refreshAfterMutation()
-
-            let nowHelpers = snapshot(for: preset).helpersRunning
-            if terminationOutcomes.contains(.inventoryUnavailable) {
-                message = "Could not read the process list; user helpers were not stopped."
-                diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if terminationOutcomes.contains(.signalRejected) {
-                message = "A stop signal was rejected; user helpers were not fully stopped."
-                diagnosticReason = .signalRejected
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if terminationOutcomes.contains(.escalationUnavailable) {
-                message = "Could not verify user helpers before Force Stop; they may still run."
-                diagnosticReason = .verificationUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !agentResult.succeeded {
-                message = "Helper stop was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
-                diagnosticReason = .userLaunchAgentFailed
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !refreshed {
-                message = "Helper stop was requested, but TaskScope could not verify the final state."
-                diagnosticReason = .verificationUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if before.helpersRunning.isEmpty && nowHelpers.isEmpty {
-                message = "No user helpers found."
-                commandResult = TaskScopeCommandResult(status: .completed, message: message)
-            } else if nowHelpers.isEmpty {
-                message = agentResult.didChangeState
-                    ? "User helpers quit and launch agents unloaded."
-                    : "User helpers quit."
-                commandResult = TaskScopeCommandResult(status: .completed, message: message)
-            } else {
-                message = "User helpers may still run."
-                diagnosticReason = .stillRunning
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            }
-        }
-        return commandResult
+        await stop(preset, scope: .helpers)
     }
 
     @discardableResult
     func quitAllKillable(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
-        var commandResult = TaskScopeCommandResult(
-            status: .failed,
-            message: "Close did not complete."
-        )
+        await stop(preset, scope: .all)
+    }
+
+    private func stop(_ preset: WatchedAppPreset, scope: PresetStopScope) async -> TaskScopeCommandResult {
+        var result = PresetStopResult.failed(scope.incompleteMessage, reason: .incomplete)
         await runAction(kind: .mutation) {
-            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
             var diagnosticJobs: [LifecycleJobResult] = []
             defer {
-                if commandResult.status == .failed {
+                message = result.message
+                if let reason = result.failureReason {
                     lifecycleDiagnostics.record(
-                        presetID: preset.id, action: .close,
-                        backgroundEnforcement: false, reason: diagnosticReason,
+                        presetID: preset.id, action: scope.diagnosticAction,
+                        backgroundEnforcement: false, reason: reason,
                         jobs: diagnosticJobs, at: now()
                     )
                 }
             }
             guard case .success(let before) = await currentSnapshot(for: preset) else {
-                message = "Could not read the process list; \(preset.displayName) was not stopped."
-                diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                result = scope.inventoryFailure(for: preset)
                 return
             }
-            let agentResult = await lifecycle.unloadUserLaunchAgents(for: preset)
-            diagnosticJobs += agentResult.jobs
-            lifecycleReport = agentResult.jobs.isEmpty
-                ? nil
-                : LifecycleReport(
-                    title: "\(preset.displayName) Relaunch Jobs",
-                    jobs: agentResult.jobs
+            let agents: LifecycleBatchResult
+            if scope == .helpers {
+                // Unloading an agent running the main binary would also quit the app.
+                agents = await lifecycle.unloadUserLaunchAgents(
+                    for: preset, preservingPIDs: before.mainProcessPIDs
                 )
-            var terminationOutcomes: [ProcessTerminationOutcome] = []
-            for (index, name) in preset.killableNames.enumerated() {
-                let outcome = index == 0
-                    ? await lifecycle.terminateMainProcess(for: preset)
-                    : await lifecycle.terminateHelperProcess(named: name, for: preset)
-                terminationOutcomes.append(outcome)
+            } else {
+                agents = await lifecycle.unloadUserLaunchAgents(for: preset)
             }
+            diagnosticJobs = agents.jobs
+            lifecycleReport = agents.jobs.isEmpty
+                ? nil
+                : LifecycleReport(title: "\(preset.displayName) Relaunch Jobs", jobs: agents.jobs)
+            let terminations = await terminateProcesses(for: preset, scope: scope)
             await lifecycle.settleAfterProcessChange()
             let refreshed = await refreshAfterMutation()
+            result = scope.result(
+                before: before, after: snapshot(for: preset),
+                terminations: terminations, agents: agents, refreshed: refreshed
+            )
+        }
+        return result.commandResult
+    }
 
-            let nowSnap = snapshot(for: preset)
-            if terminationOutcomes.contains(.inventoryUnavailable) {
-                message = "Could not read the process list; \(preset.displayName) was not stopped."
-                diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if terminationOutcomes.contains(.signalRejected) {
-                message = "A stop signal was rejected; \(preset.displayName) was not fully stopped."
-                diagnosticReason = .signalRejected
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if terminationOutcomes.contains(.escalationUnavailable) {
-                message = "Could not verify \(preset.displayName) before Force Stop; it may still run."
-                diagnosticReason = .verificationUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !agentResult.succeeded {
-                message = "Close was incomplete: \(agentResult.failureSummary ?? "relaunch job failure")."
-                diagnosticReason = .userLaunchAgentFailed
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !refreshed {
-                message = "Close was requested, but TaskScope could not verify the final \(preset.displayName) state."
-                diagnosticReason = .verificationUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !before.hasAny && !nowSnap.hasAny {
-                message = "No watched processes found."
-                commandResult = TaskScopeCommandResult(status: .completed, message: message)
-            } else if nowSnap.isMainRunning {
-                message = "\(preset.displayName) may still run."
-                diagnosticReason = .stillRunning
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if !nowSnap.helpersRunning.isEmpty {
-                message = "User helpers may still run."
-                diagnosticReason = .stillRunning
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else {
-                message = agentResult.didChangeState
-                    ? "\(preset.displayName) closed and launch agents unloaded."
-                    : "\(preset.displayName) and helpers quit."
-                commandResult = TaskScopeCommandResult(status: .completed, message: message)
+    private func terminateProcesses(
+        for preset: WatchedAppPreset,
+        scope: PresetStopScope
+    ) async -> [ProcessTerminationOutcome] {
+        var outcomes: [ProcessTerminationOutcome] = []
+        if scope != .helpers {
+            outcomes.append(await lifecycle.terminateMainProcess(for: preset))
+        }
+        if scope != .app {
+            for name in preset.helperProcessNames {
+                outcomes.append(await lifecycle.terminateHelperProcess(named: name, for: preset))
             }
         }
-        return commandResult
+        return outcomes
     }
 
     @discardableResult
@@ -969,9 +750,7 @@ final class ProcessManager: ObservableObject {
     }
 
     var ppidMap: [Int32: Int32] {
-        var map: [Int32: Int32] = [:]
-        for p in fullProcessInventory { map[p.pid] = p.parentPID }
-        return map
+        listProjection.ppidMap
     }
 
     @discardableResult
@@ -1089,28 +868,6 @@ final class ProcessManager: ObservableObject {
     private func publishDisplayProcesses() {
         processes = displayProcesses()
         reconcileSelection(with: fullProcessInventory)
-    }
-
-    private func sorted(_ inventory: [AppProcess]) -> [AppProcess] {
-        inventory.sorted { lhs, rhs in
-            switch sortKey {
-            case .cpu:
-                if lhs.cpu == rhs.cpu {
-                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-                }
-                return lhs.cpu > rhs.cpu
-            case .memory:
-                if lhs.memoryMB == rhs.memoryMB {
-                    return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-                }
-                return lhs.memoryMB > rhs.memoryMB
-            case .name:
-                let comparison = lhs.name.localizedStandardCompare(rhs.name)
-                return comparison == .orderedSame ? lhs.pid < rhs.pid : comparison == .orderedAscending
-            case .pid:
-                return lhs.pid < rhs.pid
-            }
-        }
     }
 
     private func resortProcesses() {

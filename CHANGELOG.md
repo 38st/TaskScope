@@ -37,6 +37,11 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
+- Separated process-list projection and caching from process operations, and
+  consolidated preset stop coordination while preserving target selection,
+  failure precedence, diagnostics, and user-facing messages.
+- Normalize launch-job values without reconstructing them, preserving optional
+  job flags and other metadata as the model evolves.
 - Public-binary preflight and release now require versioned GlobalProtect
   lifecycle evidence tied to the tested candidate, passing results for every
   lifecycle/protected-service/VPN/policy check, and retained reports. Missing,

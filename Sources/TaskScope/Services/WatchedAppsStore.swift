@@ -395,26 +395,18 @@ final class WatchedAppsStore: ObservableObject {
             return (nil, "App path must be an absolute .app bundle path.")
         }
         value.appPath = URL(fileURLWithPath: value.appPath).standardizedFileURL.path
-        value.userLaunchAgentJobs = value.userLaunchAgentJobs.map {
-            let path = $0.plistPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            return UserLaunchAgentJob(
-                label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
-                plistPath: path.hasPrefix("/")
-                    ? URL(fileURLWithPath: path).standardizedFileURL.path
-                    : path,
-                isRequired: $0.isRequired
-            )
+        value.userLaunchAgentJobs = value.userLaunchAgentJobs.map { original in
+            var job = original
+            job.label = job.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            job.plistPath = normalizedPlistPath(job.plistPath)
+            return job
         }
-        value.systemLaunchDaemonJobs = value.systemLaunchDaemonJobs.map {
-            let path = $0.plistPath.trimmingCharacters(in: .whitespacesAndNewlines)
-            return SystemLaunchDaemonJob(
-                label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
-                plistPath: path.hasPrefix("/")
-                    ? URL(fileURLWithPath: path).standardizedFileURL.path
-                    : path,
-                processName: $0.processName.trimmingCharacters(in: .whitespacesAndNewlines),
-                servicePort: $0.servicePort
-            )
+        value.systemLaunchDaemonJobs = value.systemLaunchDaemonJobs.map { original in
+            var job = original
+            job.label = job.label.trimmingCharacters(in: .whitespacesAndNewlines)
+            job.plistPath = normalizedPlistPath(job.plistPath)
+            job.processName = job.processName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return job
         }
         let killable = Set(([value.mainProcessName] + value.helperProcessNames).map { $0.lowercased() })
         let protected = Set(value.protectedProcessNames.map { $0.lowercased() })
@@ -435,6 +427,11 @@ final class WatchedAppsStore: ObservableObject {
             return (value, nil)
         }
         return (nil, jobsError)
+    }
+
+    nonisolated private static func normalizedPlistPath(_ value: String) -> String {
+        let path = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.hasPrefix("/") ? URL(fileURLWithPath: path).standardizedFileURL.path : path
     }
 
     nonisolated private static func jobsValidationError(_ preset: WatchedAppPreset) -> String? {

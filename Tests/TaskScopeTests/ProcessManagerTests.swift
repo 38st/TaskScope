@@ -734,6 +734,148 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(manager.message.contains("approval cancelled"))
     }
 
+    func testPresetStopsPreserveTargetOrderAndOnlyHelperStopPreservesMainAgents() async {
+        var preset = lifecyclePreset()
+        preset.helperProcessNames.append("SecondHelper")
+        let main = process(pid: 42, name: "Example")
+        let protected = process(pid: 44, uid: 0, name: "ExampleDaemon")
+        let expectedCalls = [
+            ["agents.unload", "terminate:Example", "settle"],
+            ["agents.unload", "terminate.helper:ExampleHelper", "terminate.helper:SecondHelper", "settle"],
+            ["agents.unload", "terminate:Example", "terminate.helper:ExampleHelper", "terminate.helper:SecondHelper", "settle"]
+        ]
+        for (index, stop) in stopActions.enumerated() {
+            let lifecycle = FakeLifecycleService()
+            let manager = makeManager(
+                inventory: FakeProcessInventory(results: [.success([main, protected]), .success([protected])]),
+                lifecycle: lifecycle
+            )
+            manager.watchedAppsProvider = { [preset] }
+
+            let result = await stop.run(manager, preset)
+
+            XCTAssertTrue(result.succeeded, result.message)
+            XCTAssertEqual(manager.message, result.message)
+            XCTAssertEqual(lifecycle.calls, expectedCalls[index])
+            XCTAssertEqual(lifecycle.preservedPIDs, stop.action == .quitHelpers ? [[42]] : [])
+            XCTAssertTrue(manager.lifecycleDiagnostics.failures(for: preset.id).isEmpty)
+        }
+    }
+
+    func testPresetStopFailurePrecedenceAndDiagnostics() async {
+        let cases: [(ProcessTerminationOutcome, LifecycleDiagnosticFailure.Reason, String)] = [
+            (.inventoryUnavailable, .inventoryUnavailable, "Could not read the process list"),
+            (.signalRejected, .signalRejected, "A stop signal was rejected"),
+            (.escalationUnavailable, .verificationUnavailable, "before Force Stop"),
+            (.signalled, .userLaunchAgentFailed, "example.agent: rejected")
+        ]
+        for stop in stopActions {
+            for (termination, reason, messagePart) in cases {
+                let preset = lifecyclePreset()
+                let lifecycle = FakeLifecycleService()
+                lifecycle.terminationOutcome = termination
+                lifecycle.agentUnloadResult = LifecycleBatchResult(jobs: [
+                    LifecycleJobResult(label: "example.agent", state: .failed, detail: "rejected")
+                ])
+                let manager = makeManager(
+                    inventory: FakeProcessInventory(results: [
+                        .success([]), .failure(.commandFailed("final read unavailable"))
+                    ]),
+                    lifecycle: lifecycle
+                )
+                manager.watchedAppsProvider = { [preset] }
+
+                let result = await stop.run(manager, preset)
+
+                XCTAssertEqual(result.status, .failed)
+                XCTAssertTrue(result.message.contains(messagePart), result.message)
+                XCTAssertEqual(manager.message, result.message)
+                let failure = manager.lifecycleDiagnostics.failures(for: preset.id).first
+                XCTAssertEqual(failure?.action, stop.action)
+                XCTAssertEqual(failure?.reason, reason)
+                XCTAssertEqual(failure?.failedJobCount, 1)
+                XCTAssertEqual(manager.lifecycleReport?.jobs, lifecycle.agentUnloadResult.jobs)
+            }
+        }
+    }
+
+    func testPresetStopsReportScopeSpecificFinalStates() async {
+        let preset = lifecyclePreset()
+        let main = process(pid: 42, name: "Example")
+        var helper = process(pid: 43, name: "ExampleHelper")
+        helper.command = "/Applications/Example.app/Contents/MacOS/ExampleHelper"
+        helper.executablePath = helper.command
+        let protected = process(pid: 44, uid: 0, name: "ExampleDaemon")
+        let cases: [(before: [AppProcess], after: [AppProcess], changed: Bool, messages: [String])] = [
+            ([], [], false, ["No Example app found.", "No user helpers found.", "No watched processes found."]),
+            ([main, helper], [], false, ["Example quit.", "User helpers quit.", "Example and helpers quit."]),
+            ([main, helper], [], true, ["Example quit and launch agents unloaded.", "User helpers quit and launch agents unloaded.", "Example closed and launch agents unloaded."]),
+            ([protected], [protected], false, ["No Example app found.", "No user helpers found.", "Example and helpers quit."]),
+            ([main, helper], [main, helper], false, ["Example may still run.", "User helpers may still run.", "Example may still run."]),
+            ([main, helper], [helper], false, ["Example quit.", "User helpers may still run.", "User helpers may still run."])
+        ]
+        for scenario in cases {
+            for (index, stop) in stopActions.enumerated() {
+                let lifecycle = FakeLifecycleService()
+                if scenario.changed {
+                    lifecycle.agentUnloadResult = LifecycleBatchResult(jobs: [
+                        LifecycleJobResult(label: "example.agent", state: .changed, detail: "unloaded")
+                    ])
+                }
+                let manager = makeManager(
+                    inventory: FakeProcessInventory(results: [.success(scenario.before), .success(scenario.after)]),
+                    lifecycle: lifecycle
+                )
+                manager.watchedAppsProvider = { [preset] }
+
+                let result = await stop.run(manager, preset)
+
+                XCTAssertEqual(result.message, scenario.messages[index])
+                let stillRunning = scenario.messages[index].contains("may still run")
+                XCTAssertEqual(result.status, stillRunning ? .failed : .completed)
+                XCTAssertEqual(
+                    manager.lifecycleDiagnostics.failures(for: preset.id).first?.reason,
+                    stillRunning ? .stillRunning : nil
+                )
+            }
+        }
+    }
+
+    func testPresetStopsFailClosedAtInitialAndFinalInventoryReads() async {
+        let preset = lifecyclePreset()
+        for stop in stopActions {
+            for failInitialRead in [true, false] {
+                let lifecycle = FakeLifecycleService()
+                let failure: Result<[AppProcess], ProcessInventoryError> = .failure(.commandFailed("unavailable"))
+                let manager = makeManager(
+                    inventory: FakeProcessInventory(results: failInitialRead ? [failure] : [.success([]), failure]),
+                    lifecycle: lifecycle
+                )
+
+                let result = await stop.run(manager, preset)
+
+                XCTAssertEqual(result.status, .failed)
+                XCTAssertEqual(lifecycle.calls.isEmpty, failInitialRead)
+                XCTAssertTrue(result.message.contains(failInitialRead ? "Could not read" : "could not verify"))
+                XCTAssertEqual(
+                    manager.lifecycleDiagnostics.failures(for: preset.id).first?.reason,
+                    failInitialRead ? .inventoryUnavailable : .verificationUnavailable
+                )
+            }
+        }
+    }
+
+    private var stopActions: [(
+        action: LifecycleDiagnosticFailure.Action,
+        run: @MainActor (ProcessManager, WatchedAppPreset) async -> TaskScopeCommandResult
+    )] {
+        [
+            (.quitApp, { await $0.quitMainApp($1) }),
+            (.quitHelpers, { await $0.quitHelpers($1) }),
+            (.close, { await $0.quitAllKillable($1) })
+        ]
+    }
+
     func testManagedQuitUnloadsConfiguredAgentsEvenWhenHelpersAreAbsent() async {
         let lifecycle = FakeLifecycleService()
         let manager = makeManager(

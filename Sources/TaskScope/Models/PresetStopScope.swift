@@ -1,0 +1,138 @@
+/// The three explicit stop commands share execution order and failure priority,
+/// while retaining their own targets and user-facing results.
+enum PresetStopScope {
+    case app, helpers, all
+
+    var diagnosticAction: LifecycleDiagnosticFailure.Action {
+        switch self {
+        case .app: .quitApp
+        case .helpers: .quitHelpers
+        case .all: .close
+        }
+    }
+
+    var incompleteMessage: String {
+        switch self {
+        case .app: "Quit did not complete."
+        case .helpers: "Helper stop did not complete."
+        case .all: "Close did not complete."
+        }
+    }
+
+    func inventoryFailure(for preset: WatchedAppPreset) -> PresetStopResult {
+        .failed(
+            self == .helpers
+                ? "Could not read the process list; user helpers were not stopped."
+                : "Could not read the process list; \(preset.displayName) was not stopped.",
+            reason: .inventoryUnavailable
+        )
+    }
+
+    func result(
+        before: WatchedAppSnapshot,
+        after: WatchedAppSnapshot,
+        terminations: [ProcessTerminationOutcome],
+        agents: LifecycleBatchResult,
+        refreshed: Bool
+    ) -> PresetStopResult {
+        let name = before.preset.displayName
+        // Signal/identity failures take precedence over job and final-read
+        // failures, even if a later observation happens to show no targets.
+        if terminations.contains(.inventoryUnavailable) {
+            return inventoryFailure(for: before.preset)
+        }
+        if terminations.contains(.signalRejected) {
+            return .failed(
+                self == .helpers
+                    ? "A stop signal was rejected; user helpers were not fully stopped."
+                    : "A stop signal was rejected; \(name) was not fully stopped.",
+                reason: .signalRejected
+            )
+        }
+        if terminations.contains(.escalationUnavailable) {
+            return .failed(
+                self == .helpers
+                    ? "Could not verify user helpers before Force Stop; they may still run."
+                    : "Could not verify \(name) before Force Stop; it may still run.",
+                reason: .verificationUnavailable
+            )
+        }
+        if !agents.succeeded {
+            let message: String
+            switch self {
+            case .app:
+                message = "Quit \(name), but relaunch jobs failed: \(agents.failureSummary ?? "unknown failure")."
+            case .helpers:
+                message = "Helper stop was incomplete: \(agents.failureSummary ?? "relaunch job failure")."
+            case .all:
+                message = "Close was incomplete: \(agents.failureSummary ?? "relaunch job failure")."
+            }
+            return .failed(message, reason: .userLaunchAgentFailed)
+        }
+        if !refreshed {
+            let message: String
+            switch self {
+            case .app:
+                message = "Stop was requested, but TaskScope could not verify the final \(name) state."
+            case .helpers:
+                message = "Helper stop was requested, but TaskScope could not verify the final state."
+            case .all:
+                message = "Close was requested, but TaskScope could not verify the final \(name) state."
+            }
+            return .failed(message, reason: .verificationUnavailable)
+        }
+
+        switch self {
+        case .app:
+            if !before.isMainRunning && !after.isMainRunning {
+                return .completed("No \(name) app found.")
+            }
+            if after.isMainRunning {
+                return .failed("\(name) may still run.", reason: .stillRunning)
+            }
+            return .completed(agents.didChangeState
+                ? "\(name) quit and launch agents unloaded."
+                : "\(name) quit.")
+        case .helpers:
+            if before.helpersRunning.isEmpty && after.helpersRunning.isEmpty {
+                return .completed("No user helpers found.")
+            }
+            if !after.helpersRunning.isEmpty {
+                return .failed("User helpers may still run.", reason: .stillRunning)
+            }
+            return .completed(agents.didChangeState
+                ? "User helpers quit and launch agents unloaded."
+                : "User helpers quit.")
+        case .all:
+            if !before.hasAny && !after.hasAny {
+                return .completed("No watched processes found.")
+            }
+            if after.isMainRunning {
+                return .failed("\(name) may still run.", reason: .stillRunning)
+            }
+            if !after.helpersRunning.isEmpty {
+                return .failed("User helpers may still run.", reason: .stillRunning)
+            }
+            return .completed(agents.didChangeState
+                ? "\(name) closed and launch agents unloaded."
+                : "\(name) and helpers quit.")
+        }
+    }
+}
+
+struct PresetStopResult {
+    let message: String
+    let failureReason: LifecycleDiagnosticFailure.Reason?
+
+    var commandResult: TaskScopeCommandResult {
+        TaskScopeCommandResult(status: failureReason == nil ? .completed : .failed, message: message)
+    }
+
+    static func completed(_ message: String) -> Self {
+        Self(message: message, failureReason: nil)
+    }
+
+    static func failed(_ message: String, reason: LifecycleDiagnosticFailure.Reason) -> Self {
+        Self(message: message, failureReason: reason)
+    }
+}
