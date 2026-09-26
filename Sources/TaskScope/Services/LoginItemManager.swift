@@ -1,7 +1,7 @@
 import Foundation
 import ServiceManagement
 
-enum LoginItemState: Equatable {
+enum LoginItemState: Equatable, Sendable {
     case notRegistered
     case enabled
     case requiresApproval

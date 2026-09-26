@@ -201,6 +201,18 @@ Required invariants:
 
 ### Preferences, exports, and recovery
 
+Settings > Health has a separate read-only probe surface with no lifecycle,
+permission-request, registration, or preference writer. It checks local signing
+integrity with network access disabled, bounded regular-file metadata, and
+running/on-disk identity without reporting signature integrity as notarization,
+distribution trust, or Shortcuts execution. Unknown access remains unverified;
+inaccessible files do not become missing files. Optional paths and corrupt-store
+fallbacks retain their distinct meaning. Expired observations and canceled
+collections cannot authorize recovery. Recovery only navigates to verified local
+destinations, rechecks the target on click, and never silently resets TCC,
+registers login items, reinstalls/re-signs an app, or executes a Shortcut.
+Findings stay in memory and do not extend the support export schema.
+
 Support diagnostics are a separate export boundary from preset backups. The
 report model accepts fixed status/action/reason categories, booleans, counts,
 timestamps, and strictly numeric version metadata. It never serializes raw

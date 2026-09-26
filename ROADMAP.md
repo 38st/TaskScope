@@ -74,11 +74,26 @@ Remaining work:
 
 ### Permission and installation health
 
-- Provide one diagnostics view for notification, Accessibility, login-item,
-  signing/App Intents, preset path, and bundle identity status.
-- Give every failed state a verified, reversible recovery action.
-- Distinguish denied, unavailable, stale, and unverified results.
-- Exercise recovery after permission revocation and app replacement.
+Implemented: **Settings > Health** aggregates notification, Accessibility,
+login-item, local signature/App Intents metadata, preset-path, and bundle-identity
+checks. Denied, unavailable, stale, and unverified evidence remain distinct;
+not-requested, off, and approval-required states are explicit. Results expire,
+refresh after activation or configuration changes, and reject late collection
+results. Recovery is limited to refresh and verified reversible navigation,
+with targets rechecked on click. No automatic reset, re-sign, reinstall, login
+registration, or lifecycle mutation is offered. Findings remain local and do
+not expand the Support JSON export.
+
+Focused tests exercise simulated permission revocation and app replacement,
+unbundled execution, missing/malformed/optional paths, metadata limitations,
+stale observations, cancellation, and failed/disappearing recovery destinations.
+Signing integrity and metadata presence never claim actual Shortcuts readiness.
+
+Remaining compatibility evidence: manually exercise permission revocation and
+restoration, signed-app replacement, login/reboot, and Shortcuts discovery and
+execution on the supported macOS/signing matrix. Record these independently of
+the automated fixtures; do not infer a supported combination from a passing
+local health check.
 
 ### Privacy-safe support diagnostics
 

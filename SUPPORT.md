@@ -88,6 +88,69 @@ corruption backups are excluded. Ordinary **Watched Apps > Export** is a separat
 preset backup feature and includes configured names and paths; it is not a
 privacy-safe support report.
 
+## Permission and installation health
+
+Open **Settings > Health** for one local view of notifications, Accessibility,
+Launch at Login, code signing, App Intents/Shortcuts, every saved preset's app
+and launch-plist paths, and the running app's bundle identity. **Refresh Health**
+repeats the read-only checks. The view also refreshes on opening and when
+TaskScope becomes active, including after a visit to System Settings. Changes
+to presets or the app notification preference trigger another collection.
+
+Results show when collection began. They become **Stale** after one minute,
+when TaskScope becomes inactive, or while a newer collection is pending.
+Observations occur over the collection interval, not atomically. A late or
+canceled collection cannot overwrite a newer result. Refresh remains available
+for every failed or unverified result; it never requests permission.
+
+| State | Meaning and next step |
+| --- | --- |
+| Verified | The described local check passed. Read its scope: notification authorization does not guarantee delivery, a login registration does not prove login execution, and signature integrity does not establish notarization or Gatekeeper acceptance. |
+| Off / Not requested / Requires approval | Respectively, login registration is off, notification authorization has not been requested, or macOS requires login-item approval. These are distinct from denial. |
+| Denied | macOS explicitly denies notification authorization. Review Notifications in System Settings. |
+| Unavailable | A required service, readable file, metadata artifact, or supported signing mode is unavailable. An unreadable path is not reported as missing. A bare SwiftPM executable cannot provide bundled notification/login-item checks. |
+| Stale | The observation expired, a configured required path is missing, or the on-disk app no longer matches the running instance. Refresh; review the relevant preset or installation before a manual relaunch. |
+| Unverified | Evidence is incomplete or cannot establish readiness. Accessibility's false trust value cannot distinguish denial from never-requested access; the view says access is not granted without inventing that distinction. Login-item `notFound` alone does not prove a stale registration. |
+
+Recovery buttons only navigate: **Open System Settings** opens a verified local
+System Settings app (follow the pane directions in the row), **Reveal App
+Location** asks Finder to show the verified existing bundle location, and
+**Review Watched Apps** selects that Settings tab. Unavailable destinations are
+omitted. Targets and result freshness are rechecked on click; opening failures
+are reported and never treated as a repair. Finder has no completion callback,
+so TaskScope reports a navigation request rather than confirmed presentation.
+Closing the destination reverses this navigation. Refresh if a target changes.
+
+The health view never resets TCC, registers/unregisters login items, toggles a
+permission, edits presets, deletes/moves apps, re-signs or reinstalls software,
+loads/unloads jobs, or runs a Shortcut. Use the existing explicit controls or
+the source packaging instructions below after reviewing the finding.
+
+Signature checks validate local sealed content with network access disabled;
+they do not query signing identities in the keychain. Intact ad-hoc signing is
+reported as an App Intents blocker. Even a valid non-ad-hoc signature plus the
+expected metadata remains **Unverified** for actual Shortcuts discovery and
+execution. Bundle identity accepts valid custom identifiers and compares the
+running code with disk; it does not scan for duplicate app copies or promise
+permission continuity after replacement. A detected replacement marks the
+permission/login and App Intents findings stale until a new running instance
+can be checked.
+
+Preset checks read app metadata/executable presence and configured plist labels,
+including the fixed built-in system plist. They never inspect arbitrary system
+jobs. Missing optional user-agent plists are explicitly acceptable; missing
+required paths are stale. Malformed files, mismatched labels, non-executable
+apps, and unsupported/oversized metadata are unverified. A corrupt preset store
+is unverified rather than approving its fallback list. Findings number presets
+and plists in saved order without displaying their raw names, paths, or labels.
+
+Health findings remain in memory. They are not added to the frozen, schema-1
+Support JSON report described above. Automated tests cover simulated revocation,
+replacement, expiry/cancellation, destination failure, metadata validation, and
+real temporary path fixtures. Live permission revocation, signed-app replacement,
+login/reboot, and Shortcuts execution still require manual testing on each
+supported macOS/signing combination; automated evidence does not certify them.
+
 ## Common recovery steps
 
 ### App will not start or Shortcuts cannot discover actions

@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    enum Tab: Int, CaseIterable { case general, watchedApps, autoStop, hotkey, health, support }
     static let builtInDaemonGuidance = "Privileged system launch daemons are managed only by TaskScope’s built-in GlobalProtect preset; custom presets cannot configure them."
 
     @ObservedObject var settings: SettingsStore
@@ -9,6 +10,7 @@ struct SettingsView: View {
     @ObservedObject var autoStopRules: AutoStopRulesStore
     let processManager: ProcessManager
     @ObservedObject private var notificationService = NotificationService.shared
+    @State var selectedTab: Tab = .general
 
     @StateObject private var presetForm = WatchedPresetFormState()
     @State private var newRuleName = ""
@@ -28,13 +30,15 @@ struct SettingsView: View {
     @State private var dryRunPreset: WatchedAppPreset?
 
     var body: some View {
-        TabView {
-            generalTab.tabItem { Label("General", systemImage: "gear") }
-            watchedAppsTab.tabItem { Label("Watched Apps", systemImage: "shield.lefthalf.filled") }
-            autoStopTab.tabItem { Label("Auto-Stop", systemImage: "timer") }
-            hotkeyTab.tabItem { Label("Hotkey", systemImage: "keyboard") }
+        TabView(selection: $selectedTab) {
+            generalTab.tabItem { Label("General", systemImage: "gear") }.tag(Tab.general)
+            watchedAppsTab.tabItem { Label("Watched Apps", systemImage: "shield.lefthalf.filled") }.tag(Tab.watchedApps)
+            autoStopTab.tabItem { Label("Auto-Stop", systemImage: "timer") }.tag(Tab.autoStop)
+            hotkeyTab.tabItem { Label("Hotkey", systemImage: "keyboard") }.tag(Tab.hotkey)
+            InstallationHealthView(settings: settings, watchedApps: watchedApps) { selectedTab = .watchedApps }
+                .tabItem { Label("Health", systemImage: "checkmark.shield") }.tag(Tab.health)
             SupportDiagnosticsView(settings: settings, watchedApps: watchedApps, processManager: processManager)
-                .tabItem { Label("Support", systemImage: "doc.text.magnifyingglass") }
+                .tabItem { Label("Support", systemImage: "doc.text.magnifyingglass") }.tag(Tab.support)
         }
         .frame(width: Self.windowSize.width, height: Self.windowSize.height)
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.json]) { result in

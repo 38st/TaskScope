@@ -199,7 +199,8 @@ final class SwiftUIHarnessTests: XCTestCase {
             settings: fixture.stores.settings,
             watchedApps: fixture.stores.watchedApps,
             autoStopRules: fixture.stores.autoStopRules,
-            processManager: fixture.manager
+            processManager: fixture.manager,
+            selectedTab: .watchedApps
         )
 
         try view.inspect().find(button: "Delete").tap()
@@ -729,34 +730,30 @@ final class SwiftUIHarnessTests: XCTestCase {
         }
         XCTAssertEqual(NotificationService.shared.authorizationState, .unknown)
 
-        for expectedText in [
-            "General",
-            "Watched Apps",
-            "Auto-Stop",
-            "Hotkey",
-            "Support",
-            "Preview Diagnostics",
-            "Clear Failure History",
-            "Auto-refresh process list",
-            "Notify on watched process changes",
-            "GlobalProtect",
-            "Add",
-            "Export",
-            "Import",
-            "Built-in",
-            "Built-in lifecycle: 1 protected system daemon",
-            SettingsView.builtInDaemonGuidance,
-            "Global Hotkey"
-        ] {
-            XCTAssertNoThrow(
-                try inspected.find(text: expectedText),
-                "Missing Settings UI content: \(expectedText)"
+        let contents: [SettingsView.Tab: [String]] = [
+            .general: ["General", "Auto-refresh process list", "Notify on watched process changes"],
+            .watchedApps: ["Watched Apps", "GlobalProtect", "Add", "Export", "Import", "Built-in",
+                           "Built-in lifecycle: 1 protected system daemon", SettingsView.builtInDaemonGuidance],
+            .autoStop: ["Auto-Stop"], .hotkey: ["Hotkey", "Global Hotkey"],
+            .health: ["Health", "Permission and Installation Health", "Refresh Health"],
+            .support: ["Support", "Preview Diagnostics", "Clear Failure History"]
+        ]
+        XCTAssertEqual(Set(contents.keys), Set(SettingsView.Tab.allCases))
+        for (tab, expectedTexts) in contents {
+            let selectedView = SettingsView(
+                settings: fixture.stores.settings, watchedApps: fixture.stores.watchedApps,
+                autoStopRules: fixture.stores.autoStopRules, processManager: fixture.manager,
+                selectedTab: tab
             )
+            for expectedText in expectedTexts {
+                XCTAssertNoThrow(try selectedView.inspect().find(text: expectedText),
+                                 "Missing Settings UI content: \(expectedText)")
+            }
+            if tab == .watchedApps {
+                XCTAssertThrowsError(try selectedView.inspect().find(button: "Edit"),
+                                     "The built-in GlobalProtect identity must not expose an editor.")
+            }
         }
-        XCTAssertThrowsError(
-            try inspected.find(button: "Edit"),
-            "The built-in GlobalProtect identity must not expose an editor."
-        )
     }
 
     func testSettingsRecoveryUIRequiresExplicitReset() throws {

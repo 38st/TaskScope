@@ -7,6 +7,15 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Added
 
+- Added Settings > Health to aggregate notification, Accessibility, login-item,
+  code-signing/App Intents, preset-path, and bundle-identity diagnostics. Denied,
+  unavailable, stale, and unverified results stay distinct; observations expire
+  and refresh after activation. Recovery offers only verified reversible
+  navigation and refresh, with no permission resets or installation changes.
+  Focused tests cover revocation/replacement simulations, path and metadata
+  failures, stale collections, and recovery checks. Support/privacy guidance
+  documents local-only retention and the limits of signing/Shortcuts evidence.
+
 - Added previewable support diagnostics in Settings with exact JSON copy/save,
   anonymous preset references, permission and user launch-agent status, and a
   bounded session history of redacted lifecycle failures. Redaction tests and

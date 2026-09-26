@@ -25,6 +25,22 @@ TaskScope can read local information exposed by macOS process tools, including:
 Some values can be unavailable because of macOS permissions or tool behavior.
 TaskScope should represent them as unavailable rather than inventing a value.
 
+**Settings > Health** additionally reads local app-bundle metadata, bounded App
+Intents metadata, code-signature integrity and running/on-disk code identity,
+and configured preset app/executable/plist presence and plist labels. Signature
+validation explicitly disables network access and does not enumerate keychain
+signing identities. Destination checks locate System Settings and Finder for
+optional navigation. The check does not request permissions, change login
+registration, run Shortcuts, or modify files, preferences, or launch jobs.
+
+Health observations are kept only in memory, are refreshed on demand and when
+the visible view becomes active, and expire after one minute or app inactivity.
+They display fixed explanations and numbered preset/plist references rather
+than raw paths, labels, signing certificates, or team identifiers. They are not
+persisted, copied, uploaded, or included in the separate Support JSON export.
+Recovery buttons only open verified local destinations or select Watched Apps;
+they do not automatically repair or reset permissions or installation state.
+
 ## Data stored on the Mac
 
 TaskScope uses standard macOS preferences for:
