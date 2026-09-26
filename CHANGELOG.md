@@ -28,6 +28,12 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
+- Public-binary preflight and release now require versioned GlobalProtect
+  lifecycle evidence tied to the tested candidate, passing results for every
+  lifecycle/protected-service/VPN/policy check, and retained reports. Missing,
+  failed, or stale coverage blocks release with collection instructions;
+  isolated packaging regressions cover acceptance and rejection. Existing
+  read-only observations remain unverified for lifecycle compatibility.
 - Removed hosted GitHub Actions CI. The complete build, test, and packaging
   gate remains available locally; weekly Swift dependency updates remain enabled.
 - Bumped the build number to 3. `script/release.sh` now refuses a build number

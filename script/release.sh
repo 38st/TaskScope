@@ -40,6 +40,140 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Required release tool is unavailable: $1"
 }
 
+compatibility_failure() {
+  echo "GlobalProtect lifecycle compatibility unverified: $*" >&2
+  echo "Collect authorized lifecycle evidence using GLOBALPROTECT_COMPATIBILITY.md#machine-checkable-release-evidence, then rerun preflight." >&2
+  fail "Until that evidence passes, retain source/development-only scope and the unverified notice in release notes; do not publish an app binary."
+}
+
+validate_compatibility_file() {
+  local relative_path="$1"
+  local component
+  local current="$ROOT_DIR"
+  local -a components
+
+  # Only repository files are evidence. Never follow symlinks or accept paths
+  # outside the checkout, including through a symlinked parent directory.
+  [[ "$relative_path" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ \
+    && "/$relative_path/" != *"/../"* \
+    && "/$relative_path/" != *"/./"* \
+    && "$relative_path" != *"//"* ]] \
+    || compatibility_failure "Invalid evidence path '$relative_path'; use a repository-relative path without dot segments."
+  IFS=/ read -r -a components <<< "$relative_path"
+  for component in "${components[@]}"; do
+    current="$current/$component"
+    [[ ! -L "$current" ]] \
+      || compatibility_failure "Evidence must not use symlinks: $relative_path"
+  done
+  [[ -f "$current" && -r "$current" && -s "$current" ]] \
+    || compatibility_failure "Missing, unreadable, or empty evidence file: $relative_path"
+  git -C "$ROOT_DIR" ls-files --error-unmatch -- "$relative_path" >/dev/null 2>&1 \
+    || compatibility_failure "Evidence file is not tracked: $relative_path. Review and git add the redacted file."
+}
+
+validate_compatibility_evidence() {
+  local evidence_dir="Evidence/GlobalProtect/lifecycle/$APP_VERSION-$APP_BUILD_NUMBER"
+  local manifest
+  local parsed
+  local key
+  local value
+  local revision
+  local count=0
+
+  # Deliberately no environment override or skip flag: simulations and the
+  # historical read-only report cannot satisfy a public-binary release gate.
+  for manifest in "$ROOT_DIR/$evidence_dir/"*.evidence; do
+    [[ -e "$manifest" || -L "$manifest" ]] || continue
+    validate_compatibility_file "${manifest#"$ROOT_DIR/"}"
+    if ! parsed="$(LC_ALL=C awk -v version="$APP_VERSION" -v build="$APP_BUILD_NUMBER" \
+      -v bundle_id="$BUNDLE_ID" '
+      function problem(message) {
+        print FILENAME ": " message > "/dev/stderr"
+        invalid = 1
+      }
+      function expect(key, expected) {
+        if (values[key] != expected) problem(key " must be " expected ".")
+      }
+      BEGIN {
+        n = split("schema_version evidence_kind test_date taskscope_version taskscope_build source_revision bundle_id signing_kind install_method macos_version macos_build architecture globalprotect_version agent_layout persistence_event coverage_gaps manual_results", keys, " ")
+        for (i = 1; i <= n; i++) required[keys[i]] = 1
+        step_count = split("baseline keep_off relaunch persistence keep_off_disabled open protected_service vpn managed_policy", steps, " ")
+        for (i = 1; i <= step_count; i++) required["result_" steps[i]] = 1
+        report_count = 6
+        for (i = 1; i <= report_count; i++) required["report_" steps[i]] = 1
+      }
+      /^#/ || /^$/ { next }
+      {
+        separator = index($0, "=")
+        key = substr($0, 1, separator - 1)
+        value = substr($0, separator + 1)
+        if (!separator || !(key in required)) {
+          problem("line " FNR ": unknown field or malformed key=value record.")
+          next
+        }
+        if (key in values) problem("Duplicate field: " key ".")
+        if (value == "" || value ~ /[[:space:]]/) problem(key " must be a nonempty value without whitespace.")
+        values[key] = value
+      }
+      END {
+        for (key in required) if (!(key in values)) problem("Missing required field: " key ".")
+        expect("schema_version", "1")
+        expect("evidence_kind", "authorized-lifecycle")
+        expect("taskscope_version", version)
+        expect("taskscope_build", build)
+        expect("bundle_id", bundle_id)
+        expect("architecture", "arm64")
+        expect("coverage_gaps", "none")
+        if (values["test_date"] !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) problem("test_date must use YYYY-MM-DD.")
+        if (values["source_revision"] !~ /^[0-9a-f]{40}$/) problem("source_revision must be a full lowercase Git commit SHA.")
+        if (values["signing_kind"] !~ /^(ad-hoc|apple-development|developer-id)$/) problem("signing_kind must be ad-hoc, apple-development, or developer-id.")
+        if (values["install_method"] !~ /^(staged-bundle|local-install|downloaded-archive)$/) problem("install_method must be staged-bundle, local-install, or downloaded-archive.")
+        if (values["macos_version"] !~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) problem("macos_version must be a numeric macOS version.")
+        if (values["macos_build"] !~ /^[0-9]+[A-Z][0-9]+[a-z]?$/) problem("macos_build must be an Apple build identifier.")
+        if (values["globalprotect_version"] !~ /^[0-9]+(\.[0-9]+){1,3}(-[0-9]+)?$/) problem("globalprotect_version must identify the tested version, including its suffix when present.")
+        if (values["agent_layout"] !~ /^(pangpa-only|pangpa-and-pangps)$/) problem("agent_layout must be pangpa-only or pangpa-and-pangps.")
+        if (values["persistence_event"] !~ /^(logout-login|reboot)$/) problem("persistence_event must be logout-login or reboot.")
+        for (i = 1; i <= step_count; i++) expect("result_" steps[i], "pass")
+        for (i = 1; i <= report_count; i++) {
+          path = values["report_" steps[i]]
+          if (path in reports) problem("Each lifecycle snapshot needs a distinct report path: " path ".")
+          reports[path] = 1
+        }
+        if (invalid) exit 1
+        print "source_revision=" values["source_revision"]
+        print "artifact=" values["manual_results"]
+        for (i = 1; i <= report_count; i++) print "artifact=" values["report_" steps[i]]
+      }
+    ' "$manifest")"; then
+      compatibility_failure "Incomplete or invalid lifecycle manifest: ${manifest#"$ROOT_DIR/"}"
+    fi
+
+    while IFS='=' read -r key value; do
+      if [[ "$key" == source_revision ]]; then
+        revision="$value"
+        git -C "$ROOT_DIR" merge-base --is-ancestor "$revision" HEAD 2>/dev/null \
+          || compatibility_failure "source_revision $revision must be an existing ancestor of HEAD (or HEAD itself)."
+        # Evidence can be committed after testing without a circular commit SHA.
+        # Only evidence and its three release documents may change afterward.
+        git -C "$ROOT_DIR" diff --quiet "$revision" -- . \
+          ':(exclude)Evidence/GlobalProtect' \
+          ':(exclude)GLOBALPROTECT_COMPATIBILITY.md' \
+          ':(exclude)RELEASE.md' ':(exclude)CHANGELOG.md' \
+          || compatibility_failure "Candidate content differs from tested source_revision $revision. Retest the current candidate and update the manifest."
+      else
+        [[ "$value" == "$evidence_dir/"* ]] \
+          || compatibility_failure "Artifact '$value' must be retained under $evidence_dir/."
+        validate_compatibility_file "$value"
+      fi
+    done <<< "$parsed"
+    count=$((count + 1))
+  done
+
+  [[ "$count" -gt 0 ]] \
+    || compatibility_failure "No lifecycle manifests found at $evidence_dir/*.evidence. Fixtures and read-only observations are insufficient."
+  echo "GlobalProtect lifecycle evidence gate passed ($count tested environment(s)); claims remain limited to the recorded combinations."
+}
+
 validate_credential_independent_inputs() {
   if [[ "$BUNDLE_ID" == com.local.* ]]; then
     fail "Public releases cannot use the development bundle identifier '$BUNDLE_ID'."
@@ -58,24 +192,7 @@ validate_credential_independent_inputs() {
   fi
 
   require_command awk
-  require_command codesign
-  require_command ditto
-  require_command dwarfdump
   require_command git
-  require_command lipo
-  require_command plutil
-  require_command security
-  require_command shasum
-  require_command shlock
-  require_command spctl
-  require_command swift
-  require_command xcodebuild
-  require_command xcrun
-
-  xcrun --find appintentsmetadataprocessor >/dev/null
-  xcrun --find dsymutil >/dev/null
-  xcrun --find notarytool >/dev/null
-  xcrun --find stapler >/dev/null
 
   # Build numbers must increase for every distributed artifact: refuse to
   # release a build number that is not greater than the latest v* tag's.
@@ -93,6 +210,26 @@ validate_credential_independent_inputs() {
   if ! /usr/bin/grep -Eq "^## \[$APP_VERSION\]" "$ROOT_DIR/CHANGELOG.md"; then
     fail "CHANGELOG.md lacks a '## [$APP_VERSION]' heading for this release."
   fi
+
+  validate_compatibility_evidence
+
+  require_command codesign
+  require_command ditto
+  require_command dwarfdump
+  require_command lipo
+  require_command plutil
+  require_command security
+  require_command shasum
+  require_command shlock
+  require_command spctl
+  require_command swift
+  require_command xcodebuild
+  require_command xcrun
+
+  xcrun --find appintentsmetadataprocessor >/dev/null
+  xcrun --find dsymutil >/dev/null
+  xcrun --find notarytool >/dev/null
+  xcrun --find stapler >/dev/null
 }
 
 cleanup_release() {

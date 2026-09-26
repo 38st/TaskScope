@@ -196,8 +196,9 @@ if TASKSCOPE_BUNDLE_ID='com.local.TaskScope' \
   echo "Release preflight accepted the development bundle identifier." >&2
   exit 1
 fi
-TASKSCOPE_BUNDLE_ID='com.example.TaskScopeTests' \
-  "$RELEASE_SCRIPT" --preflight >/dev/null
+# Lifecycle evidence cases use a disposable repository, never invented passes
+# in the real compatibility matrix or a managed GlobalProtect installation.
+bash "$ROOT_DIR/script/test_release_compatibility.sh"
 
 PACKAGE_LOCK="$ROOT_DIR/dist/.TaskScope.package.lock"
 mkdir -p "$ROOT_DIR/dist"

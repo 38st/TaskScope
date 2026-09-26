@@ -112,6 +112,26 @@ of a passing parser test or a single snapshot. If no managed lifecycle test was
 performed, release notes must explicitly say **GlobalProtect lifecycle
 compatibility unverified** and retain the existing source/development scope.
 
+Both public-binary modes of `script/release.sh` enforce the
+[machine-checkable evidence contract](GLOBALPROTECT_COMPATIBILITY.md#machine-checkable-release-evidence).
+For the exact version/build, retain at least one tracked `.evidence` manifest
+under `Evidence/GlobalProtect/lifecycle/<version>-<build>/`. Every manifest must
+identify the tested candidate and environment, declare no coverage gaps, record
+all nine lifecycle/protected-service/VPN/policy checks as `pass`, and reference
+six distinct, nonempty snapshot files plus manual observations. Paths must stay
+inside that candidate's evidence directory without symlinks. All candidate
+content outside the evidence directory tree and three release documents must
+match the tested source revision. Evidence-only follow-up commits are allowed.
+
+Missing, malformed, incomplete, failed, or stale evidence stops preflight and
+the full release before build, signing, or notarization. The error names the
+missing requirement and links to the collection contract; credentials cannot
+bypass it. The current read-only observation and fixtures intentionally fail
+this gate. Do not fabricate a passing manifest to unblock packaging: continue
+using the source/development flow until authorized lifecycle QA is available.
+Machine validation checks explicit attestations and retained files; maintainers
+must review their contents and keep compatibility claims within that coverage.
+
 ## Local source/development release verification
 
 Stage and verify the current-architecture bundle:
@@ -133,7 +153,7 @@ Developer ID distribution trust or notarization.
 ## Credential-gated public binary pipeline
 
 Run the credential-independent validation with a syntactically valid
-non-development candidate identifier:
+non-development candidate identifier and the retained lifecycle evidence above:
 
 ```bash
 TASKSCOPE_BUNDLE_ID=com.example.TaskScope ./script/release.sh --preflight
@@ -141,8 +161,15 @@ TASKSCOPE_BUNDLE_ID=com.example.TaskScope ./script/release.sh --preflight
 
 Preflight validates identifier syntax and rejects the local development prefix;
 it does not verify ownership. It also validates version/build, arm64 host/policy,
-and required tools. It reports missing credentials but does not sign, notarize,
-or create a releasable artifact.
+the GlobalProtect lifecycle evidence contract, and required tools. With the
+repository's current unverified lifecycle coverage, this command is expected to
+fail with collection instructions. After evidence passes, it reports missing
+credentials but does not sign, notarize, or create a releasable artifact.
+
+The evidence regression tests run as part of `script/test_packaging.sh` and can
+also run alone with `bash script/test_release_compatibility.sh`. They use only
+synthetic files in a disposable Git repository and stub release tools; their
+passing results are not installed-product compatibility evidence.
 
 The full pipeline requires all of these environment variables:
 
@@ -164,8 +191,8 @@ With those values configured securely outside Git, run:
 
 The script requires a clean worktree; validates identifier syntax, version,
 build (which must exceed the build number at the latest `v*` tag), the
-presence of a `## [<version>]` changelog heading, arm64 architecture,
-deployment target, and App Intents metadata; builds
+presence of a `## [<version>]` changelog heading, arm64 architecture, retained
+GlobalProtect lifecycle evidence, deployment target, and App Intents metadata; builds
 with hardened runtime and no entitlements; verifies the Developer ID team;
 creates matching app/dSYM UUIDs; submits to Apple; staples and
 Gatekeeper-verifies the app; round-trips the final ZIP; and emits the app ZIP,
@@ -199,6 +226,9 @@ are true:
    published alongside the artifact.
 9. Install, first launch, Shortcuts, URL refresh, permissions, upgrade, and
    uninstall succeed on a clean machine using the downloaded copy.
+10. The GlobalProtect lifecycle evidence gate passes for the candidate, and
+    reviewers confirm the retained observations support every advertised
+    environment and lifecycle claim.
 
 Never print or commit credential values. If an Apple certificate, notary
 credential, paid enrollment, owned identifier, or test machine is missing,

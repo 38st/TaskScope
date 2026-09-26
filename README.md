@@ -299,8 +299,10 @@ with a syntactically valid non-development candidate identifier:
 TASKSCOPE_BUNDLE_ID=com.example.TaskScope ./script/release.sh --preflight
 ```
 
-Passing preflight is not signing or notarization evidence. The maintainer
-procedure and claim rules are in [RELEASE.md](RELEASE.md).
+Preflight requires retained, candidate-specific GlobalProtect lifecycle evidence;
+the current read-only observations intentionally fail that gate. Passing
+preflight is not signing or notarization evidence. The evidence contract,
+maintainer procedure, and claim rules are in [RELEASE.md](RELEASE.md).
 
 ## Project information
 

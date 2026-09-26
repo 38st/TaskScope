@@ -80,6 +80,125 @@ observed result and redacted artifact references. Do not signal, restart, or
 unload a protected daemon just to obtain evidence. System-state changes may be
 caused by policy or other software; the self-check cannot attribute causation.
 
+## Machine-checkable release evidence
+
+`script/release.sh --preflight` and `--release` require authorized lifecycle
+evidence before checking signing credentials or building a public binary.
+**The existing fixtures and live read-only report do not satisfy this gate.**
+There is currently no qualifying lifecycle manifest, so public-binary preflight
+fails. Source/development packaging remains available and must retain the
+**GlobalProtect lifecycle compatibility unverified** notice.
+
+For a candidate with `VERSION=V` and `BUILD_NUMBER=B`, retain one plain UTF-8
+`*.evidence` file per claimed macOS build / architecture / GlobalProtect version
+and agent layout under `Evidence/GlobalProtect/lifecycle/V-B/`. All manifests
+in that directory must pass; at least one is required. These files define the
+tested combinations, not a claim for other macOS releases or product versions.
+Use a separate manifest for each persistence event if claiming both logout/login
+and reboot coverage.
+
+Each record is a literal `key=value` line. Values are case-sensitive, nonempty,
+and contain no whitespace. Blank lines and lines beginning with `#` are allowed.
+Duplicate or unknown keys, malformed lines, missing fields, and unsupported
+schema versions fail. These are data files; they are never sourced as shell
+code. There is no environment override or skip switch for this gate.
+
+| Required field | Accepted value / meaning |
+| --- | --- |
+| `schema_version` | Exactly `1` |
+| `evidence_kind` | Exactly `authorized-lifecycle`; this attests that the managed test machine was approved for these operations |
+| `test_date` | Test date in `YYYY-MM-DD` syntax |
+| `taskscope_version`, `taskscope_build` | Exact candidate `VERSION` and `BUILD_NUMBER` |
+| `source_revision` | Full 40-character lowercase Git commit SHA, present locally and an ancestor of `HEAD` (or `HEAD` itself) |
+| `bundle_id` | Exact `TASKSCOPE_BUNDLE_ID` supplied to the release script |
+| `signing_kind` | `ad-hoc`, `apple-development`, or `developer-id`, as observed on the tested bundle |
+| `install_method` | `staged-bundle`, `local-install`, or `downloaded-archive` |
+| `macos_version`, `macos_build` | Numeric version such as `26.6.2`, and Apple build identifier such as `25G83` |
+| `architecture` | Exactly `arm64`, matching the current release policy |
+| `globalprotect_version` | Two to four numeric version components, optionally followed by a numeric hyphen suffix, e.g. `6.3.3-1121`; retain the suffix when present |
+| `agent_layout` | `pangpa-only` or `pangpa-and-pangps`, from installed known agents |
+| `persistence_event` | `logout-login` or `reboot`, whichever was actually performed |
+| `coverage_gaps` | Exactly `none`; unknown probes, unexpected labels, unverified protected service, policy interference, or skipped checks prevent a pass |
+| `manual_results` | Path to the redacted manual observations described below |
+| `result_<step>` | Exactly `pass` for **each** of the nine steps below; `fail`, `not-tested`, `unknown`, and every other value block release |
+| `report_<step>` | A distinct retained self-check export path for **each** of the first six steps below |
+
+The nine exact step names are `baseline`, `keep_off`, `relaunch`, `persistence`,
+`keep_off_disabled`, `open`, `protected_service`, `vpn`, and `managed_policy`.
+The first six correspond to baseline and the five after-action exports in the
+authorized lifecycle procedure. `keep_off_disabled` means turning Keep Off off
+without implying an app launch. `protected_service` records the baseline/later
+comparison and verified identity; `vpn` records restoration checked through the
+organization's supported method; `managed_policy` records whether management
+interfered throughout the sequence. Absence of a protected process is not a pass.
+
+All referenced paths are repository-relative and must stay inside the same
+`Evidence/GlobalProtect/lifecycle/V-B/` directory. Paths may contain only ASCII
+letters, digits, `.`, `_`, `-`, and `/`, starting with a letter or digit; absolute
+paths, `.`/`..` path components, doubled slashes, and symlinks (including parent
+directories) are rejected. Every manifest and referenced artifact must be a
+readable, nonempty regular file tracked by Git. Review/redact and `git add` new
+evidence before preflight; the full release additionally requires a clean
+worktree. Keep exports unchanged after redaction review and record observed
+outcomes, signing/install details, administrator requests/results, and all nine
+manual checks in `manual_results`. Do not retain raw tool logs or private VPN
+configuration.
+
+The candidate's tracked content must match `source_revision`, including staged
+and unstaged changes, except for `Evidence/GlobalProtect/`,
+`GLOBALPROTECT_COMPATIBILITY.md`, `RELEASE.md`, and `CHANGELOG.md`. This allows
+evidence and its documentation to be committed after testing without a circular
+commit SHA. Any other content change requires a new tested revision. Preflight
+does not replace the full release's clean-worktree check.
+
+This deliberately incomplete template illustrates all required fields for the
+current candidate. Replace the placeholders and every `not-tested` only after
+collecting the corresponding evidence; copying it unchanged must fail:
+
+```text
+schema_version=1
+evidence_kind=authorized-lifecycle
+test_date=YYYY-MM-DD
+taskscope_version=1.0.0
+taskscope_build=3
+source_revision=FULL_TESTED_COMMIT_SHA
+bundle_id=YOUR_PRODUCTION_BUNDLE_ID
+signing_kind=OBSERVED_SIGNING_KIND
+install_method=OBSERVED_INSTALL_METHOD
+macos_version=TESTED_MACOS_VERSION
+macos_build=TESTED_MACOS_BUILD
+architecture=arm64
+globalprotect_version=TESTED_GLOBALPROTECT_VERSION
+agent_layout=OBSERVED_AGENT_LAYOUT
+persistence_event=PERFORMED_EVENT
+coverage_gaps=not-tested
+manual_results=Evidence/GlobalProtect/lifecycle/1.0.0-3/environment/manual.md
+result_baseline=not-tested
+result_keep_off=not-tested
+result_relaunch=not-tested
+result_persistence=not-tested
+result_keep_off_disabled=not-tested
+result_open=not-tested
+result_protected_service=not-tested
+result_vpn=not-tested
+result_managed_policy=not-tested
+report_baseline=Evidence/GlobalProtect/lifecycle/1.0.0-3/environment/baseline.txt
+report_keep_off=Evidence/GlobalProtect/lifecycle/1.0.0-3/environment/keep-off.txt
+report_relaunch=Evidence/GlobalProtect/lifecycle/1.0.0-3/environment/relaunch.txt
+report_persistence=Evidence/GlobalProtect/lifecycle/1.0.0-3/environment/persistence.txt
+report_keep_off_disabled=Evidence/GlobalProtect/lifecycle/1.0.0-3/environment/keep-off-disabled.txt
+report_open=Evidence/GlobalProtect/lifecycle/1.0.0-3/environment/open.txt
+```
+
+Place the manifest itself directly in `1.0.0-3/`, for example
+`environment.evidence`; referenced artifacts may use subdirectories. Update the
+human evidence matrix and release notes to match the actual tested combinations.
+The gate validates the manifest, source binding, and presence of retained files.
+It does **not** interpret export contents, authenticate manual attestations,
+exercise lifecycle actions, or certify VPN health. Reviewers must compare each
+export and manual observation with the recorded results. A passing manifest for
+an ad-hoc test bundle does not establish Developer ID or downloaded-binary QA.
+
 ## Interpretation and privacy
 
 - `pangpa` is the required known user agent; `pangps` is optional. Missing an
