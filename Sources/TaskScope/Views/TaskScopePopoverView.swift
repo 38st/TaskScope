@@ -108,15 +108,15 @@ struct TaskScopePopoverView: View {
             history.endSampling()
             processManager.endExtendedMetrics()
         }
-        .onChange(of: processManager.processes) { _, newProcesses in
-            if let pid = keyboardSelectedPid, !newProcesses.contains(where: { $0.pid == pid }) {
-                keyboardSelectedPid = nil
-            }
-        }
         .onChange(of: processManager.inventoryGeneration) { _, _ in
             // Forget disclosure state for processes that no longer exist; a
             // recycled pid must not inherit an old expansion.
             let livePIDs = Set(processManager.inventorySnapshot.map(\.pid))
+            // Search can show processes below the unfiltered display limit.
+            // Preserve their keyboard focus for as long as they are live.
+            if let pid = keyboardSelectedPid, !livePIDs.contains(pid) {
+                keyboardSelectedPid = nil
+            }
             expandedTreePids = expandedTreePids.intersection(livePIDs)
         }
         // Ancestors are expanded once per *filter* change, never on every poll,

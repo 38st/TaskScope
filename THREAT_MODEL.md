@@ -114,6 +114,13 @@ Required invariants:
   not authority to alter arbitrary protected processes;
 - keep protected process names out of the normal killable-name set.
 
+Keep Off polling also recognizes the optional per-user PanGPS executable when
+the preset has the fixed supported GlobalProtect identity, the kernel executable
+path is inside that bundle, and the non-root UID matches the current user.
+A bare name, unknown UID, another user's process, or the root daemon cannot
+trigger this additional enforcement path. Enforcement still disables/unloads
+only the fixed user launch-agent labels; it never signals PanGPS directly.
+
 Residual risk: a syntactically valid custom preset can intentionally point at
 the wrong local app or user launch agent. The mandatory import preview exposes
 those fields but cannot decide whether the user intended them, so users must
@@ -182,6 +189,9 @@ Required invariants:
 - accept only `taskscope://refresh` through the custom URL scheme;
 - reject URL requests to open/stop presets or quit TaskScope;
 - queue a cold-launch refresh without activating unnecessary UI;
+- discard cancelled queued commands before dispatch and carry cancellation into
+  a command waiting for the process-operation gate; cancelling one submission
+  must not cancel its neighbors or imply that completed mutations were undone;
 - route user-configured Shortcut actions through the same identity validation
   and truthful result reporting as the app; a Shortcuts stop runs without the
   in-app confirmation dialog, so configuring the shortcut is the confirmation;
@@ -214,6 +224,8 @@ Required invariants:
 - decode versioned data defensively;
 - preserve the first unreadable payload instead of overwriting it with defaults;
 - block persistence that would silently destroy unreadable primary data;
+- preserve optional launch-job requirements through normalization and migration
+  so valid built-in presets round-trip without entering corruption recovery;
 - require an explicit destructive reset to resume writes;
 - never export a fallback empty collection as if it were a valid backup;
 - keep auto-stop history bounded and live chart samples in memory;

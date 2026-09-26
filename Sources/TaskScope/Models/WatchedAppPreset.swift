@@ -210,6 +210,13 @@ struct WatchedAppSnapshot: Equatable, Sendable {
     /// separately so it is not mistaken for the daemon. It is still never
     /// signalled by name; Keep Off and Quit unload it through launchd only.
     var unprivilegedProtectedNames: Set<String> = []
+    /// A supported GlobalProtect user-agent executable in the fixed bundle,
+    /// owned by this user. Unlike name-only status, this can trigger Keep Off.
+    var hasCurrentUserLaunchAgent: Bool = false
+
+    var hasKeepOffTargets: Bool {
+        isMainRunning || hasHelpers || hasCurrentUserLaunchAgent
+    }
 
     var isMainRunning: Bool {
         runningNames.contains(preset.mainProcessName)

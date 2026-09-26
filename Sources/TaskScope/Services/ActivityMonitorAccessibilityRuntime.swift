@@ -46,8 +46,8 @@ struct SystemActivityMonitorProcessSelector: ActivityMonitorProcessSelecting {
     }
 }
 
-/// Activity Monitor table state a handoff changed. Held on the main actor
-/// between attempts and handed to the worker for restoration. `AXUIElement` is
+/// Activity Monitor table state a handoff changed. Owned by the worker's serial
+/// queue across attempts and restoration. `AXUIElement` is
 /// a CF type without a Sendable annotation; every element here is used only on
 /// the worker's serial queue.
 struct ActivityMonitorPreparedTableState: @unchecked Sendable {
@@ -74,9 +74,13 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
     private static let activityMonitorBundleIdentifier = "com.apple.ActivityMonitor"
     private static let restorationDelayNanoseconds: UInt64 = 4_000_000_000
 
-    private let worker = ActivityMonitorAccessibilityWorker()
-    private var preparedState: ActivityMonitorPreparedTableState?
+    private let worker: ActivityMonitorAccessibilityWorker
     private var restorationTask: Task<Void, Never>?
+    private var requestGeneration: UInt64 = 0
+
+    init(worker: ActivityMonitorAccessibilityWorker = ActivityMonitorAccessibilityWorker()) {
+        self.worker = worker
+    }
 
     func isProcessTrusted(prompt: Bool) -> Bool {
         guard prompt else {
@@ -95,36 +99,37 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
         ).first?.processIdentifier
     }
 
-    /// Every Accessibility call happens on the worker's queue; only the state
-    /// bookkeeping returns to the main actor.
+    /// State is captured and updated on the same queue as the AX calls, so
+    /// overlapping attempts cannot overwrite the original table settings.
     func selectProcessRow(
         applicationPID: pid_t,
         targetPID: Int32
     ) async -> ActivityMonitorSelectionAttempt {
+        requestGeneration &+= 1
+        let request = requestGeneration
+        restorationTask?.cancel()
+        restorationTask = nil
         let processName = Self.processName(for: targetPID)
         let outcome = await worker.selectOrPrepare(
             applicationPID: applicationPID,
             targetPID: targetPID,
-            processName: processName,
-            existingState: preparedState
+            processName: processName
         )
-        preparedState = outcome.preparedState
-        if outcome.preparedState != nil {
-            scheduleProcessTableRestoration()
+        if request == requestGeneration, outcome.preparedState != nil {
+            scheduleProcessTableRestoration(generation: outcome.generation)
         }
         return outcome.attempt
     }
 
     /// Restores immediately (app termination) instead of after the delay.
     func restorePreparedState() {
+        requestGeneration &+= 1
         restorationTask?.cancel()
         restorationTask = nil
-        guard let state = preparedState else { return }
-        preparedState = nil
-        worker.restoreNow(state)
+        worker.restoreNow()
     }
 
-    private func scheduleProcessTableRestoration() {
+    private func scheduleProcessTableRestoration(generation: UInt64) {
         restorationTask?.cancel()
         restorationTask = Task { @MainActor [weak self] in
             do {
@@ -132,10 +137,9 @@ final class SystemActivityMonitorAccessibilityRuntime: ActivityMonitorAccessibil
             } catch {
                 return
             }
-            guard !Task.isCancelled, let self, let state = self.preparedState else { return }
-            self.preparedState = nil
+            guard !Task.isCancelled, let self else { return }
             self.restorationTask = nil
-            await self.worker.restore(state)
+            await self.worker.restore(generation: generation)
         }
     }
 
@@ -209,38 +213,63 @@ final class ActivityMonitorAccessibilityWorker: @unchecked Sendable {
     struct Outcome: @unchecked Sendable {
         var attempt: ActivityMonitorSelectionAttempt
         var preparedState: ActivityMonitorPreparedTableState?
+        var generation: UInt64 = 0
     }
 
+    typealias Selection = @Sendable (pid_t, Int32, String?, ActivityMonitorPreparedTableState?) -> Outcome
+    typealias Restoration = @Sendable (ActivityMonitorPreparedTableState) -> Void
+
+    private let selection: Selection?
+    private let restoration: Restoration?
+    // Accessed exclusively on queue, including synchronous shutdown.
+    private var preparedState: ActivityMonitorPreparedTableState?
+    private var generation: UInt64 = 0
     private static let maximumTreeDepth = 12
     private let queue = DispatchQueue(
         label: "TaskScope.ActivityMonitorAccessibility",
         qos: .userInitiated
     )
 
+    init(selection: Selection? = nil, restoration: Restoration? = nil) {
+        self.selection = selection
+        self.restoration = restoration
+    }
+
+    @MainActor
     func selectOrPrepare(
         applicationPID: pid_t,
         targetPID: Int32,
-        processName: String?,
-        existingState: ActivityMonitorPreparedTableState?
+        processName: String?
     ) async -> Outcome {
         await withCheckedContinuation { continuation in
             queue.async {
-                continuation.resume(
-                    returning: self.performSelectOrPrepare(
+                var outcome: Outcome
+                if let selection = self.selection {
+                    outcome = selection(applicationPID, targetPID, processName, self.preparedState)
+                } else {
+                    outcome = self.performSelectOrPrepare(
                         applicationPID: applicationPID,
                         targetPID: targetPID,
                         processName: processName,
-                        existingState: existingState
+                        existingState: self.preparedState
                     )
-                )
+                }
+                self.preparedState = outcome.preparedState
+                self.generation &+= 1
+                outcome.generation = self.generation
+                continuation.resume(returning: outcome)
             }
         }
     }
 
-    func restore(_ state: ActivityMonitorPreparedTableState) async {
+    @MainActor
+    func restore(generation: UInt64) async {
         await withCheckedContinuation { continuation in
             queue.async {
-                self.performRestore(state)
+                // A timer from an earlier handoff must not undo a newer one.
+                if generation == self.generation {
+                    self.restoreOnQueue()
+                }
                 continuation.resume()
             }
         }
@@ -248,8 +277,18 @@ final class ActivityMonitorAccessibilityWorker: @unchecked Sendable {
 
     /// Synchronous variant for application termination, where an async hop
     /// would never complete.
-    func restoreNow(_ state: ActivityMonitorPreparedTableState) {
+    func restoreNow() {
         queue.sync {
+            restoreOnQueue()
+        }
+    }
+
+    private func restoreOnQueue() {
+        guard let state = preparedState else { return }
+        preparedState = nil
+        if let restoration {
+            restoration(state)
+        } else {
             performRestore(state)
         }
     }

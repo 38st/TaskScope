@@ -129,6 +129,37 @@ final class ShellCommandRunnerTests: XCTestCase {
         }
     }
 
+    func testBurstsOfImmediatelyExitingChildrenCompleteAndAreReaped() async {
+        let finished = expectation(description: "all immediate-exit bursts complete")
+        let bursts = Task {
+            for _ in 0..<8 {
+                await withTaskGroup(of: ShellCommandResult.self) { group in
+                    for _ in 0..<24 {
+                        group.addTask {
+                            await ShellCommandRunner.run("printf '%s' $$; exit 3", timeout: 1)
+                        }
+                    }
+                    for await result in group {
+                        XCTAssertEqual(result.exitCode, 3, result.stderr)
+                        guard let pid = Int32(result.stdout), pid > 0 else {
+                            XCTFail("Child did not report its PID")
+                            continue
+                        }
+                        var status: Int32 = 0
+                        errno = 0
+                        let waited = waitpid(pid, &status, WNOHANG)
+                        let waitError = errno
+                        XCTAssertEqual(waited, -1)
+                        XCTAssertEqual(waitError, ECHILD, "Completion must include reaping the child")
+                    }
+                }
+            }
+            finished.fulfill()
+        }
+        await fulfillment(of: [finished], timeout: 15)
+        bursts.cancel()
+    }
+
     func testRunCapturesOutputAndExitStatus() async {
         let result = await ShellCommandRunner.run(
             "/usr/bin/printf 'standard output'; /usr/bin/printf 'standard error' >&2; exit 7"

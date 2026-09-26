@@ -79,7 +79,7 @@ struct PresetCard: View {
     }
 
     private var color: Color {
-        if isKeptOff && (snapshot.isMainRunning || snapshot.hasHelpers) { .orange }
+        if isKeptOff && snapshot.hasKeepOffTargets { .orange }
         else if isKeptOff { .green }
         else if snapshot.isMainRunning { .red }
         else if snapshot.hasHelpers { .yellow }
@@ -88,7 +88,7 @@ struct PresetCard: View {
     }
 
     private var label: String {
-        if isKeptOff && (snapshot.isMainRunning || snapshot.hasHelpers) { "Enforcing" }
+        if isKeptOff && snapshot.hasKeepOffTargets { "Enforcing" }
         else if isKeptOff { "Kept Off" }
         else if snapshot.isMainRunning { "Active" }
         else if snapshot.hasHelpers { "Helpers" }

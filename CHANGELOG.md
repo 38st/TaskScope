@@ -63,6 +63,27 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Fixed
 
+- Short-lived shell commands are reaped after exit-observer registration as
+  well as on exit events. This closes a registration race that could leave a
+  command suspended forever with an unreaped child, even after its timeout.
+- Preset normalization preserves optional launch-agent requirements, so the
+  built-in GlobalProtect preset survives relaunch, migration, notification
+  changes, and Shortcuts catalog lookup.
+- Cancelled command submissions are removed from the queue, and cancellation
+  reaches commands waiting for the process-operation gate without affecting
+  other submissions.
+- Keep Off detects a current-user PanGPS executable in the GlobalProtect bundle,
+  even when no main app or helper runs. The card reports enforcement while that
+  user agent remains; the protected root daemon is still left alone.
+- Open rechecks running state after service work and requires fresh final
+  evidence before reporting success, including when an initially running app
+  exits during the operation.
+- Search results below the unfiltered display limit retain keyboard selection
+  across inventory refreshes while the process remains live.
+- Overlapping Activity Monitor handoffs preserve the original table settings on
+  the Accessibility worker queue. Stale restoration timers cannot undo a newer
+  handoff, and shutdown restores changes from an in-flight attempt.
+
 - Every shell command now stops burning a CPU core once its output ends. A pipe
   stays permanently readable after its writer closes, so the read sources kept
   firing at EOF and spun their I/O queue at 100% CPU until completion, starving

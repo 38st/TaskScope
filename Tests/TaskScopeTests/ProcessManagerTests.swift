@@ -555,7 +555,7 @@ final class ProcessManagerTests: XCTestCase {
     func testOpenLifecycleOrdersDependenciesBeforeAppAndVerification() async {
         let lifecycle = FakeLifecycleService()
         let manager = makeManager(
-            inventory: FakeProcessInventory(results: [.success([])]),
+            inventory: FakeProcessInventory(results: [.success([]), .success([]), .success([process(pid: 42, name: "Example")])]),
             lifecycle: lifecycle
         )
         let preset = lifecyclePreset()
@@ -570,6 +570,50 @@ final class ProcessManagerTests: XCTestCase {
             "wait"
         ])
         XCTAssertEqual(manager.message, "Opened Example.")
+    }
+
+    func testOpenRelaunchesWhenExistingAppExitsDuringServiceWork() async {
+        let lifecycle = FakeLifecycleService()
+        let running = process(pid: 42, name: "Example")
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([running]), .success([]), .success([running])]),
+            lifecycle: lifecycle
+        )
+        let result = await manager.openApp(lifecyclePreset())
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "agents.load", "open", "wait"])
+    }
+
+    func testOpenDoesNotAcceptAnEarlierRunningObservationAfterAppExits() async {
+        for initiallyRunning in [false, true] {
+            let lifecycle = FakeLifecycleService()
+            let running = process(pid: 42, name: "Example")
+            let manager = makeManager(
+                inventory: FakeProcessInventory(results: [
+                    .success(initiallyRunning ? [running] : []),
+                    .success(initiallyRunning ? [running] : []),
+                    .success([])
+                ]),
+                lifecycle: lifecycle
+            )
+            let result = await manager.openApp(lifecyclePreset())
+            XCTAssertFalse(result.succeeded, "Neither an old snapshot nor a successful wait can override final absence")
+            XCTAssertTrue(result.message.contains("could not be verified"))
+        }
+    }
+
+    func testOpenRechecksInitiallyRunningAppWhenPostServiceInventoryFails() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [
+                .success([process(pid: 42, name: "Example")]),
+                .failure(.commandFailed("unavailable"))
+            ]),
+            lifecycle: lifecycle
+        )
+        let result = await manager.openApp(lifecyclePreset())
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "agents.load"])
     }
 
     func testOpenFailsClosedWhenFreshInventoryIsUnavailable() async {
@@ -847,7 +891,7 @@ final class ProcessManagerTests: XCTestCase {
             LifecycleJobResult(label: "example.agent", state: .changed, detail: "enabled")
         ])
         let manager = makeManager(
-            inventory: FakeProcessInventory(results: [.success([])]),
+            inventory: FakeProcessInventory(results: [.success([]), .success([]), .success([process(pid: 42, name: "Example")])]),
             lifecycle: lifecycle
         )
         var keptOff = true
@@ -1054,6 +1098,58 @@ final class ProcessManagerTests: XCTestCase {
             "terminate.helper:ExampleHelper",
             "settle"
         ])
+    }
+
+    func testKeepOffEnforcesCurrentUserPanGPSOnlyAndStopsRepeatingOnceGone() async {
+        var agent = process(pid: 42, uid: getuid(), name: "PanGPS")
+        agent.executablePath = "/Applications/GlobalProtect.app/Contents/Resources/PanGPS"
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([agent]), .success([agent]), .success([])]),
+            lifecycle: lifecycle
+        )
+        manager.watchedAppsProvider = { [.globalProtect] }
+        manager.keptOffPresetsProvider = { [.globalProtect] }
+        manager.isPresetKeptOffProvider = { _ in true }
+        await manager.enforceKeptOffPresets()
+        await manager.enforceKeptOffPresets()
+
+        XCTAssertEqual(lifecycle.calls.filter { $0 == "agents.disable" }.count, 1)
+        XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
+        XCTAssertFalse(lifecycle.calls.contains("terminate.helper:PanGPS"))
+        XCTAssertNil(manager.lifecycleReport)
+    }
+
+    func testKeepOffDoesNotClaimSuccessWhileCurrentUserAgentRemains() async {
+        var agent = process(pid: 42, uid: getuid(), name: "PanGPS")
+        agent.executablePath = "/Applications/GlobalProtect.app/Contents/Resources/PanGPS"
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([agent])]),
+            lifecycle: lifecycle
+        )
+        manager.watchedAppsProvider = { [.globalProtect] }
+        let result = await manager.keepOff(.globalProtect)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertTrue(manager.snapshots[0].hasKeepOffTargets)
+        XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
+    }
+
+    func testKeepOffSkipsRootOtherUsersAndUnrelatedPanGPSProcesses() async {
+        for (uid, path) in [
+            (uid_t(0), "/Applications/GlobalProtect.app/Contents/Resources/PanGPS"),
+            (getuid() + 1, "/Applications/GlobalProtect.app/Contents/Resources/PanGPS"),
+            (getuid(), "/tmp/PanGPS")
+        ] {
+            var agent = process(pid: 42, uid: uid, name: "PanGPS")
+            agent.executablePath = path
+            let lifecycle = FakeLifecycleService()
+            let manager = makeManager(inventory: FakeProcessInventory(results: [.success([agent])]), lifecycle: lifecycle)
+            manager.keptOffPresetsProvider = { [.globalProtect] }
+            manager.isPresetKeptOffProvider = { _ in true }
+            await manager.enforceKeptOffPresets()
+            XCTAssertTrue(lifecycle.calls.isEmpty)
+        }
     }
 
     func testExpandedMetricConsumersEnableCollectionAndRefreshLoadedList() async {

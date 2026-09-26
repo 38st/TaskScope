@@ -130,8 +130,8 @@ enum ShellCommandRunner {
                 stateLock.unlock()
 
                 source.resume()
-                // kqueue reports transitions only. If the child exited before the
-                // source was armed, this explicit non-blocking reap catches it.
+                // Catch an already-exited child promptly. Registration is
+                // asynchronous, so its handler must repeat this check.
                 reapIfExited(pid)
 
                 let newTimeoutTask = Task { [weak self] in
@@ -183,19 +183,29 @@ enum ShellCommandRunner {
             source.setEventHandler { [weak self] in
                 self?.reapIfExited(pid)
             }
+            // resume() returns before kevent registration. A short-lived child
+            // can exit after the first WNOHANG check but before registration,
+            // leaving no transition for the event handler to observe.
+            source.setRegistrationHandler { [weak self] in
+                self?.reapIfExited(pid)
+            }
             return source
         }
 
         private func reapIfExited(_ pid: pid_t) {
+            // Serialize the probes and stop probing once reaped: a delayed
+            // registration callback must never wait on a reused PID.
+            stateLock.lock()
+            guard !childReaped else {
+                stateLock.unlock()
+                return
+            }
             var status: Int32 = 0
             var waitedPID: pid_t
             repeat {
                 waitedPID = Darwin.waitpid(pid, &status, WNOHANG)
             } while waitedPID == -1 && errno == EINTR
-            guard waitedPID == pid else { return }
-
-            stateLock.lock()
-            guard !childReaped else {
+            guard waitedPID == pid else {
                 stateLock.unlock()
                 return
             }
@@ -210,6 +220,11 @@ enum ShellCommandRunner {
         }
 
         private func requestStop(message: String, exitCode: Int32) {
+            // A missed exit notification must not leave a timeout waiting
+            // forever for a child that is already a zombie.
+            if let pid = currentProcessIdentifier() {
+                reapIfExited(pid)
+            }
             stateLock.lock()
             guard !completed, !completionScheduled else {
                 stateLock.unlock()
@@ -217,7 +232,7 @@ enum ShellCommandRunner {
             }
             // The child has already exited; its real exit is what gets reported,
             // not a cancellation or timeout that lost the race by a moment.
-            guard childExitCode == nil else {
+            guard !childReaped, childExitCode == nil else {
                 stateLock.unlock()
                 return
             }

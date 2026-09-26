@@ -348,7 +348,7 @@ final class ProcessManager: ObservableObject {
                 return
             }
 
-            guard case .success(let beforeOpen) = await currentSnapshot(for: preset) else {
+            guard case .success = await currentSnapshot(for: preset) else {
                 message = "Could not verify whether \(preset.displayName) is already running; nothing was opened."
                 diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
@@ -412,18 +412,13 @@ final class ProcessManager: ObservableObject {
             // (GlobalProtect's `pangpa` agent runs the main binary). Re-check with
             // a fresh inventory before opening so a second instance is never
             // launched, and fail closed when that check cannot be made.
-            let alreadyRunning: Bool
-            if beforeOpen.isMainRunning {
-                alreadyRunning = true
-            } else {
-                guard case .success(let afterServices) = await currentSnapshot(for: preset) else {
-                    message = "Could not verify whether \(preset.displayName) started with its services; nothing was opened."
-                    diagnosticReason = .inventoryUnavailable
-                    commandResult = TaskScopeCommandResult(status: .failed, message: message)
-                    return
-                }
-                alreadyRunning = afterServices.isMainRunning
+            guard case .success(let afterServices) = await currentSnapshot(for: preset) else {
+                message = "Could not verify whether \(preset.displayName) started with its services; nothing was opened."
+                diagnosticReason = .inventoryUnavailable
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
             }
+            let alreadyRunning = afterServices.isMainRunning
 
             let didOpen: Bool
             if alreadyRunning {
@@ -438,22 +433,20 @@ final class ProcessManager: ObservableObject {
                 return
             }
 
-            let verified: Bool
-            if alreadyRunning {
-                verified = true
-            } else {
-                verified = await lifecycle.waitForMainProcess(
+            if !alreadyRunning {
+                _ = await lifecycle.waitForMainProcess(
                     for: preset,
                     timeoutSeconds: 5
                 )
             }
-            let refreshed = await refreshAfterMutation()
+            let finalInventory = await refreshInventoryAfterMutation()
 
-            if !refreshed {
+            if finalInventory == nil {
                 message = "\(preset.displayName) was launched, but TaskScope could not verify its final state."
                 diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if verified || snapshot(for: preset).isMainRunning {
+            } else if let finalInventory,
+                      snapshot(for: preset, inventory: finalInventory).isMainRunning {
                 let restored = daemonResult.didChangeState
                     || enableResult.didChangeState
                     || agentResult.didChangeState
@@ -568,7 +561,7 @@ final class ProcessManager: ObservableObject {
                 message = "Keep Off is enabled, but TaskScope could not verify the final process state."
                 diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if nowSnapshot.isMainRunning || nowSnapshot.hasHelpers {
+            } else if nowSnapshot.hasKeepOffTargets {
                 message = "Keep Off is enabled, but user-facing GlobalProtect processes may still run."
                 diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
@@ -642,7 +635,7 @@ final class ProcessManager: ObservableObject {
             guard operationGate.state != .runningMutation else { continue }
             if !force {
                 guard case .success(let current) = await currentSnapshot(for: preset),
-                      current.isMainRunning || current.hasHelpers else {
+                      current.hasKeepOffTargets else {
                     continue
                 }
             }
@@ -983,6 +976,10 @@ final class ProcessManager: ObservableObject {
 
     @discardableResult
     private func refreshAfterMutation() async -> Bool {
+        await refreshInventoryAfterMutation() != nil
+    }
+
+    private func refreshInventoryAfterMutation() async -> [AppProcess]? {
         switch await verificationInventory.load(fetchExtendedStats: hasLoadedProcessList && fetchExtendedStats) {
         case .success(let inventory):
             recordInventorySuccess(clearsProcessLoadError: hasLoadedProcessList)
@@ -991,10 +988,10 @@ final class ProcessManager: ObservableObject {
                 fullProcessInventory = inventory
                 publishDisplayProcesses()
             }
-            return true
+            return inventory
         case .failure(let error):
             recordInventoryFailure(error)
-            return false
+            return nil
         }
     }
 

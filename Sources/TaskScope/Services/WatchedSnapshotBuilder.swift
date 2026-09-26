@@ -1,9 +1,11 @@
+import Darwin
 import Foundation
 
 /// Builds watched-preset status from an immutable process inventory. It has no
 /// polling, notification, persistence, or presentation responsibilities.
 struct WatchedSnapshotBuilder: Sendable {
     let excludedPID: Int32
+    var currentUID: uid_t = getuid()
 
     func snapshots(
         for presets: [WatchedAppPreset],
@@ -78,7 +80,15 @@ struct WatchedSnapshotBuilder: Sendable {
             preset: preset,
             runningNames: runningNames,
             mainProcessPIDs: mainProcessPIDs,
-            unprivilegedProtectedNames: unprivilegedProtectedNames
+            unprivilegedProtectedNames: unprivilegedProtectedNames,
+            hasCurrentUserLaunchAgent: preset.hasSupportedGlobalProtectIdentity
+                && currentUID != 0
+                && inventory.contains {
+                    $0.pid != excludedPID
+                        && $0.uid == currentUID
+                        && $0.executablePath?.hasPrefix(bundleContentsDirectory) == true
+                        && $0.executablePath.map { URL(fileURLWithPath: $0).lastPathComponent } == "PanGPS"
+                }
         )
     }
 }

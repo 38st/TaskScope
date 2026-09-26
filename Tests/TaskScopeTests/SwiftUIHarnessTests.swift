@@ -5,6 +5,22 @@ import XCTest
 
 @MainActor
 final class SwiftUIHarnessTests: XCTestCase {
+    func testKeepOffBadgeShowsEnforcementWhileCurrentUserAgentRemains() throws {
+        let snapshot = WatchedAppSnapshot(
+            preset: .globalProtect,
+            runningNames: [],
+            unprivilegedProtectedNames: ["PanGPS"],
+            hasCurrentUserLaunchAgent: true
+        )
+        let card = PresetCard(
+            snapshot: snapshot,
+            onOpen: {}, onQuitApp: {}, onQuitHelpers: {}, onQuitAll: {},
+            isKeptOff: true, isKeepOffControlEnabled: true, onKeepOffChanged: { _ in }
+        )
+        XCTAssertNoThrow(try card.inspect().find(text: "Enforcing"))
+        XCTAssertThrowsError(try card.inspect().find(text: "Kept Off"))
+    }
+
     func testLifecycleDryRunListsConfiguredTargetsWithoutPerformingActions() {
         let preset = WatchedAppPreset(
             displayName: "Example",

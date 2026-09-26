@@ -19,6 +19,43 @@ final class WatchedAppsStoreTests: XCTestCase {
         super.tearDown()
     }
 
+    func testSeededGlobalProtectSurvivesReloadAndCatalogLookup() {
+        let first = WatchedAppsStore(userDefaults: defaults, key: key)
+        let second = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertEqual(first.presets, [.globalProtect])
+        XCTAssertEqual(second.presets, first.presets)
+        XCTAssertFalse(second.isReadOnlyAfterCorruption)
+        XCTAssertNil(second.persistenceIssue)
+        XCTAssertEqual(
+            WatchedPresetCatalog(suiteName: suiteName, key: key).entities().map(\.id),
+            [WatchedAppPreset.globalProtectID]
+        )
+    }
+
+    func testGlobalProtectNotificationUpdateSurvivesReload() {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        var preset = WatchedAppPreset.globalProtect
+        preset.notificationsEnabled = false
+        XCTAssertTrue(store.update(preset))
+        let reloaded = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertEqual(reloaded.presets, [preset])
+        XCTAssertFalse(reloaded.isReadOnlyAfterCorruption)
+    }
+
+    func testOptionalCustomAgentSurvivesNormalizationAndReload() {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        var preset = validPreset(name: "Optional")
+        preset.userLaunchAgentJobs = [
+            UserLaunchAgentJob(label: " optional.agent ", plistPath: "/agents/../agents/optional.plist", isRequired: false)
+        ]
+        XCTAssertTrue(store.add(preset))
+        let reloaded = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertEqual(reloaded.presets.last?.userLaunchAgentJobs, [
+            UserLaunchAgentJob(label: "optional.agent", plistPath: "/agents/optional.plist", isRequired: false)
+        ])
+        XCTAssertFalse(reloaded.isReadOnlyAfterCorruption)
+    }
+
     func testCorruptPayloadIsBackedUpAndCannotBeOverwrittenByMutation() {
         let corrupt = Data([0xFE, 0xED])
         defaults.set(corrupt, forKey: key)
@@ -343,6 +380,10 @@ final class WatchedAppsStoreTests: XCTestCase {
         XCTAssertFalse(store.update(modified))
         XCTAssertEqual(store.presets, [.globalProtect])
         XCTAssertTrue(store.validationError?.contains("cannot be modified") == true)
+        var alteredRequirement = WatchedAppPreset.globalProtect
+        alteredRequirement.userLaunchAgentJobs[1].isRequired = true
+        XCTAssertFalse(store.update(alteredRequirement))
+        XCTAssertEqual(store.presets, [.globalProtect])
     }
 
     func testPreviousGlobalProtectAgentDefinitionMigratesToCurrentOptionalAgentSet() throws {
@@ -369,6 +410,11 @@ final class WatchedAppsStoreTests: XCTestCase {
             persisted[0].userLaunchAgentJobs,
             WatchedAppPreset.globalProtectUserLaunchAgentJobs
         )
+        for _ in 0..<2 {
+            let reloaded = WatchedAppsStore(userDefaults: defaults, key: key)
+            XCTAssertEqual(reloaded.presets, persisted)
+            XCTAssertFalse(reloaded.isReadOnlyAfterCorruption)
+        }
     }
 
     private func validPreset(name: String) -> WatchedAppPreset {

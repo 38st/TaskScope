@@ -104,6 +104,26 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(both.unprivilegedProtectedNames, ["PanGPS"])
     }
 
+    func testKeepOffRecognizesOnlySupportedCurrentUserAgentExecutables() {
+        let builder = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
+        let path = "/Applications/GlobalProtect.app/Contents/Resources/PanGPS"
+        let agent = process(pid: 20, name: "PanGPS", path: path, uid: 501)
+        XCTAssertTrue(builder.snapshot(for: .globalProtect, in: [agent]).hasKeepOffTargets)
+        for other in [
+            process(pid: 20, name: "PanGPS", path: path, uid: 0),
+            process(pid: 20, name: "PanGPS", path: path, uid: 502),
+            process(pid: 20, name: "PanGPS", path: path, uid: nil),
+            process(pid: 99, name: "PanGPS", path: path, uid: 501),
+            process(pid: 20, name: "PanGPS", path: "/tmp/PanGPS", uid: 501),
+            process(pid: 20, name: "PanGPS", path: "/Applications/GlobalProtect.app/Contents-fake/PanGPS", uid: 501)
+        ] {
+            XCTAssertFalse(builder.snapshot(for: .globalProtect, in: [other]).hasKeepOffTargets)
+        }
+        var custom = WatchedAppPreset.globalProtect
+        custom.id = UUID()
+        XCTAssertFalse(builder.snapshot(for: custom, in: [agent]).hasKeepOffTargets)
+    }
+
     func testSnapshotRecordsMainProcessPIDsForLifecycleDecisions() {
         let preset = WatchedAppPreset.globalProtect
         let main = process(

@@ -401,7 +401,8 @@ final class WatchedAppsStore: ObservableObject {
                 label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
                 plistPath: path.hasPrefix("/")
                     ? URL(fileURLWithPath: path).standardizedFileURL.path
-                    : path
+                    : path,
+                isRequired: $0.isRequired
             )
         }
         value.systemLaunchDaemonJobs = value.systemLaunchDaemonJobs.map {

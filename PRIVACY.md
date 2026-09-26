@@ -13,7 +13,8 @@ document and the in-app disclosure must be updated before that feature ships.
 
 TaskScope can read local information exposed by macOS process tools, including:
 
-- PID, parent PID, process/executable name, command path, start and elapsed time;
+- PID, parent PID, process owner UID, process/executable name, command path,
+  start and elapsed time;
 - observed CPU and resident memory usage;
 - extended per-process network byte counters (from `nettop`) and cumulative
   disk I/O byte counters (from the kernel's per-process resource usage) when
