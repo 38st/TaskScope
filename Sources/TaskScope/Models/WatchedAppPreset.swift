@@ -198,7 +198,8 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
 
 struct WatchedAppSnapshot: Equatable, Sendable {
     var preset: WatchedAppPreset
-    /// Main, helper, and *system-daemon* protected names observed running.
+    /// Main, helper, and root-owned protected names observed running. Root
+    /// ownership alone does not identify the process's launchd domain.
     var runningNames: Set<String>
     /// PIDs of the processes that matched the main process definition. Lifecycle
     /// actions that must leave the main app alone (Quit Helpers) use these to

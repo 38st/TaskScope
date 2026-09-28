@@ -164,7 +164,7 @@ enum ProcessLifecycleController {
 
             let command = "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))"
             let result = await runtime.runCommand(command, launchAgentBootoutTimeout)
-            let after = await inspectLaunchJob(target, runtime: runtime).inspection
+            let after = await inspectAfterBootout(target, waitForExit: result.succeeded, runtime: runtime)
             let didUnload = after == .notLoaded
             results.append(LifecycleJobResult(
                 label: job.label,
@@ -234,7 +234,7 @@ enum ProcessLifecycleController {
                     "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))",
                     launchAgentBootoutTimeout
                 )
-                let after = await inspectLaunchJob(target, runtime: runtime).inspection
+                let after = await inspectAfterBootout(target, waitForExit: bootout.succeeded, runtime: runtime)
                 let didUnload = after == .notLoaded
                 results.append(LifecycleJobResult(
                     label: job.label,
@@ -293,7 +293,13 @@ enum ProcessLifecycleController {
         for preset: WatchedAppPreset,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> LifecycleBatchResult {
-        let jobs = preset.lifecycleUserLaunchAgentJobs
+        await bootstrapUserLaunchAgents(jobs: preset.lifecycleUserLaunchAgentJobs, runtime: runtime)
+    }
+
+    private static func bootstrapUserLaunchAgents(
+        jobs: [UserLaunchAgentJob],
+        runtime: ProcessLifecycleRuntime
+    ) async -> LifecycleBatchResult {
         guard !jobs.isEmpty else { return .notNeeded }
         let uid = runtime.userID
         var results: [LifecycleJobResult] = []
@@ -373,7 +379,7 @@ enum ProcessLifecycleController {
             }
 
             let kickstart = await runtime.runCommand(
-                "/bin/launchctl kickstart -k \(ShellCommandRunner.shellQuoted(target))",
+                "/bin/launchctl kickstart \(ShellCommandRunner.shellQuoted(target))",
                 15
             )
             let verified = await inspectLaunchJob(target, runtime: runtime).inspection == .loaded
@@ -408,6 +414,14 @@ enum ProcessLifecycleController {
         runtime: ProcessLifecycleRuntime = .live
     ) async -> LifecycleBatchResult {
         guard preset.hasCanonicalGlobalProtectIdentity else { return .notNeeded }
+        // On current installations PanGPS is a setuid executable launched by
+        // gui/<uid>/pangps. Its effective root UID does not make it pangpsd.
+        // When pre-logon is off, starting pangpsd can make it remove itself.
+        // Restore the installed session service before starting the UI instead.
+        let sessionJob = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        if runtime.fileExists(sessionJob.plistPath) {
+            return await ensureGlobalProtectSessionService(sessionJob, runtime: runtime)
+        }
         let jobs = preset.lifecycleSystemLaunchDaemonJobs
         guard !jobs.isEmpty else { return .notNeeded }
         var results: [LifecycleJobResult] = []
@@ -467,6 +481,41 @@ enum ProcessLifecycleController {
         return LifecycleBatchResult(jobs: results)
     }
 
+    private static func ensureGlobalProtectSessionService(
+        _ job: UserLaunchAgentJob,
+        runtime: ProcessLifecycleRuntime
+    ) async -> LifecycleBatchResult {
+        let loaded = await bootstrapUserLaunchAgents(jobs: [job], runtime: runtime)
+        guard loaded.succeeded else { return loaded }
+        let target = "gui/\(runtime.userID)/\(job.label)"
+        let attempts = Int(systemDaemonReadinessTimeout / 0.5)
+        for attempt in 0...attempts {
+            let inspection = await runtime.runCommand(
+                "/bin/launchctl print \(ShellCommandRunner.shellQuoted(target))", 15
+            )
+            if let pid = launchJobPID(from: inspection),
+               case .success(let inventory) = await runtime.loadProcessInventory(),
+               let process = inventory.first(where: { $0.pid == pid }),
+               process.uid == 0 || process.uid == runtime.userID,
+               let path = runtime.executablePathForPID(pid) {
+                var verified = process
+                verified.executablePath = path
+                if GlobalProtectCompatibilityChecker.trustedName(verified) == .panGPS {
+                    return LifecycleBatchResult(jobs: [LifecycleJobResult(
+                        label: job.label,
+                        state: loaded.didChangeState ? .changed : .verified,
+                        detail: "Login-session VPN service is running; launchd PID and executable verified. It may run as root."
+                    )])
+                }
+            }
+            if attempt < attempts { await runtime.sleep(systemDaemonReadinessPollNanoseconds) }
+        }
+        return LifecycleBatchResult(jobs: [LifecycleJobResult(
+            label: job.label, state: .failed,
+            detail: "The login-session VPN service was loaded, but a matching PanGPS process could not be verified. No separate system daemon was started."
+        )])
+    }
+
     static func waitForProcessNamed(
         _ name: String,
         timeoutSeconds: TimeInterval,
@@ -505,6 +554,22 @@ enum ProcessLifecycleController {
             15
         )
         return (launchJobInspection(from: result), launchJobPID(from: result))
+    }
+
+    /// bootout can acknowledge removal before a service finishes its graceful
+    /// exit. Confirm disappearance without signalling or restarting that PID.
+    private static func inspectAfterBootout(
+        _ target: String,
+        waitForExit: Bool,
+        runtime: ProcessLifecycleRuntime
+    ) async -> LaunchJobInspection {
+        let attempts = waitForExit ? Int(launchAgentBootoutTimeout / 0.5) : 0
+        for attempt in 0...attempts {
+            let state = await inspectLaunchJob(target, runtime: runtime).inspection
+            guard state == .loaded, attempt < attempts else { return state }
+            await runtime.sleep(500_000_000)
+        }
+        return .loaded
     }
 
     static func launchJobInspection(from result: ShellCommandResult) -> LaunchJobInspection {

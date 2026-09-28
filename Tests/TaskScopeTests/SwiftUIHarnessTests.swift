@@ -406,7 +406,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try card.find(text: "Keep GlobalProtect Off"))
         XCTAssertNoThrow(
             try card.find(
-                text: "Stops the app and VPN service with administrator approval. Open restores both."
+                text: "Disconnect the VPN first, then stop the app and service with administrator approval. Open restores both."
             )
         )
 

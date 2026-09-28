@@ -690,6 +690,40 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
     }
 
+    func testStopWaitsForLaunchdToFinishRemovingAnAcknowledgedJob() async {
+        for keepOff in [false, true] {
+            let loaded = result(stdout: "pid = 42", exitCode: 0)
+            let responses = (keepOff ? [result(exitCode: 0)] : []) + [
+                loaded, result(exitCode: 0), loaded, loaded,
+                result(stderr: "Could not find service", exitCode: 113)
+            ]
+            let harness = LifecycleRuntimeHarness(
+                existingPaths: ["/agents/example.plist"], commandResults: responses
+            )
+            let preset = presetWithAgent(plistPath: "/agents/example.plist")
+            let batch = keepOff
+                ? await ProcessLifecycleController.disableUserLaunchAgents(for: preset, runtime: harness.runtime)
+                : await ProcessLifecycleController.unloadUserLaunchAgents(for: preset, runtime: harness.runtime)
+            XCTAssertTrue(batch.succeeded)
+            XCTAssertEqual(batch.jobs.first?.state, .changed)
+            XCTAssertEqual(harness.commands.filter { $0.contains("bootout") }.count, 1)
+            XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") || $0.contains("kill") })
+        }
+    }
+
+    func testStopWaitIsBoundedWhenAcknowledgedJobNeverUnloads() async {
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: ["/agents/example.plist"], commandResults: [],
+            respond: { _ in ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0) }
+        )
+        let batch = await ProcessLifecycleController.disableUserLaunchAgents(
+            for: presetWithAgent(plistPath: "/agents/example.plist"), runtime: harness.runtime
+        )
+        XCTAssertFalse(batch.succeeded)
+        XCTAssertEqual(harness.commands.filter { $0.contains("bootout") }.count, 1)
+        XCTAssertLessThan(harness.commands.count, 70)
+    }
+
     func testAllowToRunClearsDisableWithoutStartingAgent() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
@@ -726,6 +760,67 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertTrue(batch.succeeded)
         XCTAssertEqual(batch.jobs.first?.state, .alreadyUnloaded)
         XCTAssertTrue(harness.commands.isEmpty)
+    }
+
+    func testRootPanGPSInTheSessionJobIsAcceptedWithoutBootstrappingSystemDaemon() async {
+        let job = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        for owner: uid_t in [0, 501] {
+            var service = process(pid: 42, command: "/Applications/GlobalProtect.app/Contents/Resources/PanGPS")
+            service.uid = owner
+            let harness = LifecycleRuntimeHarness(
+                existingPaths: [job.plistPath], launchAgentLabels: [job.plistPath: job.label],
+                commandResults: [],
+                respond: { _ in ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0) },
+                inventory: [service]
+            )
+            let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
+            XCTAssertTrue(result.succeeded)
+            XCTAssertEqual(result.jobs.first?.label, job.label)
+            XCTAssertTrue(result.jobs.first?.detail.contains("Login-session") == true)
+            XCTAssertFalse(harness.commands.contains { $0.contains("osascript") || $0.contains("system/") || $0.contains("kickstart") })
+        }
+    }
+
+    func testStoppedSessionServiceIsEnabledAndStartedWithoutKillingTheNewProcess() async {
+        let job = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        var service = process(pid: 42, command: "/Applications/GlobalProtect.app/Contents/Resources/PanGPS")
+        service.uid = 0
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [job.plistPath], launchAgentLabels: [job.plistPath: job.label],
+            commandResults: [
+                result(stderr: "Could not find service", exitCode: 113),
+                result(exitCode: 0), result(exitCode: 0), result(exitCode: 0),
+                result(stdout: "pid = 42", exitCode: 0), result(stdout: "pid = 42", exitCode: 0)
+            ], inventory: [service]
+        )
+        let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.jobs.first?.state, .changed)
+        XCTAssertEqual(harness.commands.prefix(4), [
+            "/bin/launchctl print 'gui/501/\(job.label)'",
+            "/bin/launchctl enable 'gui/501/\(job.label)'",
+            "/bin/launchctl bootstrap 'gui/501' '\(job.plistPath)'",
+            "/bin/launchctl kickstart 'gui/501/\(job.label)'"
+        ])
+        XCTAssertFalse(harness.commands.contains { $0.contains("osascript") || $0.contains("kickstart -k") })
+    }
+
+    func testSessionServiceReadinessRejectsWrongOwnerPIDAndExecutableWithoutSystemFallback() async {
+        let job = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        for invalid in ["owner", "pid", "path", "missing-path"] {
+            var service = process(pid: invalid == "pid" ? 43 : 42,
+                                  command: invalid == "path" ? "/tmp/PanGPS" : "/Applications/GlobalProtect.app/Contents/Resources/PanGPS")
+            service.uid = invalid == "owner" ? 502 : 0
+            let harness = LifecycleRuntimeHarness(
+                existingPaths: [job.plistPath], launchAgentLabels: [job.plistPath: job.label],
+                commandResults: [],
+                respond: { _ in ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0) },
+                inventory: [service], executablePathsAtSignal: invalid == "missing-path" ? [:] : nil
+            )
+            let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
+            XCTAssertFalse(result.succeeded, invalid)
+            XCTAssertFalse(harness.commands.contains { $0.contains("osascript") || $0.contains("system/") })
+        }
     }
 
     /// A loaded daemon whose reported pid is not running the expected process is

@@ -225,11 +225,19 @@ failure. **Apply Keep Off…** retries the explicit stop. Existing Keep Off
 preferences from older builds require this explicit action to stop the system
 service. Background enforcement never requests administrator privileges.
 
-The per-user `pangps` process is shown as "PanGPS (user)"; the root `PanGPS`
-service is separate. Ordinary Quit actions leave the system service running.
+A `PanGPS` process running as root can belong to either the login-session
+`pangps` job or the system `pangpsd` job. Open restores and verifies the installed
+session service first; the system daemon is used when that agent is absent.
+Ordinary Quit actions unload session jobs but leave the system daemon alone.
 An off result verifies the known processes and launchd jobs, not VPN health or
 system extension removal. If policy restores or rejects changes to services,
 consult the organization managing the Mac.
+
+Disconnect in GlobalProtect before using Keep Off so the VPN can restore normal
+networking. A live test on 6.3.3-1121 found public DNS unavailable after stopping
+an active tunnel; Open restored DNS without reconnecting the VPN. Stopping the
+already-disconnected VPN retained public DNS/HTTPS access. TaskScope does not
+rewrite DNS, routes, or vendor settings as a workaround.
 
 ### Collect GlobalProtect compatibility evidence
 

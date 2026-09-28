@@ -75,9 +75,9 @@ Required invariants:
 - never turn an unreadable inventory into a success or stale-target claim;
 - never signal TaskScope itself, launchd (pid 1), the kernel task, or a process
   group; the parser drops such rows and every signal path refuses them;
-- treat a protected process name as the protected system daemon only when the
-  process runs as root, so a same-named per-user instance is never mistaken
-  for it;
+- distinguish privileged processes from launchd domains: root ownership alone
+  cannot identify the system daemon, because a login-session PanGPS can elevate
+  via setuid; lifecycle readiness binds the PID to the actual job;
 - require a separate, explicit Force Stop confirmation for `SIGKILL`; preset
   Quit, Close, and Keep Off escalate to `SIGKILL` only after a disclosed
   graceful window (3 seconds) with the identity still present;
@@ -144,8 +144,12 @@ Required invariants:
 - disable before bootout so launchd cannot immediately respawn the service;
 - check both the disabled override and absence of the loaded job after stopping;
   denied, cancelled, timed-out, or unknown reads cannot establish success;
-- enable before bootstrap; Open must leave an already-loaded daemon running,
-  without `kickstart -k` or a direct signal to PanGPS;
+- enable before bootstrap; Open restores the installed session `pangps` job
+  before its UI, checking the launchd PID, current-user/root ownership, and a
+  fresh kernel executable path in the fixed product directories; only layouts
+  without this agent use the system daemon path;
+- do not force-restart a newly bootstrapped user job with `kickstart -k`, or
+  directly signal PanGPS. A loaded service is left running;
 - turning Keep Off off clears system and user overrides without starting jobs;
 - report cancellation and partial failures, retaining requested intent until
   restoration succeeds; show a running system service instead of an off badge;

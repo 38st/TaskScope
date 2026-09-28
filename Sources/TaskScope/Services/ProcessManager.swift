@@ -527,7 +527,7 @@ final class ProcessManager: ObservableObject {
                 diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if preset.hasCanonicalGlobalProtectIdentity && !nowSnapshot.protectedRunning.isEmpty {
-                message = "Keep Off was requested, but the system VPN service is still running. Choose Apply Keep Off to retry with administrator approval."
+                message = "Keep Off was requested, but a privileged VPN service is still running. Choose Apply Keep Off to retry with administrator approval."
                 diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if nowSnapshot.hasKeepOffTargets {

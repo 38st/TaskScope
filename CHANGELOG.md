@@ -45,6 +45,23 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
+- Fixed process identity validation for macOS `ps` timestamps padded with spaces
+  or tabs. Valid processes no longer disappear from the inventory or produce a
+  false Quiet state; incomplete reads must include TaskScope's own stable PID.
+  Regression coverage includes the live process inventory.
+
+- Fixed GlobalProtect restoration on installations where the login-session
+  `pangps` job runs PanGPS as root. Open now restores and verifies that installed
+  job instead of waiting for the separate system daemon, which can remove
+  itself when pre-logon is disabled. User-job bootstrap no longer force-restarts
+  the process it just launched. Stop waits for launchd to finish removing an
+  acknowledged job instead of reporting a premature failure during shutdown.
+  Regression tests cover root/current-user session
+  services and mismatched PID, owner, or executable.
+- Added Disconnect-first guidance after live testing found that stopping an
+  active tunnel could leave DNS unavailable until Open restored the service.
+  Stopping an already-disconnected VPN retained public DNS/HTTPS access.
+
 - Separated process-list projection and caching from process operations, and
   consolidated preset stop coordination while preserving target selection,
   failure precedence, diagnostics, and user-facing messages.

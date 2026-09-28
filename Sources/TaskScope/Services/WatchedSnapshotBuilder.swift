@@ -59,12 +59,10 @@ struct WatchedSnapshotBuilder: Sendable {
                 }
         )
 
-        // A protected name identifies the protected *system* daemon only when the
-        // process actually runs as root. GlobalProtect's optional per-user
-        // `pangps` agent runs a binary that is also named PanGPS; reporting it as
-        // the system daemon would make Keep Off claim a service is available
-        // when only the user agent is, and would hide that the user agent is
-        // still running. An unknown uid is never promoted to root.
+        // Root ownership identifies a privileged process, not its launchd
+        // domain: the session pangps agent also runs PanGPS as root via setuid.
+        // Lifecycle readiness separately binds it to the correct launchd PID.
+        // Neither instance is ever directly signalled as an ordinary helper.
         let protectedNames = Set(preset.protectedProcessNames)
         var unprivilegedProtectedNames = Set<String>()
         for process in inventory

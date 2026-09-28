@@ -83,9 +83,9 @@ enum ProcessListReader {
         // survived unchanged; malformed validation output still fails the
         // entire read, but a cleanly missing PID is simply no longer present.
         parsed = validatedProcesses(parsed, using: validatedStartTimeMap)
-        // TaskScope itself is always running, so an empty inventory can only be
-        // a broken read, never a true observation.
-        guard !parsed.isEmpty else {
+        // This process must survive both snapshots. A nonempty but incomplete
+        // validation result must not turn a broken read into "nothing running".
+        guard parsed.contains(where: { $0.pid == ProcessInfo.processInfo.processIdentifier }) else {
             return .failure(.parseFailed)
         }
         attachExecutablePaths(
@@ -210,11 +210,10 @@ enum ProcessListReader {
     ) -> Result<[Int32: String], ProcessInventoryError> {
         var values: [Int32: String] = [:]
         for line in output.split(separator: "\n") {
-            let parts = line.split(
-                separator: " ",
-                maxSplits: 5,
-                omittingEmptySubsequences: true
-            )
+            // ps pads the final lstart column. A bounded split left those
+            // trailing spaces attached to the year, making every identity
+            // comparison fail except an accidentally trimmed final row.
+            let parts = line.split(whereSeparator: \.isWhitespace)
             guard parts.count == 6, let pid = Int32(parts[0]) else {
                 return .failure(.parseFailed)
             }

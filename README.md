@@ -9,12 +9,20 @@ presets, lifecycle controls, saved selections, auto-stop rules, notifications,
 Shortcuts actions, and process-history charts.
 
 TaskScope includes a GlobalProtect preset with a reversible **Keep GlobalProtect
-Off** control. After confirmation and macOS administrator approval, it disables
+Off** control. Disconnect in GlobalProtect first so it can restore normal
+networking. After confirmation and macOS administrator approval, TaskScope disables
 and unloads the known per-user agents and the fixed system `PanGPS` VPN service.
-This disconnects an active VPN. **Open** clears the disable overrides, restores
-the system service, and loads the user agents before opening the app. Turning
+This disconnects an active VPN. **Open** clears the disable overrides and
+restores the installed login-session VPN service (`pangps`) before the app.
+Installations without that agent use the system daemon (`pangpsd`). A session
+service can run as root; TaskScope verifies its launchd PID and executable
+instead of choosing a service solely from its owner. Turning
 Keep Off off clears the overrides without starting anything. No uninstall,
 reinstall, or changes to vendor files or VPN configuration are needed.
+
+On the tested Mac, stopping an active tunnel left public DNS unavailable until
+**Open** restored the service. Stopping an already-disconnected VPN kept public
+DNS/HTTPS working. TaskScope does not rewrite network settings to recover DNS.
 
 Ordinary Quit actions still leave the system service alone. Background Keep Off
 enforcement never requests privileges; if the system service returns, its

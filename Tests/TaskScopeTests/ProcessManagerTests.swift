@@ -1004,7 +1004,7 @@ final class ProcessManagerTests: XCTestCase {
         manager.watchedAppsProvider = { [.globalProtect] }
         let result = await manager.keepOff(.globalProtect)
         XCTAssertEqual(result.status, .failed)
-        XCTAssertTrue(result.message.contains("system VPN service is still running"))
+        XCTAssertTrue(result.message.contains("privileged VPN service is still running"))
     }
 
     func testGlobalProtectRestoreEnablesSystemBeforeUserAgents() async {

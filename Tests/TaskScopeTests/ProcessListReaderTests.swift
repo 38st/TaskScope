@@ -192,6 +192,26 @@ final class ProcessListReaderTests: XCTestCase {
         )
     }
 
+    func testPaddedPSStartTimesRetainEveryMatchingProcessIdentity() throws {
+        let first = try XCTUnwrap(ProcessListReader.parseProcessLine(
+            "42 1 501 0.0 100 Mon Sep 28 12:00:01 2026 00:10 GlobalProtect"[...]
+        ))
+        let second = try XCTUnwrap(ProcessListReader.parseProcessLine(
+            "43 1 0 0.0 100 Mon Sep 28 12:00:02 2026 00:10 PanGPS"[...]
+        ))
+        let times = try ProcessListReader.parseStartTimes(
+            "   42 Mon Sep 28 12:00:01 2026    \n\t43 Mon Sep 28 12:00:02 2026\t  \n"
+        ).get()
+        XCTAssertEqual(times[42], first.startTime)
+        XCTAssertEqual(times[43], second.startTime)
+        XCTAssertEqual(ProcessListReader.validatedProcesses([first, second], using: times), [first, second])
+    }
+
+    func testLiveProcessInventoryIncludesItsOwnStableProcess() async throws {
+        let inventory = try await ProcessListReader.currentProcessList(fetchExtendedStats: false).get()
+        XCTAssertTrue(inventory.contains { $0.pid == ProcessInfo.processInfo.processIdentifier })
+    }
+
     func testFailedIdentityValidationCommandIsInventoryFailure() {
         let result = ShellCommandResult(
             command: ProcessListReader.identityValidationCommand,

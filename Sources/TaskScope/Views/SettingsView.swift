@@ -431,7 +431,7 @@ struct SettingsView: View {
         }
         if preset.id == WatchedAppPreset.globalProtectID {
             operations.append(
-                "Keep Off: persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; an explicit action also requests administrator approval to disable and unload the fixed system VPN service, disconnecting any VPN. Background enforcement never requests privileges. Open re-enables and restores all services; turning Keep Off off only clears their persistent overrides."
+                "Keep Off: disconnect the VPN in GlobalProtect first so it can restore normal networking, then persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; an explicit action also requests administrator approval to disable and unload the fixed system VPN service, disconnecting any VPN still active. Stopping an active tunnel can leave DNS unavailable; Open restores the service if that happens. Background enforcement never requests privileges. Open re-enables and restores all services; turning Keep Off off only clears their persistent overrides."
             )
         }
         return operations

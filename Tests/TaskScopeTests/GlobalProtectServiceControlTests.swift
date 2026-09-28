@@ -163,7 +163,7 @@ private actor ServiceHarness {
     nonisolated var runtime: ProcessLifecycleRuntime {
         ProcessLifecycleRuntime(
             userID: 501,
-            fileExists: { [self] _ in plistLabel != nil },
+            fileExists: { [self] path in plistLabel != nil && path == "/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist" },
             launchAgentLabel: { [self] _ in plistLabel },
             runCommand: { [self] command, _ in await run(command) },
             loadProcessInventory: {
