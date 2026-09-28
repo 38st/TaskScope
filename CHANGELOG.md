@@ -58,9 +58,9 @@ All notable changes to TaskScope are documented in this file. The project uses
   acknowledged job instead of reporting a premature failure during shutdown.
   Regression tests cover root/current-user session
   services and mismatched PID, owner, or executable.
-- Added Disconnect-first guidance after live testing found that stopping an
-  active tunnel could leave DNS unavailable until Open restored the service.
-  Stopping an already-disconnected VPN retained public DNS/HTTPS access.
+- Added Disconnect-first guidance and Open recovery instructions after live
+  testing found stale VPN DNS after stopping, even following a disconnect.
+  Open restored normal DNS; stopping that idle service preserved DNS/HTTPS.
 
 - Separated process-list projection and caching from process operations, and
   consolidated preset stop coordination while preserving target selection,

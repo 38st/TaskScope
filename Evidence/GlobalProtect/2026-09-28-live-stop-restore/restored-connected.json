@@ -1,0 +1,24 @@
+{
+  "time_utc": "2026-09-28T17:09:49.248777+00:00",
+  "jobs": {
+    "pangpa": {
+      "loaded": true,
+      "override": "enabled"
+    },
+    "pangps": {
+      "loaded": true,
+      "override": "enabled"
+    },
+    "pangpsd": {
+      "loaded": false,
+      "override": "enabled"
+    }
+  },
+  "process_counts": {
+    "GlobalProtect": 1,
+    "PanGPA": 0,
+    "PanGPS": 1
+  },
+  "vendor_launch_files_unchanged": true,
+  "taskscope_executable_sha256": "cae9189e666d2ae364c9950816f823801fbbf405a78441ca4f839989f93a66a1"
+}

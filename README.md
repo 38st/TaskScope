@@ -20,9 +20,10 @@ instead of choosing a service solely from its owner. Turning
 Keep Off off clears the overrides without starting anything. No uninstall,
 reinstall, or changes to vendor files or VPN configuration are needed.
 
-On the tested Mac, stopping an active tunnel left public DNS unavailable until
-**Open** restored the service. Stopping an already-disconnected VPN kept public
-DNS/HTTPS working. TaskScope does not rewrite network settings to recover DNS.
+On the tested Mac, stopping after VPN use could leave public DNS unavailable,
+including after the client showed Disconnected. **Open** restored normal DNS
+without reconnecting; stopping that idle service then kept public DNS/HTTPS
+working. TaskScope does not rewrite network settings to recover DNS.
 
 Ordinary Quit actions still leave the system service alone. Background Keep Off
 enforcement never requests privileges; if the system service returns, its

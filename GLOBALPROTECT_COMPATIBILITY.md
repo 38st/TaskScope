@@ -1,14 +1,26 @@
 # GlobalProtect compatibility evidence
 
-**GlobalProtect lifecycle compatibility unverified.** The self-check provides
-read-only installation/state evidence for the fixed built-in preset. It does
-not establish that Keep Off works across login/reboot or under any particular
-management policy, or that Open restores a working VPN connection.
+**GlobalProtect lifecycle compatibility unverified across login/reboot and
+management policies.** An authorized live stop/restore cycle passed on the
+specific Mac described below, including a subsequent Connected status. The
+self-check alone provides read-only installation/state evidence and does not
+establish lifecycle or VPN connectivity results.
 
 The current Keep Off implementation includes an explicitly authorized stop of
 the fixed system VPN service. Earlier read-only evidence below predates this
 behavior. Automated full-stop/restore fixtures do not establish live VPN,
-login/reboot, or managed-policy compatibility.
+login/reboot, or managed-policy compatibility. See the separate
+[September 28 live test](Evidence/GlobalProtect/2026-09-28-live-stop-restore.md)
+for the exercised behavior, exact binaries, and limitations.
+
+On the tested 6.3.3-1121 layout, the GUI-session `pangps` job runs a setuid
+PanGPS process as root. A root process therefore does not by itself establish
+that `pangpsd` is running. When the session agent is installed, Open restores
+that service and verifies its launchd PID and executable; only layouts without
+it require the separate system daemon. The vendor also documents a related
+[daemon-to-session-agent startup failure](https://docs.paloaltonetworks.com/globalprotect/release-notes/6-3/globalprotect-addressed-issues/globalprotect-6-3-3-h9-windows-and-macos-addressed-issues)
+when pre-logon is disabled. This reference does not establish that every vendor
+build shares the same bug or behavior.
 
 ## Evidence collected
 
@@ -16,9 +28,9 @@ login/reboot, or managed-policy compatibility.
 | --- | --- | --- | --- | --- |
 | Deterministic fixtures, 2026-09-12 | Host-independent data on macOS test runner | Simulated layouts and tool responses | Optional/missing agents, both disabled-output formats, unknown/error states, process ownership, protected PID validation, version handling, and redaction covered by `GlobalProtectCompatibilityTests` | No installed-product lifecycle actions |
 | Live read-only observation, 2026-09-12 19:59 UTC | 26.6.2 (25G83), arm64 process | GlobalProtect 6.3.3-1121; TaskScope self-check working tree based on `059de91`, included in this change | [Redacted report](Evidence/GlobalProtect/2026-09-12-macos-26.6.2-gp-6.3.3-1121.txt): both user plists installed, disabled overrides, neither loaded; system plist installed, enabled override, not loaded; no matching processes observed | XCTest execution, no TaskScope app bundle version or Keep Off preference read; GlobalProtect build metadata unavailable; protected process not verified; no lifecycle or policy test |
-| Managed lifecycle smoke | Untested | Untested | No result | Keep Off, TaskScope relaunch, login/reboot, Open/restoration and policy interference unverified |
+| Authorized live lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope 1.0.0 (3), local development build | [Redacted stop/restore record](Evidence/GlobalProtect/2026-09-28-live-stop-restore.md): fixed user and system jobs disabled/unloaded; Open re-enabled them and restored the session service and UI; VPN reported Connected | Initial reconnect required retry. Stale VPN DNS remained after some stops, even following Disconnect; Open recovered DNS and a subsequent idle stop preserved it. Login/reboot, private-resource reachability, and management-policy interference not tested |
 
-The live report describes the Mac's existing state. The check did not create
+The September 12 live report describes the Mac's existing state. The check did not create
 that state and no repair was attempted. In particular, the absent protected
 daemon is a coverage gap, not a successful protected-service validation. The
 observation used Swift 6.3.3 and Xcode 26.6 (17F113). The test runner's own bundle
@@ -136,8 +148,8 @@ authorized lifecycle procedure. `keep_off_disabled` means turning Keep Off off
 without implying an app launch. `protected_service` records the baseline/later
 comparison and verified identity; `vpn` records restoration checked through the
 organization's supported method; `managed_policy` records whether management
-interfered throughout the sequence. Absence is required after Keep Off; a verified running service is required
-at baseline and after Open.
+interfered throughout the sequence. Absence is required after Keep Off; a verified running service in the
+installed launchd domain is required at baseline and after Open.
 
 All referenced paths are repository-relative and must stay inside the same
 `Evidence/GlobalProtect/lifecycle/V-B/` directory. Paths may contain only ASCII

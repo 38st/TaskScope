@@ -234,10 +234,12 @@ system extension removal. If policy restores or rejects changes to services,
 consult the organization managing the Mac.
 
 Disconnect in GlobalProtect before using Keep Off so the VPN can restore normal
-networking. A live test on 6.3.3-1121 found public DNS unavailable after stopping
-an active tunnel; Open restored DNS without reconnecting the VPN. Stopping the
-already-disconnected VPN retained public DNS/HTTPS access. TaskScope does not
-rewrite DNS, routes, or vendor settings as a workaround.
+networking. Live tests on 6.3.3-1121 found public DNS unavailable after stopping
+following VPN use, including one stop after the client showed Disconnected.
+Open restored DNS without reconnecting the VPN; stopping that idle service
+retained public DNS/HTTPS access. If DNS fails, choose Open, leave the VPN
+disconnected, verify normal internet access, and retry Keep Off. TaskScope does
+not rewrite DNS, routes, or vendor settings as a workaround.
 
 ### Collect GlobalProtect compatibility evidence
 
