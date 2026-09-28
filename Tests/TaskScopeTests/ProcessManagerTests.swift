@@ -971,6 +971,84 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(result.message.contains("signal was rejected"))
     }
 
+    func testGlobalProtectKeepOffStopsSystemServiceOnlyForExplicitAction() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        manager.watchedAppsProvider = { [.globalProtect] }
+        manager.isPresetKeptOffProvider = { _ in true }
+        let stopped = await manager.keepOff(.globalProtect)
+        XCTAssertEqual(stopped.status, .completed)
+        XCTAssertTrue(lifecycle.calls.contains("daemon.disable:true"))
+        _ = await manager.keepOff(.globalProtect, recordIntent: false)
+        XCTAssertTrue(lifecycle.calls.contains("daemon.disable:false"))
+        XCTAssertEqual(lifecycle.calls.filter { $0 == "daemon.disable:true" }.count, 1)
+        XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
+    }
+
+    func testGlobalProtectSystemFailureCannotReportSuccessfulStop() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.systemDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "com.paloaltonetworks.gp.pangpsd", state: .failed, detail: "Administrator cancelled")
+        ])
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        let result = await manager.keepOff(.globalProtect)
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("Administrator cancelled"))
+        XCTAssertEqual(manager.lifecycleReport?.jobs.last?.state, .failed)
+    }
+
+    func testGlobalProtectRemainingSystemProcessCannotBeReportedOff() async {
+        let lifecycle = FakeLifecycleService()
+        let daemon = process(pid: 42, uid: 0, name: "PanGPS")
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([daemon])]), lifecycle: lifecycle)
+        manager.watchedAppsProvider = { [.globalProtect] }
+        let result = await manager.keepOff(.globalProtect)
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("system VPN service is still running"))
+    }
+
+    func testGlobalProtectRestoreEnablesSystemBeforeUserAgents() async {
+        let lifecycle = FakeLifecycleService()
+        let running = process(pid: 42, uid: 501, name: "GlobalProtect")
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([running])]), lifecycle: lifecycle)
+        manager.watchedAppsProvider = { [.globalProtect] }
+        var keptOff = true
+        manager.isPresetKeptOffProvider = { _ in keptOff }
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+        let opened = await manager.openApp(.globalProtect)
+        XCTAssertEqual(opened.status, .completed)
+        XCTAssertFalse(keptOff)
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon.enable", "daemon", "agents.enable", "agents.load"])
+    }
+
+    func testGlobalProtectOpenClearsOverridesEvenWhenSavedIntentWasLost() async {
+        let lifecycle = FakeLifecycleService()
+        let running = process(pid: 42, uid: 501, name: "GlobalProtect")
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([running])]), lifecycle: lifecycle)
+        manager.watchedAppsProvider = { [.globalProtect] }
+        manager.isPresetKeptOffProvider = { _ in false }
+        let opened = await manager.openApp(.globalProtect)
+        XCTAssertEqual(opened.status, .completed)
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon.enable", "daemon", "agents.enable", "agents.load"])
+    }
+
+    func testGlobalProtectCancelledRestorePreservesIntentAndDoesNotStartAgents() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.systemEnableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "com.paloaltonetworks.gp.pangpsd", state: .failed, detail: "Administrator cancelled")
+        ])
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        var keptOff = true
+        manager.isPresetKeptOffProvider = { _ in keptOff }
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+        let opened = await manager.openApp(.globalProtect)
+        let allowed = await manager.allowToRun(.globalProtect)
+        XCTAssertEqual(opened.status, .failed)
+        XCTAssertEqual(allowed.status, .failed)
+        XCTAssertTrue(keptOff)
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon.enable", "daemon.enable"])
+    }
+
     func testKeepOffPersistsIntentDisablesAgentsAndLeavesProtectedServiceAlone() async {
         let lifecycle = FakeLifecycleService()
         lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
@@ -1408,6 +1486,8 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     var agentUnloadResult = LifecycleBatchResult.notNeeded
     var agentDisableResult = LifecycleBatchResult.notNeeded
     var agentEnableResult = LifecycleBatchResult.notNeeded
+    var systemDisableResult = LifecycleBatchResult.notNeeded
+    var systemEnableResult = LifecycleBatchResult.notNeeded
     var openResult = true
     var waitResult = true
     var terminationOutcome = ProcessTerminationOutcome.signalled
@@ -1465,6 +1545,16 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         calls.append("agents.enable")
         return agentEnableResult
+    }
+
+    func disableSystemLaunchDaemons(for preset: WatchedAppPreset, allowAdministratorPrompt: Bool) async -> LifecycleBatchResult {
+        calls.append("daemon.disable:\(allowAdministratorPrompt)")
+        return systemDisableResult
+    }
+
+    func enableSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        calls.append("daemon.enable")
+        return systemEnableResult
     }
 
     func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {

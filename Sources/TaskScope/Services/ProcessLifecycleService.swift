@@ -45,6 +45,18 @@ extension UserLaunchAgentControlling {
 
 protocol SystemLaunchDaemonControlling: Sendable {
     func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult
+    func disableSystemLaunchDaemons(for preset: WatchedAppPreset, allowAdministratorPrompt: Bool) async -> LifecycleBatchResult
+    func enableSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult
+}
+
+extension SystemLaunchDaemonControlling {
+    func disableSystemLaunchDaemons(for preset: WatchedAppPreset, allowAdministratorPrompt: Bool) async -> LifecycleBatchResult {
+        .notNeeded
+    }
+
+    func enableSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        .notNeeded
+    }
 }
 
 protocol AppBundleLaunching: Sendable {
@@ -124,6 +136,16 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
 
     func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         await ProcessLifecycleController.ensureSystemLaunchDaemons(for: preset)
+    }
+
+    func disableSystemLaunchDaemons(for preset: WatchedAppPreset, allowAdministratorPrompt: Bool) async -> LifecycleBatchResult {
+        await ProcessLifecycleController.disableSystemLaunchDaemons(
+            for: preset, allowAdministratorPrompt: allowAdministratorPrompt
+        )
+    }
+
+    func enableSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        await ProcessLifecycleController.enableSystemLaunchDaemons(for: preset)
     }
 
     func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool {

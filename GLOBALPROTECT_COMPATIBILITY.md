@@ -5,6 +5,11 @@ read-only installation/state evidence for the fixed built-in preset. It does
 not establish that Keep Off works across login/reboot or under any particular
 management policy, or that Open restores a working VPN connection.
 
+The current Keep Off implementation includes an explicitly authorized stop of
+the fixed system VPN service. Earlier read-only evidence below predates this
+behavior. Automated full-stop/restore fixtures do not establish live VPN,
+login/reboot, or managed-policy compatibility.
+
 ## Evidence collected
 
 | Kind / date | macOS / architecture | GlobalProtect / TaskScope | Result | Limits |
@@ -68,16 +73,17 @@ artifact/revision. Retain the baseline and each after-action self-check export.
 | Step | Evidence to record |
 | --- | --- |
 | Baseline | Installed known agents, explicit overrides or plist defaults, loaded state, process counts, protected-service state |
-| Enable Keep Off | Confirmation and actual lifecycle result; known user overrides disabled, user jobs unloaded, user-facing processes absent or failures explained |
+| Enable Keep Off | Confirmation and actual lifecycle result; known user and system overrides disabled, all known jobs unloaded, user-facing and system processes absent or failures explained |
 | Relaunch TaskScope | Actual result and new report; distinguish preserved intent from observed launchd state |
 | Log out/in or reboot | Which event occurred, user-agent/process state afterward, management software interference, and new report |
-| Turn Keep Off off | Overrides enabled; no launch implied by this action; actual result and report |
+| Turn Keep Off off | User and system overrides enabled; no launch implied by this action; actual result and report |
 | Choose Open | Actual user-agent restoration, app result, any administrator request/result for an absent protected daemon, and report |
 | Protected service / VPN | Compare baseline and later system state; verify connectivity through the organization's supported method separately |
 
 Record **pass**, **fail**, or **not tested** for each performed step, with the
-observed result and redacted artifact references. Do not signal, restart, or
-unload a protected daemon just to obtain evidence. System-state changes may be
+observed result and redacted artifact references. Only the explicitly approved Keep Off action may unload the fixed system
+daemon. Record its absence after stopping and verified identity after Open;
+never directly signal it or restart a loaded daemon just to obtain evidence. System-state changes may be
 caused by policy or other software; the self-check cannot attribute causation.
 
 ## Machine-checkable release evidence
@@ -130,7 +136,8 @@ authorized lifecycle procedure. `keep_off_disabled` means turning Keep Off off
 without implying an app launch. `protected_service` records the baseline/later
 comparison and verified identity; `vpn` records restoration checked through the
 organization's supported method; `managed_policy` records whether management
-interfered throughout the sequence. Absence of a protected process is not a pass.
+interfered throughout the sequence. Absence is required after Keep Off; a verified running service is required
+at baseline and after Open.
 
 All referenced paths are repository-relative and must stay inside the same
 `Evidence/GlobalProtect/lifecycle/V-B/` directory. Paths may contain only ASCII

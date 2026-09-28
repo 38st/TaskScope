@@ -44,7 +44,7 @@ struct PresetCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Keep GlobalProtect Off")
                             .fontWeight(.medium)
-                        Text("Persistently disables its user launch agents. Open turns them back on.")
+                        Text("Stops the app and VPN service with administrator approval. Open restores both.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -52,8 +52,13 @@ struct PresetCard: View {
                 .toggleStyle(.switch)
                 .disabled(!isKeepOffControlEnabled)
                 .accessibilityHint(
-                    "Does not disable a protected system launch daemon."
+                    "Disconnects the VPN and keeps its service disabled until you turn this off or choose Open."
                 )
+                if isKeptOff {
+                    Button("Apply Keep Off…", role: .destructive) { onKeepOffChanged(true) }
+                        .disabled(!isKeepOffControlEnabled)
+                        .help("Retry stopping all GlobalProtect services with administrator approval.")
+                }
                 GlobalProtectCompatibilityButton(
                     keepOffRequested: isKeepOffControlEnabled ? isKeptOff : nil
                 )
@@ -79,7 +84,7 @@ struct PresetCard: View {
     }
 
     private var color: Color {
-        if isKeptOff && snapshot.hasKeepOffTargets { .orange }
+        if isKeptOff && snapshot.hasAny { .orange }
         else if isKeptOff { .green }
         else if snapshot.isMainRunning { .red }
         else if snapshot.hasHelpers { .yellow }
@@ -88,8 +93,10 @@ struct PresetCard: View {
     }
 
     private var label: String {
-        if isKeptOff && snapshot.hasKeepOffTargets { "Enforcing" }
-        else if isKeptOff { "Kept Off" }
+        if isKeptOff && !snapshot.protectedRunning.isEmpty { "Service running" }
+        else if isKeptOff && snapshot.hasKeepOffTargets { "Enforcing" }
+        else if isKeptOff && snapshot.hasAny { "Still running" }
+        else if isKeptOff { "Off requested" }
         else if snapshot.isMainRunning { "Active" }
         else if snapshot.hasHelpers { "Helpers" }
         else if !snapshot.protectedRunning.isEmpty { "Services" }

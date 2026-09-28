@@ -399,7 +399,7 @@ struct SettingsView: View {
             "Open and ordinary quit actions first require a fresh process inventory; an unavailable inventory stops those actions."
         ]
         operations.append(contentsOf: preset.systemLaunchDaemonJobs.map { job in
-            "Open: inspect fixed daemon \(job.label) at \(job.plistPath); if absent, request administrator approval to bootstrap it and verify \(job.processName)."
+            "Open: re-enable fixed daemon \(job.label) at \(job.plistPath) with administrator approval when disabled; if absent, request approval to bootstrap it and verify \(job.processName)."
         })
         operations.append(contentsOf: preset.userLaunchAgentJobs.map { job in
             let availability = job.isRequired ? "" : " when it is installed"
@@ -431,7 +431,7 @@ struct SettingsView: View {
         }
         if preset.id == WatchedAppPreset.globalProtectID {
             operations.append(
-                "Keep Off: persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; do not disable or signal a protected system launch daemon. Open explicitly re-enables the user agents."
+                "Keep Off: persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; an explicit action also requests administrator approval to disable and unload the fixed system VPN service, disconnecting any VPN. Background enforcement never requests privileges. Open re-enables and restores all services; turning Keep Off off only clears their persistent overrides."
             )
         }
         return operations

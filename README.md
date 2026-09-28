@@ -8,17 +8,22 @@ the Dock and menu bar. It combines a searchable process list with watched-app
 presets, lifecycle controls, saved selections, auto-stop rules, notifications,
 Shortcuts actions, and process-history charts.
 
-TaskScope includes a GlobalProtect preset. It can open the GlobalProtect app,
-manage its known per-user launch agents, and request macOS administrator
-approval only to load the protected `PanGPS` daemon when launchd does not have
-it loaded. It does not uninstall GlobalProtect, delete or rename launch files,
-and never stops or restarts the protected system daemon. Its explicit **Keep
-GlobalProtect Off** control persistently disables and unloads only per-user
-GlobalProtect launch agents; **Open** always clears that disable state before
-it loads the agents, and turning the control off clears it without starting
-anything. GlobalProtect paths and service behavior vary by product version and
-organization; this integration is not a replacement for an organization's
-supported VPN recovery process.
+TaskScope includes a GlobalProtect preset with a reversible **Keep GlobalProtect
+Off** control. After confirmation and macOS administrator approval, it disables
+and unloads the known per-user agents and the fixed system `PanGPS` VPN service.
+This disconnects an active VPN. **Open** clears the disable overrides, restores
+the system service, and loads the user agents before opening the app. Turning
+Keep Off off clears the overrides without starting anything. No uninstall,
+reinstall, or changes to vendor files or VPN configuration are needed.
+
+Ordinary Quit actions still leave the system service alone. Background Keep Off
+enforcement never requests privileges; if the system service returns, its
+running state and **Apply Keep Off…** remain visible. Existing Keep Off
+preferences from older builds do not authorize a background system stop: choose
+Apply Keep Off once to include the VPN service. GlobalProtect layouts and
+management policies vary; rejected or unverifiable actions are reported as
+failures. Installed-product lifecycle and login/reboot compatibility remain
+unverified until recorded in the evidence matrix.
 
 The built-in preset's **Compatibility Self-Check** reads known launch-agent
 installation and launchd state, separates user processes from the protected
@@ -124,10 +129,11 @@ should be assumed until a release explicitly documents and tests one.
 To uninstall a local build:
 
 1. Turn off **Keep GlobalProtect Off** on the GlobalProtect preset (or choose
-   **Open**). This clears the persistent per-user launchd override the control
-   writes; deleting TaskScope's preferences does not clear it. If the app is
+   **Open**). This clears the persistent user and system launchd overrides; deleting
+   TaskScope's preferences does not clear them. If the app is
    already gone, run `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa`
-   and `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`.
+   and `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`, plus
+   `sudo launchctl enable system/com.paloaltonetworks.gp.pangpsd`.
 2. Turn off **Launch at Login** in TaskScope Settings.
 3. Quit TaskScope and move `TaskScope.app` to the Trash.
 4. Remove TaskScope from Accessibility and Notifications in System Settings if
@@ -160,9 +166,9 @@ be exported from Settings when their stored data is readable. See
 - Open or close watched apps through one lifecycle path with per-job reporting.
   Quit, Close, and Keep Off give a process 3 seconds to exit gracefully before
   force stopping it, and the confirmation dialog says so.
-- Keep the built-in GlobalProtect user app off across relaunches and login by
-  persistently disabling its known per-user launch agents. This is reversible
-  through Open and never disables or signals the protected system daemon.
+- Keep GlobalProtect off by persistently disabling its known user agents and,
+  with explicit administrator approval, its system VPN service. Open restores
+  both without reinstalling. Login/reboot behavior still needs live validation.
 - Create Prompt, Auto Stop, or Log Only runtime rules with event history. Auto
   Stop requires a trusted executable path; legacy name-only Auto Stop rules
   load disabled until reviewed.
@@ -227,13 +233,14 @@ insufficient for App Intents execution.
 - Auto Stop is destructive and path-bound. Use Prompt or Log Only while
   validating a rule.
 - The immutable built-in GlobalProtect definition can request administrator
-  approval to load its fixed protected daemon when launchd does not have it
-  loaded; a loaded daemon is never restarted. Custom presets cannot define
+  approval to disable/unload or re-enable its fixed system daemon, and to load
+  it when absent. Open never restarts a loaded daemon. Custom presets cannot define
   or alter privileged system-daemon jobs, and TaskScope does not bypass macOS
   authorization.
-- Keep GlobalProtect Off changes the current user's launchd overrides and can
+- Keep GlobalProtect Off changes user and system launchd overrides and can
   disconnect or prevent a required VPN session. TaskScope confirms the action,
-  never applies it through a URL, and leaves protected system daemons alone.
+  requests macOS authorization for the system change, and never applies it
+  through a URL or a background privilege request.
 - Imported presets are untrusted configuration. Importing must not execute a
   lifecycle action, but a later user-triggered action can use a custom preset's
   app path, user launch-agent labels and plist paths, and process names. Review

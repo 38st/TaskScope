@@ -125,17 +125,18 @@ screenshot to a public issue.
   TaskScope does not need it for ordinary process monitoring. When selection
   requires a temporary search, process-scope, or PID-column change, TaskScope
   restores the prior Activity Monitor state after the handoff delay.
-- **Administrator authorization:** requested only to restore the fixed protected
+- **Administrator authorization:** requested to stop, re-enable, or restore the fixed system
   daemon in the immutable built-in GlobalProtect definition. Custom presets
   cannot add privileged daemon jobs, and TaskScope does not store the password.
 - **Launch at Login:** optional and controlled in TaskScope Settings and macOS
   Login Items.
 
-Keep GlobalProtect Off also stores a per-user launchd disable override for the
-known GlobalProtect user launch-agent labels. Turning the control off clears
-those overrides without starting anything, and Open always clears them before
-it loads the agents. TaskScope does not use this control on a protected system
-launch daemon.
+Keep GlobalProtect Off stores launchd disable overrides for the fixed user-agent
+labels and, after explicit administrator approval, the fixed system VPN service.
+Turning it off clears those overrides without starting anything. Open clears
+them before restoring the services. Background enforcement never requests
+administrator authorization. No new preferences, credentials, network data, or
+export fields are introduced by system service control.
 
 Revoking a permission in System Settings can limit the related feature without
 deleting TaskScope's preferences.
@@ -153,11 +154,12 @@ deleting TaskScope's preferences.
   cleared in Settings > Support or the app exits. Saved diagnostics files and
   clipboard copies remain under the user's control; clearing history does not
   erase them or alter an already-open preview.
-- The Keep GlobalProtect Off launchd override lives in launchd's per-user
-  database, not in TaskScope's preferences. It remains until the control is
+- The Keep GlobalProtect Off launchd override lives in launchd's user and system
+  databases, not in TaskScope's preferences. It remains until the control is
   turned off, Open is chosen, or it is cleared manually with
   `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa` and
-  `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`.
+  `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`, plus
+  `sudo launchctl enable system/com.paloaltonetworks.gp.pangpsd`.
 
 To remove the current development build and its stored data:
 

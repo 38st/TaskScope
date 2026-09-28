@@ -208,23 +208,28 @@ intended absolute executable path before enabling automatic stopping.
 
 Read the per-job lifecycle report. Missing app/plist paths and user launch-agent
 failures apply to custom presets. Administrator denial and managed-service
-policy apply only to the immutable built-in GlobalProtect daemon-restoration
+policy apply only to the immutable built-in GlobalProtect system-service
 path. Do not repeat that privileged operation blindly; use the organization's
 managed installer or IT support when its protected service cannot be restored.
 
 ### GlobalProtect keeps reopening
 
-Use **Keep GlobalProtect Off** on the built-in preset instead of repeatedly
-killing its window. The control disables and unloads the known per-user
-`pangpa` and, when installed, `pangps` launch agents. It persists across login.
-Choosing **Open** or turning the control off re-enables those user agents.
+Use **Keep GlobalProtect Off** on the built-in preset. Confirm the action and
+approve the macOS administrator dialog to disable/unload the user agents and
+system VPN service. This disconnects any VPN. Choose **Open** to re-enable and
+restore all services without reinstalling, or turn Keep Off off to re-enable
+without starting anything.
 
-The per-user `pangps` agent runs a process that is also named `PanGPS`. The
-protected system `PanGPS` launch daemon (the one running as root) remains
-outside this control and is never unloaded, signalled, or restarted; TaskScope
-shows a per-user instance separately as "PanGPS (user)" so it is not mistaken
-for the daemon. If policy or management software restores user agents, consult
-the organization managing the Mac.
+If approval is cancelled or a service remains loaded, the result reports a
+failure. **Apply Keep Off…** retries the explicit stop. Existing Keep Off
+preferences from older builds require this explicit action to stop the system
+service. Background enforcement never requests administrator privileges.
+
+The per-user `pangps` process is shown as "PanGPS (user)"; the root `PanGPS`
+service is separate. Ordinary Quit actions leave the system service running.
+An off result verifies the known processes and launchd jobs, not VPN health or
+system extension removal. If policy restores or rejects changes to services,
+consult the organization managing the Mac.
 
 ### Collect GlobalProtect compatibility evidence
 
@@ -280,12 +285,13 @@ that migration was tested.
 ## Uninstall and erase local data
 
 1. Turn off **Keep GlobalProtect Off** (or choose **Open**). The control writes
-   a persistent per-user launchd override that `defaults delete` does not
+   persistent user and system launchd overrides that `defaults delete` does not
    clear. If TaskScope is already gone, clear it manually:
 
    ```bash
    launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa
    launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps
+   sudo launchctl enable system/com.paloaltonetworks.gp.pangpsd
    ```
 
 2. Turn off Launch at Login.

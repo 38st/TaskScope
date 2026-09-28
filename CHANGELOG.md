@@ -7,6 +7,14 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Added
 
+- Extended explicit Keep GlobalProtect Off to disable and unload the fixed system
+  VPN service with macOS administrator approval. Open re-enables and restores
+  services without reinstalling; toggle-off only clears persistent overrides.
+  Background enforcement never requests privileges. Partial failures and a
+  still-running system service are visible, with an explicit retry action.
+  Automated regression coverage is separate from unverified live VPN and
+  login/reboot compatibility.
+
 - Added Settings > Health to aggregate notification, Accessibility, login-item,
   code-signing/App Intents, preset-path, and bundle-identity diagnostics. Denied,
   unavailable, stale, and unverified results stay distinct; observations expire
@@ -33,7 +41,7 @@ All notable changes to TaskScope are documented in this file. The project uses
   a visible retry path.
 - Added a confirmed, persistent Keep GlobalProtect Off control for the known
   per-user `pangpa` and optional `pangps` launch agents. Open explicitly clears
-  the disable state; protected system daemons remain untouched.
+  the user-agent disable state; system-service control is described above.
 
 ### Changed
 

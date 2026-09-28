@@ -309,8 +309,19 @@ final class ProcessManager: ObservableObject {
                 return
             }
 
-            let daemonResult = await lifecycle.ensureSystemLaunchDaemons(for: preset)
-            diagnosticJobs += daemonResult.jobs
+            let systemEnable = preset.hasCanonicalGlobalProtectIdentity
+                ? await lifecycle.enableSystemLaunchDaemons(for: preset) : .notNeeded
+            diagnosticJobs += systemEnable.jobs
+            guard systemEnable.succeeded else {
+                lifecycleReport = LifecycleReport(title: "\(preset.displayName) Service Results", jobs: systemEnable.jobs)
+                message = "Could not restore GlobalProtect: \(systemEnable.failureSummary ?? "system service could not be enabled")."
+                diagnosticReason = .systemServiceFailed
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                return
+            }
+            let ensuredDaemon = await lifecycle.ensureSystemLaunchDaemons(for: preset)
+            let daemonResult = LifecycleBatchResult(jobs: systemEnable.jobs + ensuredDaemon.jobs)
+            diagnosticJobs += ensuredDaemon.jobs
             guard daemonResult.succeeded else {
                 lifecycleReport = LifecycleReport(
                     title: "\(preset.displayName) Service Results",
@@ -324,7 +335,9 @@ final class ProcessManager: ObservableObject {
 
             let wasKeptOff = isPresetKeptOffProvider?(preset) ?? false
             let enableResult: LifecycleBatchResult
-            if wasKeptOff {
+            // launchd overrides outlive TaskScope preferences (including reset
+            // or reinstall). Explicit Open must recover them even without intent.
+            if wasKeptOff || preset.hasCanonicalGlobalProtectIdentity {
                 enableResult = await lifecycle.enableUserLaunchAgents(for: preset)
                 diagnosticJobs += enableResult.jobs
                 guard enableResult.succeeded else {
@@ -417,9 +430,9 @@ final class ProcessManager: ObservableObject {
         return commandResult
     }
 
-    /// Persists the user's intent and disables the preset's per-user launch jobs
-    /// before stopping its ordinary app/helper processes. Protected system daemons
-    /// are never signalled or disabled by this path.
+    /// Persists intent and disables user jobs. An explicit built-in GlobalProtect
+    /// action also disables/unloads the fixed system service with authorization;
+    /// background enforcement only verifies it and never requests privileges.
     ///
     /// With `recordIntent == false` this is background enforcement. It re-checks
     /// the persisted intent *inside* the operation gate: a poll tick that decided
@@ -466,7 +479,11 @@ final class ProcessManager: ObservableObject {
             case .failure:
                 inventoryWasAvailable = false
             }
-            let disableResult = await lifecycle.disableUserLaunchAgents(for: preset)
+            let userDisable = await lifecycle.disableUserLaunchAgents(for: preset)
+            let systemDisable = preset.hasCanonicalGlobalProtectIdentity
+                ? await lifecycle.disableSystemLaunchDaemons(for: preset, allowAdministratorPrompt: recordIntent)
+                : .notNeeded
+            let disableResult = LifecycleBatchResult(jobs: userDisable.jobs + systemDisable.jobs)
             diagnosticJobs += disableResult.jobs
             // Background enforcement runs on every launch and poll tick; only a
             // failure is worth interrupting the user with a report sheet.
@@ -494,8 +511,8 @@ final class ProcessManager: ObservableObject {
             let nowSnapshot = snapshot(for: preset)
 
             if !disableResult.succeeded {
-                message = "Keep Off is enabled, but launch-agent suppression failed: \(disableResult.failureSummary ?? "unknown failure")."
-                diagnosticReason = .userLaunchAgentFailed
+                message = "Keep Off was requested, but stopping services failed: \(disableResult.failureSummary ?? "unknown failure")."
+                diagnosticReason = systemDisable.succeeded ? .userLaunchAgentFailed : .systemServiceFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if terminationOutcomes.contains(.inventoryUnavailable) {
                 message = "Keep Off disabled relaunch jobs, but the process list became unavailable before app processes could be stopped."
@@ -509,12 +526,18 @@ final class ProcessManager: ObservableObject {
                 message = "Keep Off is enabled, but TaskScope could not verify the final process state."
                 diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
+            } else if preset.hasCanonicalGlobalProtectIdentity && !nowSnapshot.protectedRunning.isEmpty {
+                message = "Keep Off was requested, but the system VPN service is still running. Choose Apply Keep Off to retry with administrator approval."
+                diagnosticReason = .stillRunning
+                commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if nowSnapshot.hasKeepOffTargets {
                 message = "Keep Off is enabled, but user-facing GlobalProtect processes may still run."
                 diagnosticReason = .stillRunning
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else {
-                if !nowSnapshot.protectedRunning.isEmpty {
+                if preset.hasCanonicalGlobalProtectIdentity {
+                    message = "GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling."
+                } else if !nowSnapshot.protectedRunning.isEmpty {
                     message = "\(preset.displayName) app is kept off. Protected system service remains available."
                 } else if !nowSnapshot.unprivilegedProtectedRunning.isEmpty {
                     let names = nowSnapshot.unprivilegedProtectedRunning.joined(separator: ", ")
@@ -528,7 +551,7 @@ final class ProcessManager: ObservableObject {
         return commandResult
     }
 
-    /// Clears persistent user-agent suppression without launching the app. This
+    /// Clears persistent user and system suppression without launching the app. This
     /// makes the toggle reversible while leaving explicit Open as the only action
     /// that starts GlobalProtect through TaskScope.
     @discardableResult
@@ -549,7 +572,12 @@ final class ProcessManager: ObservableObject {
                     )
                 }
             }
-            let enableResult = await lifecycle.enableUserLaunchAgents(for: preset)
+            let systemEnable = preset.hasCanonicalGlobalProtectIdentity
+                ? await lifecycle.enableSystemLaunchDaemons(for: preset) : .notNeeded
+            // Do not start restoring user jobs after a cancelled system request.
+            let userEnable = systemEnable.succeeded
+                ? await lifecycle.enableUserLaunchAgents(for: preset) : .notNeeded
+            let enableResult = LifecycleBatchResult(jobs: systemEnable.jobs + userEnable.jobs)
             diagnosticJobs += enableResult.jobs
             lifecycleReport = enableResult.jobs.isEmpty
                 ? nil
@@ -558,8 +586,8 @@ final class ProcessManager: ObservableObject {
                     jobs: enableResult.jobs
                 )
             guard enableResult.succeeded else {
-                message = "Keep Off remains enabled: \(enableResult.failureSummary ?? "user launch agent could not be enabled")."
-                diagnosticReason = .userLaunchAgentFailed
+                message = "Keep Off remains requested: \(enableResult.failureSummary ?? "service could not be enabled")."
+                diagnosticReason = systemEnable.succeeded ? .userLaunchAgentFailed : .systemServiceFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
@@ -571,8 +599,9 @@ final class ProcessManager: ObservableObject {
     }
 
     /// Enforces persisted Keep Off intent after startup and if a user-facing job
-    /// is restored externally. Routine polling skips work once only a protected
-    /// system service (or nothing) remains.
+    /// is restored externally. The system disable override persists in launchd;
+    /// polling never requests authorization or repeatedly fights a restored system
+    /// service. Its running state stays visible with an explicit retry action.
     ///
     /// Enforcement never queues behind a user-initiated mutation: while one runs
     /// the user is changing exactly the state enforcement would act on, and the

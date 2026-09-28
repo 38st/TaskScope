@@ -589,6 +589,7 @@ enum ProcessLifecycleController {
     static func adminBootstrapScript(for job: SystemLaunchDaemonJob) -> String {
         let target = "system/\(job.label)"
         return """
+        /bin/launchctl enable \(ShellCommandRunner.shellQuoted(target)) || exit $?
         if /bin/launchctl print \(ShellCommandRunner.shellQuoted(target)) >/dev/null 2>&1; then
           exit 0
         else

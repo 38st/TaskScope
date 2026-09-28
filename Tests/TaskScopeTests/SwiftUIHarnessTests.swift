@@ -21,6 +21,19 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertThrowsError(try card.inspect().find(text: "Kept Off"))
     }
 
+    func testKeepOffShowsRunningSystemServiceAndOffersExplicitRetry() throws {
+        var requested = false
+        let card = PresetCard(
+            snapshot: WatchedAppSnapshot(preset: .globalProtect, runningNames: ["PanGPS"]),
+            onOpen: {}, onQuitApp: {}, onQuitHelpers: {}, onQuitAll: {},
+            isKeptOff: true, isKeepOffControlEnabled: true, onKeepOffChanged: { requested = $0 }
+        )
+        XCTAssertNoThrow(try card.inspect().find(text: "Service running"))
+        XCTAssertThrowsError(try card.inspect().find(text: "Off requested"))
+        try card.inspect().find(button: "Apply Keep Off…").tap()
+        XCTAssertTrue(requested)
+    }
+
     func testLifecycleDryRunListsConfiguredTargetsWithoutPerformingActions() {
         let preset = WatchedAppPreset(
             displayName: "Example",
@@ -45,7 +58,7 @@ final class SwiftUIHarnessTests: XCTestCase {
 
         let globalProtectOperations = SettingsView.lifecycleDryRunOperations(for: .globalProtect)
         XCTAssertTrue(globalProtectOperations.contains { $0.contains("Keep Off") })
-        XCTAssertTrue(globalProtectOperations.contains { $0.contains("do not disable") })
+        XCTAssertTrue(globalProtectOperations.contains { $0.contains("administrator approval to disable and unload") })
     }
 
     func testQuickPresetPrefersTrustedExecutablePathOverReportedCommand() {
@@ -393,7 +406,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try card.find(text: "Keep GlobalProtect Off"))
         XCTAssertNoThrow(
             try card.find(
-                text: "Persistently disables its user launch agents. Open turns them back on."
+                text: "Stops the app and VPN service with administrator approval. Open restores both."
             )
         )
 

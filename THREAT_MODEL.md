@@ -33,7 +33,7 @@ TaskScope should protect:
 - **System availability:** make destructive actions explicit, keep protected
   processes out of ordinary stop paths, and never target TaskScope itself.
 - **Privilege boundaries:** request administrator approval only for visible
-  restoration of the fixed daemon in the immutable built-in GlobalProtect
+  stop or restoration of the fixed daemon in the immutable built-in GlobalProtect
   definition; never let a custom preset add privileged behavior, retain
   credentials, or bypass authorization.
 - **Configuration integrity:** validate imported and persisted lifecycle fields,
@@ -127,56 +127,52 @@ those fields but cannot decide whether the user intended them, so users must
 still trust and inspect the source. This risk cannot create a custom privileged
 system-daemon operation.
 
-### Privileged daemon restoration
+### Privileged GlobalProtect service control
 
-TaskScope may request macOS administrator authorization only to bootstrap the
-fixed system launch daemon in the immutable built-in GlobalProtect definition.
-Custom presets cannot configure this path. The approval dialog is a high-risk
-boundary.
-
-Required invariants:
-
-- reach this path only through an explicit user-approved lifecycle action, and
-  only when launchd reports the daemon as not loaded; a loaded daemon is
-  waited on, never restarted (`kickstart -k` is never issued for it);
-- show that the built-in GlobalProtect restoration operation needs approval;
-- verify the complete built-in identity and its fixed plist path and job fields
-  before requesting approval;
-- escape data as arguments and preserve intended script structure;
-- never store a password or claim that authorization succeeded without checking
-  the command and postcondition;
-- report partial job failures individually;
-- never remove, rename, or rewrite the configured plist as recovery behavior.
-
-Residual risk: administrator authorization grants the fixed restoration command
-elevated effect. Managed security software can reject or undo the operation;
-TaskScope must direct users to their organization rather than escalating around
-management controls.
-
-### Persistent GlobalProtect user-agent suppression
-
-The built-in preset can persistently disable and unload the known GlobalProtect
-jobs in the current user's launchd domain. This is intentionally stronger than
-an ordinary process stop and can prevent a required VPN UI or per-user service
-from running.
+Only the immutable built-in GlobalProtect identity can disable/unload, enable,
+or bootstrap the fixed system `pangpsd` daemon with macOS administrator
+approval. Custom presets cannot configure this path. Keep Off disconnects an
+active VPN; its confirmation discloses the service stop and restoration path.
 
 Required invariants:
 
-- require visible in-app confirmation before first enabling Keep Off;
-- restrict the UI and persisted preference to the immutable built-in identity;
-- operate only on the fixed per-user `pangpa` and optional `pangps` labels;
-- never disable, unload, or signal a protected system launch daemon;
-- re-enable user agents only through an explicit Open or toggle-off action;
-- clear the persistent disable before bootstrap (launchd refuses to bootstrap a
-  disabled job) and report each job result;
-- re-check the persisted intent inside the operation gate before background
-  enforcement acts, so enforcement queued behind an Open cannot undo it;
-- preserve startup enforcement across app relaunch and login without exposing a
-  destructive URL route.
+- only an explicit Keep Off action may request a system stop; background
+  enforcement and startup may verify system state but never prompt or mutate it;
+- validate the complete built-in identity and fixed job fields before privileged
+  commands; require the installed matching plist before introducing a disable
+  override so the restore path remains available;
+- disable before bootout so launchd cannot immediately respawn the service;
+- check both the disabled override and absence of the loaded job after stopping;
+  denied, cancelled, timed-out, or unknown reads cannot establish success;
+- enable before bootstrap; Open must leave an already-loaded daemon running,
+  without `kickstart -k` or a direct signal to PanGPS;
+- turning Keep Off off clears system and user overrides without starting jobs;
+- report cancellation and partial failures, retaining requested intent until
+  restoration succeeds; show a running system service instead of an off badge;
+- escape command arguments, retain no credentials, and never remove, rename,
+  or rewrite vendor files;
+- changes to the fixed system job use launchd, never arbitrary elevated process
+  signaling or custom/imported system commands.
 
-Residual risk: endpoint-management software can restore the jobs, and product
-versions can move `PanGPS` between user and system launchd domains. TaskScope
-handles the known user-agent variants but does not override system policy.
+Residual risk: macOS authorization elevates the fixed commands, and changing a
+VPN service may affect network availability. Vendor files remain controlled by
+the installer/system administrator. Management software can reject or undo a
+change; report this instead of bypassing policy. VPN connectivity and system
+extensions are outside the process/launchd checks and require live validation.
+
+### Persistent GlobalProtect suppression
+
+Keep Off stores intent in TaskScope and disabled overrides in launchd's user and
+system databases. Existing user-only intent does not authorize privileged
+background operations after upgrade; Apply Keep Off requests the expanded
+operation explicitly. Open and toggle-off are the explicit restoration paths.
+
+Background enforcement continues to unload only fixed current-user `pangpa` and
+optional `pangps` jobs. It re-checks intent inside the operation gate so queued
+enforcement cannot undo Open. It never repeatedly prompts for system approval
+or automatically fights a system service restored by management. The UI shows
+that service running and offers a confirmed retry. No destructive URL route is
+added; ordinary process stop and Auto Stop retain their existing boundaries.
 
 ### URL, Shortcut, and login automation
 
