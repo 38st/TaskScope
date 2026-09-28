@@ -30,7 +30,7 @@ struct PresetCard: View {
                 PresetActionButton(title: "Open", systemImage: "arrow.up.forward.app", role: nil, action: onOpen)
                 PresetActionButton(title: "Quit App", systemImage: "power", role: .destructive, action: onQuitApp)
                 PresetActionButton(title: "Quit Helpers", systemImage: "wrench.and.screwdriver", role: .destructive, action: onQuitHelpers)
-                PresetActionButton(title: "Quit All Killable", systemImage: "stop.circle", role: .destructive, action: onQuitAll)
+                PresetActionButton(title: snapshot.preset.hasCanonicalGlobalProtectIdentity ? "Quit All" : "Quit All Killable", systemImage: "stop.circle", role: .destructive, action: onQuitAll)
             }
 
             if snapshot.preset.id == WatchedAppPreset.globalProtectID {
@@ -44,7 +44,7 @@ struct PresetCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Keep GlobalProtect Off")
                             .fontWeight(.medium)
-                        Text("Disconnect the VPN first. Open restores GlobalProtect; administrator approval is requested only when needed.")
+                        Text("Quit All disconnects and stops GlobalProtect. Open brings it back.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -52,7 +52,7 @@ struct PresetCard: View {
                 .toggleStyle(.switch)
                 .disabled(!isKeepOffControlEnabled)
                 .accessibilityHint(
-                    "Disconnect in GlobalProtect first to restore normal networking. Keeps its service disabled until you turn this off or choose Open."
+                    "Automatically disconnects and stops GlobalProtect. Keeps it off until you turn this off or choose Open."
                 )
                 if isKeptOff {
                     Button("Apply Keep Off…", role: .destructive) { onKeepOffChanged(true) }

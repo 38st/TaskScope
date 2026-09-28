@@ -373,23 +373,11 @@ struct TaskScopeApp: App {
     @ViewBuilder
     private var menuBarLabel: some View {
         Group {
-            // The badge represents active presets, not configured names or process instances.
-            let runningCount = processManager.snapshots.filter(\.hasAny).count
-            if runningCount > 0 {
-                Label("TaskScope (\(runningCount))", systemImage: processManager.status.menuBarSystemImage)
-                    .labelStyle(.iconOnly)
-                    .overlay(alignment: .topTrailing) {
-                        Text("\(runningCount)")
-                            .font(.caption2)
-                            .padding(2)
-                            .background(Color.red, in: Capsule())
-                            .foregroundStyle(.white)
-                            .offset(x: 8, y: -4)
-                    }
-            } else {
-                Label("TaskScope", systemImage: processManager.status.menuBarSystemImage)
-                    .labelStyle(.iconOnly)
-            }
+            // MenuBarExtra may size its native status item from rendered image
+            // content, including a hidden badge. Keep this image and identity
+            // constant; the popover already displays the live preset status.
+            Label("TaskScope", systemImage: "waveform.path.ecg")
+                .labelStyle(.iconOnly)
         }
         .task {
             await bootstrapRuntimeIfNeeded()

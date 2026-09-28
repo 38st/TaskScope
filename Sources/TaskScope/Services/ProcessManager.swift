@@ -444,10 +444,6 @@ final class ProcessManager: ObservableObject {
         _ preset: WatchedAppPreset,
         recordIntent: Bool = true
     ) async -> TaskScopeCommandResult {
-        if recordIntent {
-            setPresetKeptOffHandler?(preset, true)
-        }
-
         var commandResult = TaskScopeCommandResult(
             status: .failed,
             message: "Keep Off did not complete."
@@ -470,6 +466,21 @@ final class ProcessManager: ObservableObject {
                     message: "Keep Off is no longer enabled for \(preset.displayName); enforcement skipped."
                 )
                 return
+            }
+
+            if recordIntent && preset.hasCanonicalGlobalProtectIdentity {
+                message = "Disconnecting GlobalProtect before stopping its services…"
+                if case .failed(let detail) = await lifecycle.disconnectGlobalProtectIfNeeded() {
+                    message = detail
+                    diagnosticReason = .disconnectFailed
+                    commandResult = TaskScopeCommandResult(status: .failed, message: detail)
+                    return
+                }
+            }
+            // Record only after a clean disconnect and while holding the gate:
+            // polling must not stop the service ahead of this preparation.
+            if recordIntent {
+                setPresetKeptOffHandler?(preset, true)
             }
 
             let inventoryWasAvailable: Bool
@@ -630,6 +641,16 @@ final class ProcessManager: ObservableObject {
         await stop(preset, scope: .helpers)
     }
 
+    @discardableResult
+    func quitAll(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
+        if preset.hasCanonicalGlobalProtectIdentity {
+            return await keepOff(preset)
+        }
+        return await quitAllKillable(preset)
+    }
+
+    /// Existing URL and Shortcuts commands retain their user-process scope.
+    /// The full VPN stop is requested by the explicitly confirmed in-app action.
     @discardableResult
     func quitAllKillable(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
         await stop(preset, scope: .all)

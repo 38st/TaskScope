@@ -68,7 +68,15 @@ protocol ProcessLifecycleServicing:
     ProcessTerminating,
     UserLaunchAgentControlling,
     SystemLaunchDaemonControlling,
-    AppBundleLaunching {}
+    AppBundleLaunching {
+    func disconnectGlobalProtectIfNeeded() async -> GlobalProtectDisconnectResult
+}
+
+extension ProcessLifecycleServicing {
+    func disconnectGlobalProtectIfNeeded() async -> GlobalProtectDisconnectResult {
+        .failed("Automatic GlobalProtect disconnect is unavailable. Its services were left running.")
+    }
+}
 
 extension ProcessTerminating {
     func waitForMainProcess(for preset: WatchedAppPreset, timeoutSeconds: TimeInterval) async -> Bool {
@@ -77,6 +85,10 @@ extension ProcessTerminating {
 }
 
 struct SystemProcessLifecycleService: ProcessLifecycleServicing {
+    func disconnectGlobalProtectIfNeeded() async -> GlobalProtectDisconnectResult {
+        await GlobalProtectAccessibilityDisconnect.disconnectIfNeeded()
+    }
+
     func appBundleExists(at path: String) -> Bool {
         FileManager.default.fileExists(atPath: path)
     }

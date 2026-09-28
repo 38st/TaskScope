@@ -982,7 +982,48 @@ final class ProcessManagerTests: XCTestCase {
         _ = await manager.keepOff(.globalProtect, recordIntent: false)
         XCTAssertTrue(lifecycle.calls.contains("daemon.disable:false"))
         XCTAssertEqual(lifecycle.calls.filter { $0 == "daemon.disable:true" }.count, 1)
+        XCTAssertEqual(lifecycle.calls.filter { $0 == "vpn.disconnect" }.count, 1)
         XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
+    }
+
+    func testGlobalProtectQuitAllDisconnectsBeforePersistingAndStoppingServices() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        var keptOff = false
+        manager.setPresetKeptOffHandler = { _, value in
+            XCTAssertEqual(lifecycle.calls, ["vpn.disconnect"])
+            keptOff = value
+        }
+        let result = await manager.quitAll(.globalProtect)
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertTrue(keptOff)
+        XCTAssertEqual(lifecycle.calls, [
+            "vpn.disconnect", "agents.disable", "daemon.disable:true",
+            "terminate:GlobalProtect", "terminate.helper:PanGPA", "settle"
+        ])
+    }
+
+    func testFailedDisconnectDoesNotPersistKeepOffOrStopAnything() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.disconnectResult = .failed("Disconnect could not be verified")
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        var intentWrites = 0
+        manager.setPresetKeptOffHandler = { _, _ in intentWrites += 1 }
+        let result = await manager.quitAll(.globalProtect)
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertTrue(result.message.contains("could not be verified"))
+        XCTAssertEqual(intentWrites, 0)
+        XCTAssertEqual(lifecycle.calls, ["vpn.disconnect"])
+    }
+
+    func testCustomQuitAllAndExistingCommandCloseDoNotGainPrivilegedStop() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        _ = await manager.quitAll(lifecyclePreset())
+        _ = await manager.quitAllKillable(.globalProtect)
+        XCTAssertFalse(lifecycle.calls.contains("vpn.disconnect"))
+        XCTAssertFalse(lifecycle.calls.contains("agents.disable"))
+        XCTAssertFalse(lifecycle.calls.contains("daemon.disable:true"))
     }
 
     func testGlobalProtectSystemFailureCannotReportSuccessfulStop() async {
@@ -1480,6 +1521,7 @@ final class ProcessManagerTests: XCTestCase {
 }
 
 private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked Sendable {
+    var disconnectResult = GlobalProtectDisconnectResult.disconnected
     var appExists = true
     var daemonResult = LifecycleBatchResult.notNeeded
     var agentLoadResult = LifecycleBatchResult.notNeeded
@@ -1493,6 +1535,11 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     var terminationOutcome = ProcessTerminationOutcome.signalled
     private(set) var calls: [String] = []
     private(set) var preservedPIDs: [Set<Int32>] = []
+
+    func disconnectGlobalProtectIfNeeded() async -> GlobalProtectDisconnectResult {
+        calls.append("vpn.disconnect")
+        return disconnectResult
+    }
 
     func appBundleExists(at path: String) -> Bool {
         calls.append("exists")

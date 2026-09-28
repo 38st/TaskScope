@@ -6,7 +6,7 @@ specific Mac described below, including a subsequent Connected status. The
 self-check alone provides read-only installation/state evidence and does not
 establish lifecycle or VPN connectivity results.
 
-The current Keep Off implementation includes an explicitly authorized stop of
+The current Keep Off and in-app GlobalProtect Quit All implementation includes an explicitly authorized stop of
 the fixed system VPN service. Earlier read-only evidence below predates this
 behavior. Automated full-stop/restore fixtures do not establish live VPN,
 login/reboot, or managed-policy compatibility. See the separate
@@ -18,6 +18,15 @@ verifies Open and Keep Off without repeated administrator prompts on that
 session-agent installation. The separate system daemon remains disabled;
 Open no longer re-enables a service that the session restoration path does not
 use. System-only layouts retain the administrator path.
+
+Quit All now uses the full Keep Off path. Explicit full stops press the vendor's
+Disconnect control through Accessibility and require a stable Not Connected
+state before changing launch jobs. The UI adapter currently recognizes the
+English status/control labels; unsupported layouts or states fail without
+stopping services. URL Close and Shortcuts Stop retain their existing scope.
+The [automatic Quit All test](Evidence/GlobalProtect/2026-09-28-quit-all.md)
+records two connected-to-off cycles with public HTTPS working afterward and
+the final installed build's unchanged menu-bar frame.
 
 On the tested 6.3.3-1121 layout, the GUI-session `pangps` job runs a setuid
 PanGPS process as root. A root process therefore does not by itself establish
@@ -36,6 +45,7 @@ build shares the same bug or behavior.
 | Live read-only observation, 2026-09-12 19:59 UTC | 26.6.2 (25G83), arm64 process | GlobalProtect 6.3.3-1121; TaskScope self-check working tree based on `059de91`, included in this change | [Redacted report](Evidence/GlobalProtect/2026-09-12-macos-26.6.2-gp-6.3.3-1121.txt): both user plists installed, disabled overrides, neither loaded; system plist installed, enabled override, not loaded; no matching processes observed | XCTest execution, no TaskScope app bundle version or Keep Off preference read; GlobalProtect build metadata unavailable; protected process not verified; no lifecycle or policy test |
 | Authorized live lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope 1.0.0 (3), local development build | [Redacted stop/restore record](Evidence/GlobalProtect/2026-09-28-live-stop-restore.md): fixed user and system jobs disabled/unloaded; Open re-enabled them and restored the session service and UI; VPN reported Connected | Initial reconnect required retry. Stale VPN DNS remained after some stops, even following Disconnect; Open recovered DNS and a subsequent idle stop preserved it. Login/reboot, private-resource reachability, and management-policy interference not tested |
 | Passwordless session lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope source `3c8d401` | [Follow-up record](Evidence/GlobalProtect/2026-09-28-passwordless.md): Open restored the session service with the system job still disabled; VPN reached Connected; Keep Off stopped all processes; no administrator window during these actions; public HTTPS worked afterward | Initial system-disable approval was required. Other layouts, pre-login, logout/reboot, policy changes, and private-resource connectivity remain untested; earlier DNS limitation is not fixed |
+| Automatic Quit All, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope 1.0.0 (3), final executable `0742281e…` | [Live record](Evidence/GlobalProtect/2026-09-28-quit-all.md): TaskScope pressed Disconnect, verified Not Connected, disabled/unloaded all known jobs and stopped all processes; public HTTPS worked; final menu-bar frame unchanged | One-time Accessibility authorization required. English UI exercised; other layouts, policies, login/reboot, and private-resource connectivity untested |
 
 The September 12 live report describes the Mac's existing state. The check did not create
 that state and no repair was attempted. In particular, the absent protected
@@ -100,7 +110,7 @@ artifact/revision. Retain the baseline and each after-action self-check export.
 | Protected service / VPN | Compare baseline and later system state; verify connectivity through the organization's supported method separately |
 
 Record **pass**, **fail**, or **not tested** for each performed step, with the
-observed result and redacted artifact references. Only the explicitly approved Keep Off action may unload the fixed system
+observed result and redacted artifact references. Only the explicitly approved Keep Off or GlobalProtect Quit All action may unload the fixed system
 daemon. Record its absence after stopping and verified identity after Open;
 never directly signal it or restart a loaded daemon just to obtain evidence. System-state changes may be
 caused by policy or other software; the self-check cannot attribute causation.

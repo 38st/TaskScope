@@ -8,11 +8,15 @@ the Dock and menu bar. It combines a searchable process list with watched-app
 presets, lifecycle controls, saved selections, auto-stop rules, notifications,
 Shortcuts actions, and process-history charts.
 
-TaskScope includes a GlobalProtect preset with a reversible **Keep GlobalProtect
-Off** control. Disconnect in GlobalProtect first so it can restore normal
-networking. After confirmation and macOS administrator approval when needed, TaskScope disables
+TaskScope's GlobalProtect **Quit All** action automatically disconnects the VPN,
+stops the app and its services, and enables **Keep GlobalProtect Off** until you
+choose **Open**. The Keep Off toggle uses the same full shutdown. TaskScope uses
+Accessibility permission to press the vendor's Disconnect button and waits for
+a stable disconnected state before stopping services. If permission is denied,
+the control is unavailable, or disconnect cannot be verified, shutdown stops
+with an explanation. After confirmation and macOS administrator approval when needed, TaskScope disables
 and unloads the known per-user agents and the fixed system `PanGPS` VPN service.
-This disconnects an active VPN. **Open** clears the required disable overrides and
+**Open** clears the required disable overrides and
 restores the installed login-session VPN service (`pangps`) before the app.
 Installations without that agent use the system daemon (`pangpsd`). A session
 service can run as root; TaskScope verifies its launchd PID and executable
@@ -24,12 +28,15 @@ Turning Keep Off off enables the required services without starting anything,
 also preserving the unused system daemon's disable override. No uninstall,
 reinstall, or changes to vendor files or VPN configuration are needed.
 
-On the tested Mac, stopping after VPN use could leave public DNS unavailable,
+Before automatic disconnect, stopping after VPN use could leave public DNS unavailable,
 including after the client showed Disconnected. **Open** restored normal DNS
 without reconnecting; stopping that idle service then kept public DNS/HTTPS
 working. TaskScope does not rewrite network settings to recover DNS.
+The later [automatic Quit All tests](Evidence/GlobalProtect/2026-09-28-quit-all.md)
+preserved public DNS/HTTPS through two connected-to-off cycles on that Mac.
 
-Ordinary Quit actions still leave the system service alone. Background Keep Off
+Quit App, Quit Helpers, URL Close, and Shortcuts Stop retain their existing
+user-process scope. Background Keep Off
 enforcement never requests privileges; if the system service returns, its
 running state and **Apply Keep Off…** remain visible. Existing Keep Off
 preferences from older builds do not authorize a background system stop: choose
@@ -241,6 +248,9 @@ insufficient for App Intents execution.
   from opening, and TaskScope reports the recovery path. TaskScope temporarily
   adjusts the search, process scope, or PID column only when needed and restores
   the prior Activity Monitor state after the handoff.
+- GlobalProtect Quit All and explicit Keep Off also request Accessibility to
+  verify and disconnect a running GlobalProtect client. They only press the fixed vendor app's
+  Disconnect control; they do not enter credentials or answer policy challenges.
 - Notifications are off on a new install and are requested only after opt-in.
 - Launch at Login is optional and managed from Settings.
 - Some process details and extended network/disk counters can be unavailable;

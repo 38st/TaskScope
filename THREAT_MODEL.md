@@ -131,13 +131,20 @@ system-daemon operation.
 
 Only the immutable built-in GlobalProtect identity can disable/unload, enable,
 or bootstrap the fixed system `pangpsd` daemon with macOS administrator
-approval. Custom presets cannot configure this path. Keep Off disconnects an
-active VPN; its confirmation discloses the service stop and restoration path.
+approval. Custom presets cannot configure this path. Explicit Keep Off and the
+built-in preset's Quit All disconnect an active VPN before stopping services;
+their confirmation discloses the persistent stop and restoration path.
 
 Required invariants:
 
-- only an explicit Keep Off action may request a system stop; background
+- only an explicit Keep Off or in-app GlobalProtect Quit All action may request a system stop; background
   enforcement and startup may verify system state but never prompt or mutate it;
+- automatic disconnect uses Accessibility only for the fixed GlobalProtect
+  executable, rechecking its kernel path before inspection/actions. Only the
+  normal Disconnect control is pressed; credentials and management challenges
+  are never filled. Unknown state, denial, timeout, or a failed press aborts
+  before writing new Keep Off intent or changing launch jobs. AX reads run on a
+  bounded worker queue; consecutive disconnected observations precede shutdown;
 - validate the complete built-in identity and fixed job fields before privileged
   commands; require the installed matching plist before introducing a disable
   override so the restore path remains available;
@@ -179,7 +186,8 @@ operation explicitly. Open and toggle-off are the explicit restoration paths.
 Background enforcement continues to unload only fixed current-user `pangpa` and
 optional `pangps` jobs. It re-checks intent inside the operation gate so queued
 enforcement cannot undo Open. It never repeatedly prompts for system approval
-or automatically fights a system service restored by management. The UI shows
+or automatically fights a system service restored by management. Automatic
+disconnect UI control runs only during an explicit action, never polling. The UI shows
 that service running and offers a confirmed retry. No destructive URL route is
 added; ordinary process stop and Auto Stop retain their existing boundaries.
 

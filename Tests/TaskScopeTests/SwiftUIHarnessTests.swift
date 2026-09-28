@@ -407,11 +407,11 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try card.find(text: "Keep GlobalProtect Off"))
         XCTAssertNoThrow(
             try card.find(
-                text: "Disconnect the VPN first. Open restores GlobalProtect; administrator approval is requested only when needed."
+                text: "Quit All disconnects and stops GlobalProtect. Open brings it back."
             )
         )
 
-        try card.find(button: "Quit All Killable").tap()
+        try card.find(button: "Quit All").tap()
 
         XCTAssertEqual(confirmation.pendingPresetAction?.action, .quitAll)
         XCTAssertEqual(
@@ -420,10 +420,10 @@ final class SwiftUIHarnessTests: XCTestCase {
         )
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
         let presented = try view.inspect()
-        XCTAssertNoThrow(try presented.find(text: "Quit All Killable"))
+        XCTAssertNoThrow(try presented.find(text: "Quit All"))
         XCTAssertNoThrow(
             try presented.find(
-                text: "TaskScope will unload the user launch agents (com.paloaltonetworks.gp.pangpa, com.paloaltonetworks.gp.pangps). It will then stop the currently running matches for: GlobalProtect, PanGPA. A process still running 3 seconds after the stop request is force stopped."
+                text: "TaskScope will disconnect the VPN, stop GlobalProtect and its services, and keep them off until you choose Open. Accessibility permission lets TaskScope press Disconnect for you; administrator approval is requested only when needed to stop the system service. A process still running 3 seconds after the stop request is force stopped."
             )
         )
 

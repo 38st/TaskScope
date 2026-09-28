@@ -1,0 +1,64 @@
+{
+  "phase": "stop",
+  "before": {
+    "time_utc": "2026-09-28T17:46:54.402461+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "1c011c78cfb62ab883802011b6e356e3b24a82e7cf1be1c2dbbd54bd2fcfd4c7"
+  },
+  "menu_bar_before": "976, 4, 46, 24",
+  "taskscope_status": "TaskScope, Watched app running, Status: Active, Allow TaskScope in System Settings \u2192 Privacy & Security \u2192 Accessibility, then choose Quit All again. This lets TaskScope disconnect the VPN for you. Its services were left running.",
+  "expected_state_observed": false,
+  "after": {
+    "time_utc": "2026-09-28T17:46:57.298105+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "1c011c78cfb62ab883802011b6e356e3b24a82e7cf1be1c2dbbd54bd2fcfd4c7"
+  },
+  "menu_bar_after": "976, 4, 46, 24",
+  "administrator_windows_observed": 0,
+  "authentication_monitor_failed": false,
+  "connection_events": [
+    {
+      "elapsed": 1.92,
+      "state": "Connected"
+    }
+  ],
+  "elapsed": 4.35
+}

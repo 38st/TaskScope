@@ -95,6 +95,7 @@ struct LifecycleDiagnosticFailure: Encodable, Equatable, Sendable {
         case open, quitApp, quitHelpers, close, keepOff, allowToRun
     }
     enum Reason: String, Encodable, Sendable {
+        case disconnectFailed
         case incomplete, appBundleMissing, inventoryUnavailable
         case systemServiceFailed, userLaunchAgentFailed, launchFailed
         case signalRejected, verificationUnavailable, stillRunning

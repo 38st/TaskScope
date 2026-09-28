@@ -1,0 +1,76 @@
+{
+  "phase": "stop",
+  "before": {
+    "time_utc": "2026-09-28T17:49:37.919696+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "1c011c78cfb62ab883802011b6e356e3b24a82e7cf1be1c2dbbd54bd2fcfd4c7"
+  },
+  "menu_bar_before": "978, 4, 46, 24",
+  "taskscope_status": "TaskScope, No watched apps running, Status: Quiet, GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling.",
+  "expected_state_observed": true,
+  "after": {
+    "time_utc": "2026-09-28T17:50:11.171766+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangps": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 0,
+      "PanGPA": 0,
+      "PanGPS": 0
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "1c011c78cfb62ab883802011b6e356e3b24a82e7cf1be1c2dbbd54bd2fcfd4c7"
+  },
+  "menu_bar_after": "1012, 4, 49, 24",
+  "administrator_windows_observed": 0,
+  "authentication_monitor_failed": false,
+  "connection_events": [
+    {
+      "elapsed": 3.62,
+      "state": "Connected"
+    },
+    {
+      "elapsed": 6.01,
+      "state": "Connecting..."
+    },
+    {
+      "elapsed": 10.02,
+      "state": "Not Connected"
+    },
+    {
+      "elapsed": 34.28,
+      "state": "Absent"
+    }
+  ],
+  "elapsed": 34.47
+}

@@ -54,6 +54,10 @@ final class ProcessConfirmationState: ObservableObject {
     struct PendingPresetAction: Equatable {
         var preset: WatchedAppPreset
         var action: PresetAction
+
+        var title: String {
+            action == .quitAll && preset.hasCanonicalGlobalProtectIdentity ? "Quit All" : action.rawValue
+        }
     }
 
     @Published private(set) var pendingTermination: PendingTermination?

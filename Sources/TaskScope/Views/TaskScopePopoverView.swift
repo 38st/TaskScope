@@ -200,11 +200,11 @@ struct TaskScopePopoverView: View {
     private var presetConfirmationContent: some View {
         terminationConfirmationContent
         .confirmationDialog(
-            confirmationState.pendingPresetAction?.action.rawValue ?? "Confirm Preset Action",
+            confirmationState.pendingPresetAction?.title ?? "Confirm Preset Action",
             isPresented: presetConfirmationBinding,
             presenting: confirmationState.pendingPresetAction
         ) { pending in
-            Button(pending.action.rawValue, role: .destructive) {
+            Button(pending.title, role: .destructive) {
                 let preset = pending.preset
                 let action = pending.action
                 confirmationState.clearPresetAction()
@@ -215,7 +215,7 @@ struct TaskScopePopoverView: View {
                     case .quitHelpers:
                         _ = await processManager.quitHelpers(preset)
                     case .quitAll:
-                        _ = await processManager.quitAllKillable(preset)
+                        _ = await processManager.quitAll(preset)
                     case .keepOff:
                         _ = await processManager.keepOff(preset)
                     }
@@ -1000,13 +1000,17 @@ struct TaskScopePopoverView: View {
         let window = Int(ProcessTerminationController.gracefulExitWindowSeconds)
         let forceStopDisclosure = "A process still running \(window) seconds after the stop request is force stopped."
 
+        if preset.hasCanonicalGlobalProtectIdentity && (pending.action == .quitAll || pending.action == .keepOff) {
+            return "TaskScope will disconnect the VPN, stop GlobalProtect and its services, and keep them off until you choose Open. Accessibility permission lets TaskScope press Disconnect for you; administrator approval is requested only when needed to stop the system service. \(forceStopDisclosure)"
+        }
+
         var sentences: [String] = []
         switch pending.action {
         case .keepOff:
             sentences.append(
                 "TaskScope will persistently disable GlobalProtect's per-user launch agents (\(agentList)) and stop current user-facing matches: \(targets)."
             )
-            sentences.append("Disconnect in GlobalProtect before continuing so it can restore normal networking. Stopping an active tunnel can leave DNS unavailable; Open restores the service if that happens. TaskScope requests administrator approval only if the system VPN service still needs to be disabled or unloaded. Open restores the required services without reinstalling; turning Keep Off off allows them to run without starting them. The separate system daemon stays disabled when the installed login-session service supplies the VPN.")
+            sentences.append("Open restores the required services without reinstalling; turning Keep Off off allows them to run without starting them.")
         case .quitHelpers:
             if !agentLabels.isEmpty {
                 sentences.append(
