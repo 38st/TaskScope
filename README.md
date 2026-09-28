@@ -10,14 +10,18 @@ Shortcuts actions, and process-history charts.
 
 TaskScope includes a GlobalProtect preset with a reversible **Keep GlobalProtect
 Off** control. Disconnect in GlobalProtect first so it can restore normal
-networking. After confirmation and macOS administrator approval, TaskScope disables
+networking. After confirmation and macOS administrator approval when needed, TaskScope disables
 and unloads the known per-user agents and the fixed system `PanGPS` VPN service.
-This disconnects an active VPN. **Open** clears the disable overrides and
+This disconnects an active VPN. **Open** clears the required disable overrides and
 restores the installed login-session VPN service (`pangps`) before the app.
 Installations without that agent use the system daemon (`pangpsd`). A session
 service can run as root; TaskScope verifies its launchd PID and executable
-instead of choosing a service solely from its owner. Turning
-Keep Off off clears the overrides without starting anything. No uninstall,
+instead of choosing a service solely from its owner. For installations with a
+valid session agent, Open leaves the separate system daemon disabled. After
+the first full stop, later Open/Keep Off cycles need no administrator prompt
+unless something restores that system service or changes the installed layout.
+Turning Keep Off off enables the required services without starting anything,
+also preserving the unused system daemon's disable override. No uninstall,
 reinstall, or changes to vendor files or VPN configuration are needed.
 
 On the tested Mac, stopping after VPN use could leave public DNS unavailable,
@@ -177,7 +181,9 @@ be exported from Settings when their stored data is readable. See
   force stopping it, and the confirmation dialog says so.
 - Keep GlobalProtect off by persistently disabling its known user agents and,
   with explicit administrator approval, its system VPN service. Open restores
-  both without reinstalling. Login/reboot behavior still needs live validation.
+  the required services without reinstalling; session installations keep the
+  separate system daemon disabled to avoid repeated administrator prompts.
+  Login/reboot behavior still needs live validation.
 - Create Prompt, Auto Stop, or Log Only runtime rules with event history. Auto
   Stop requires a trusted executable path; legacy name-only Auto Stop rules
   load disabled until reviewed.

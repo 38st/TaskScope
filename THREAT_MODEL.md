@@ -150,7 +150,12 @@ Required invariants:
   without this agent use the system daemon path;
 - do not force-restart a newly bootstrapped user job with `kickstart -k`, or
   directly signal PanGPS. A loaded service is left running;
-- turning Keep Off off clears system and user overrides without starting jobs;
+- when a valid installed session agent supplies the VPN service, Open and
+  toggle-off preserve an existing disable override on the separate system
+  daemon. This avoids privilege requests by avoiding the unnecessary system
+  mutation; it installs no helper, stores no credentials, and changes no
+  authorization policy. Missing session agents retain the administrator path;
+- turning Keep Off off clears required service overrides without starting jobs;
 - report cancellation and partial failures, retaining requested intent until
   restoration succeeds; show a running system service instead of an off badge;
 - escape command arguments, retain no credentials, and never remove, rename,

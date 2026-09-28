@@ -399,7 +399,7 @@ struct SettingsView: View {
             "Open and ordinary quit actions first require a fresh process inventory; an unavailable inventory stops those actions."
         ]
         operations.append(contentsOf: preset.systemLaunchDaemonJobs.map { job in
-            "Open: re-enable fixed daemon \(job.label) at \(job.plistPath) with administrator approval when disabled; if absent, request approval to bootstrap it and verify \(job.processName)."
+            "Open: when the installed login-session VPN agent is available, preserve the separate system daemon disable override; otherwise re-enable fixed daemon \(job.label) at \(job.plistPath) with administrator approval when disabled; if absent, request approval to bootstrap it and verify \(job.processName)."
         })
         operations.append(contentsOf: preset.userLaunchAgentJobs.map { job in
             let availability = job.isRequired ? "" : " when it is installed"
@@ -431,7 +431,7 @@ struct SettingsView: View {
         }
         if preset.id == WatchedAppPreset.globalProtectID {
             operations.append(
-                "Keep Off: disconnect the VPN in GlobalProtect first so it can restore normal networking, then persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; an explicit action also requests administrator approval to disable and unload the fixed system VPN service, disconnecting any VPN still active. Stopping an active tunnel can leave DNS unavailable; Open restores the service if that happens. Background enforcement never requests privileges. Open re-enables and restores all services; turning Keep Off off only clears their persistent overrides."
+                "Keep Off: disconnect the VPN in GlobalProtect first so it can restore normal networking, then persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; an explicit action requests administrator approval only if needed to disable and unload the fixed system VPN service, disconnecting any VPN still active. Stopping an active tunnel can leave DNS unavailable; Open restores the service if that happens. Background enforcement never requests privileges. Open restores the required services. For session-agent installations, the separate system daemon stays disabled so subsequent Open and Keep Off actions need no system change. Turning Keep Off off allows the required services to run without starting them."
             )
         }
         return operations

@@ -551,9 +551,9 @@ final class ProcessManager: ObservableObject {
         return commandResult
     }
 
-    /// Clears persistent user and system suppression without launching the app. This
-    /// makes the toggle reversible while leaving explicit Open as the only action
-    /// that starts GlobalProtect through TaskScope.
+    /// Clears suppression of the services required by this installation without
+    /// launching the app. A separate system daemon stays disabled when the
+    /// installed session agent supplies the VPN service. Only Open starts it.
     @discardableResult
     func allowToRun(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {
         var commandResult = TaskScopeCommandResult(

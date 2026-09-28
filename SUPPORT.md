@@ -215,10 +215,18 @@ managed installer or IT support when its protected service cannot be restored.
 ### GlobalProtect keeps reopening
 
 Use **Keep GlobalProtect Off** on the built-in preset. Confirm the action and
-approve the macOS administrator dialog to disable/unload the user agents and
-system VPN service. This disconnects any VPN. Choose **Open** to re-enable and
-restore all services without reinstalling, or turn Keep Off off to re-enable
-without starting anything.
+approve the macOS administrator dialog if the system service still needs to be
+disabled/unloaded. This disconnects any VPN. Choose **Open** to restore the
+required services without reinstalling, or turn Keep Off off to allow those
+services to run without starting anything.
+
+When the installed `pangps` session agent supplies the VPN service, Open and
+toggle-off retain the separate system daemon's disabled override. After the
+first full stop, subsequent Open/Keep Off cycles therefore need no password.
+No password is stored and no elevated helper or authorization-policy exception
+is installed. Layouts without that session agent still require administrator
+approval to restore the system daemon. An unreadable or mismatched session
+agent label is reported as a failure, not as successful restoration.
 
 If approval is cancelled or a service remains loaded, the result reports a
 failure. **Apply Keep Off…** retries the explicit stop. Existing Keep Off

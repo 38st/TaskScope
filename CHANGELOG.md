@@ -45,6 +45,12 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
+- Avoid repeated administrator prompts on GlobalProtect session-agent
+  installations. Open and toggle-off retain the unused system daemon's disable
+  override while restoring the required user jobs. Once the first full stop is
+  approved, later Open/Keep Off cycles require no system mutation. System-only
+  layouts keep the administrator path; malformed session plists fail visibly.
+
 - Fixed process identity validation for macOS `ps` timestamps padded with spaces
   or tabs. Valid processes no longer disappear from the inventory or produce a
   false Quiet state; incomplete reads must include TaskScope's own stable PID.

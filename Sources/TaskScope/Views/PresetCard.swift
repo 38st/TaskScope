@@ -44,7 +44,7 @@ struct PresetCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Keep GlobalProtect Off")
                             .fontWeight(.medium)
-                        Text("Disconnect the VPN first, then stop the app and service with administrator approval. Open restores both.")
+                        Text("Disconnect the VPN first. Open restores GlobalProtect; administrator approval is requested only when needed.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }

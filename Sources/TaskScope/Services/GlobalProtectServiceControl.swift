@@ -29,10 +29,12 @@ extension ProcessLifecycleController {
             let failure = result.succeeded ? "" : "Administrator stop failed or was cancelled (\(result.failureDescription)). "
             return systemResult(job, .failed, "\(failure)\(remaining ?? "The service is off, but the administrator command did not finish successfully.") Choose Open to restore GlobalProtect or Apply Keep Off to retry.")
         }
-        return systemResult(job, .changed, "System VPN service disabled persistently and unloaded; Open restores it without reinstalling.")
+        return systemResult(job, .changed, "System VPN service disabled persistently and unloaded; Open restores the required services without reinstalling.")
     }
 
-    /// Clears only the persistent system override; bootstrap belongs to Open.
+    /// Restores a required system override; bootstrap belongs to Open. When the
+    /// installed session agent supplies PanGPS, keep an unused system daemon
+    /// disabled so every Open/Keep Off cycle does not request root privileges.
     static func enableSystemLaunchDaemons(
         for preset: WatchedAppPreset,
         runtime: ProcessLifecycleRuntime = .live
@@ -47,6 +49,13 @@ extension ProcessLifecycleController {
             return systemResult(job, .failed, "Could not read the system service disable override. Refresh and try again; no system state was changed.")
         case .disabled:
             break
+        }
+        let sessionJob = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        if runtime.fileExists(sessionJob.plistPath) {
+            guard runtime.launchAgentLabel(sessionJob.plistPath) == sessionJob.label else {
+                return systemResult(job, .failed, "The installed login-session service plist has an unreadable or mismatched label. The system disable override was preserved; no administrator command was requested.")
+            }
+            return systemResult(job, .verified, "This installation uses the login-session VPN service. The separate system daemon remains disabled; no administrator approval is needed to restore the session service.")
         }
         let script = "/bin/launchctl enable \(ShellCommandRunner.shellQuoted("system/\(job.label)"))"
         let result = await requestAdminServiceChange(script, runtime: runtime)

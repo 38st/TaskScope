@@ -136,6 +136,45 @@ final class GlobalProtectServiceControlTests: XCTestCase {
         XCTAssertTrue(commands.isEmpty)
     }
 
+    func testSessionInstallationPreservesSystemDisableWithoutAdministratorRequest() async {
+        let harness = ServiceHarness(disabled: true, loaded: false)
+        let session = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        var runtime = harness.runtime
+        runtime.fileExists = { $0 == session.plistPath }
+        runtime.launchAgentLabel = { $0 == session.plistPath ? session.label : nil }
+
+        // Covers repeated Open / allow-to-run preparation followed by Keep Off.
+        for _ in 0..<2 {
+            let enabled = await ProcessLifecycleController.enableSystemLaunchDaemons(for: .globalProtect, runtime: runtime)
+            XCTAssertTrue(enabled.succeeded)
+            XCTAssertTrue(enabled.jobs.first?.detail.contains("remains disabled") == true)
+            let stopped = await ProcessLifecycleController.disableSystemLaunchDaemons(
+                for: .globalProtect, allowAdministratorPrompt: true, runtime: runtime
+            )
+            XCTAssertTrue(stopped.succeeded)
+        }
+        let state = await harness.state
+        XCTAssertTrue(state.disabled)
+        XCTAssertFalse(state.loaded)
+        let commands = await harness.commands
+        XCTAssertFalse(commands.contains { $0.contains("osascript") || $0.contains("launchctl enable") || $0.contains("bootstrap") })
+    }
+
+    func testInvalidSessionPlistCannotClaimPasswordlessRestoration() async {
+        for label in [nil, "wrong.label"] as [String?] {
+            let harness = ServiceHarness(disabled: true, loaded: false)
+            var runtime = harness.runtime
+            runtime.fileExists = { $0 == WatchedAppPreset.globalProtectUserLaunchAgentJobs[1].plistPath }
+            runtime.launchAgentLabel = { _ in label }
+            let result = await ProcessLifecycleController.enableSystemLaunchDaemons(for: .globalProtect, runtime: runtime)
+            XCTAssertFalse(result.succeeded)
+            let commands = await harness.commands
+            XCTAssertFalse(commands.contains { $0.contains("osascript") })
+            let state = await harness.state
+            XCTAssertTrue(state.disabled)
+        }
+    }
+
     func testPrivilegedDisableScriptParsesAsShell() async {
         let script = ProcessLifecycleController.adminDisableScript(for: WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0])
         let result = await ShellCommandRunner.run("/bin/sh -n -c \(ShellCommandRunner.shellQuoted(script))", timeout: 5)

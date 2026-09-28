@@ -58,7 +58,8 @@ final class SwiftUIHarnessTests: XCTestCase {
 
         let globalProtectOperations = SettingsView.lifecycleDryRunOperations(for: .globalProtect)
         XCTAssertTrue(globalProtectOperations.contains { $0.contains("Keep Off") })
-        XCTAssertTrue(globalProtectOperations.contains { $0.contains("administrator approval to disable and unload") })
+        XCTAssertTrue(globalProtectOperations.contains { $0.contains("administrator approval only if needed to disable and unload") })
+        XCTAssertTrue(globalProtectOperations.contains { $0.contains("preserve the separate system daemon disable override") })
     }
 
     func testQuickPresetPrefersTrustedExecutablePathOverReportedCommand() {
@@ -406,7 +407,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try card.find(text: "Keep GlobalProtect Off"))
         XCTAssertNoThrow(
             try card.find(
-                text: "Disconnect the VPN first, then stop the app and service with administrator approval. Open restores both."
+                text: "Disconnect the VPN first. Open restores GlobalProtect; administrator approval is requested only when needed."
             )
         )
 

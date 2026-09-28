@@ -1006,7 +1006,7 @@ struct TaskScopePopoverView: View {
             sentences.append(
                 "TaskScope will persistently disable GlobalProtect's per-user launch agents (\(agentList)) and stop current user-facing matches: \(targets)."
             )
-            sentences.append("Disconnect in GlobalProtect before continuing so it can restore normal networking. Stopping an active tunnel can leave DNS unavailable; Open restores the service if that happens. TaskScope will also request administrator approval to persistently disable and unload the system VPN service. Open restores the services without reinstalling; turning Keep Off off re-enables them without starting them.")
+            sentences.append("Disconnect in GlobalProtect before continuing so it can restore normal networking. Stopping an active tunnel can leave DNS unavailable; Open restores the service if that happens. TaskScope requests administrator approval only if the system VPN service still needs to be disabled or unloaded. Open restores the required services without reinstalling; turning Keep Off off allows them to run without starting them. The separate system daemon stays disabled when the installed login-session service supplies the VPN.")
         case .quitHelpers:
             if !agentLabels.isEmpty {
                 sentences.append(
