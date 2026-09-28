@@ -1,0 +1,31 @@
+{
+  "taskscope_status": "TaskScope, No watched apps running, Status: Quiet, GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling.",
+  "phase": "stop",
+  "expected_state_observed": true,
+  "state": {
+    "time_utc": "2026-09-28T17:28:53.803824+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangps": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 0,
+      "PanGPA": 0,
+      "PanGPS": 0
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "256b8e256b7925dc84967e8947d29486fa7a1cb90ae3f4c90cdc78c43d2420dd"
+  },
+  "administrator_windows_observed": 0,
+  "authentication_monitor_failed": false
+}

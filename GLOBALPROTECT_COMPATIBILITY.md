@@ -13,6 +13,12 @@ login/reboot, or managed-policy compatibility. See the separate
 [September 28 live test](Evidence/GlobalProtect/2026-09-28-live-stop-restore.md)
 for the exercised behavior, exact binaries, and limitations.
 
+The later [passwordless restoration test](Evidence/GlobalProtect/2026-09-28-passwordless.md)
+verifies Open and Keep Off without repeated administrator prompts on that
+session-agent installation. The separate system daemon remains disabled;
+Open no longer re-enables a service that the session restoration path does not
+use. System-only layouts retain the administrator path.
+
 On the tested 6.3.3-1121 layout, the GUI-session `pangps` job runs a setuid
 PanGPS process as root. A root process therefore does not by itself establish
 that `pangpsd` is running. When the session agent is installed, Open restores
@@ -29,6 +35,7 @@ build shares the same bug or behavior.
 | Deterministic fixtures, 2026-09-12 | Host-independent data on macOS test runner | Simulated layouts and tool responses | Optional/missing agents, both disabled-output formats, unknown/error states, process ownership, protected PID validation, version handling, and redaction covered by `GlobalProtectCompatibilityTests` | No installed-product lifecycle actions |
 | Live read-only observation, 2026-09-12 19:59 UTC | 26.6.2 (25G83), arm64 process | GlobalProtect 6.3.3-1121; TaskScope self-check working tree based on `059de91`, included in this change | [Redacted report](Evidence/GlobalProtect/2026-09-12-macos-26.6.2-gp-6.3.3-1121.txt): both user plists installed, disabled overrides, neither loaded; system plist installed, enabled override, not loaded; no matching processes observed | XCTest execution, no TaskScope app bundle version or Keep Off preference read; GlobalProtect build metadata unavailable; protected process not verified; no lifecycle or policy test |
 | Authorized live lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope 1.0.0 (3), local development build | [Redacted stop/restore record](Evidence/GlobalProtect/2026-09-28-live-stop-restore.md): fixed user and system jobs disabled/unloaded; Open re-enabled them and restored the session service and UI; VPN reported Connected | Initial reconnect required retry. Stale VPN DNS remained after some stops, even following Disconnect; Open recovered DNS and a subsequent idle stop preserved it. Login/reboot, private-resource reachability, and management-policy interference not tested |
+| Passwordless session lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope source `3c8d401` | [Follow-up record](Evidence/GlobalProtect/2026-09-28-passwordless.md): Open restored the session service with the system job still disabled; VPN reached Connected; Keep Off stopped all processes; no administrator window during these actions; public HTTPS worked afterward | Initial system-disable approval was required. Other layouts, pre-login, logout/reboot, policy changes, and private-resource connectivity remain untested; earlier DNS limitation is not fixed |
 
 The September 12 live report describes the Mac's existing state. The check did not create
 that state and no repair was attempted. In particular, the absent protected
