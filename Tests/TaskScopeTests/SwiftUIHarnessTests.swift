@@ -435,6 +435,54 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
     }
 
+    func testConfirmedMenuBarFullStopOpensPersistentWindowAndRetainsFailure() async throws {
+        for action in [ProcessConfirmationState.PresetAction.quitAll, .keepOff] {
+            let fixture = await makeFixture(processes: [])
+            defer { fixture.stores.cleanup() }
+            fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+            let confirmation = ProcessConfirmationState()
+            confirmation.requestPresetAction(action, preset: .globalProtect)
+            var windowRequests = 0
+            let view = makePopover(fixture: fixture, confirmationState: confirmation, openFullWindow: {
+                XCTAssertNil(confirmation.pendingPresetAction)
+                XCTAssertFalse(fixture.manager.isWorking, "Present before disconnect can dismiss the menu")
+                windowRequests += 1
+            })
+            try view.inspect().find(ViewType.ConfirmationDialog.self).actions().find(button: confirmation.pendingPresetAction!.title).tap()
+            await settle()
+            XCTAssertEqual(windowRequests, 1)
+            XCTAssertNil(confirmation.pendingPresetAction)
+            XCTAssertEqual(fixture.stores.settings.selectedSection, .presets)
+            XCTAssertEqual(fixture.manager.message, "Automatic GlobalProtect disconnect is unavailable. Its services were left running.")
+            XCTAssertTrue(fixture.signaler.sent.isEmpty)
+        }
+    }
+
+    func testCancellingMenuBarFullStopDoesNotOpenWindowOrRunAction() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let confirmation = ProcessConfirmationState()
+        confirmation.requestPresetAction(.quitAll, preset: .globalProtect)
+        var windowRequests = 0
+        let view = makePopover(fixture: fixture, confirmationState: confirmation, openFullWindow: { windowRequests += 1 })
+        let previousMessage = fixture.manager.message
+        try view.inspect().find(ViewType.ConfirmationDialog.self).actions().find(button: "Cancel").tap()
+        await settle()
+        XCTAssertEqual(windowRequests, 0)
+        XCTAssertEqual(fixture.manager.message, previousMessage)
+        XCTAssertNil(confirmation.pendingPresetAction)
+    }
+
+    func testPresetFooterShowsTheActiveStepAndFullFailureMessage() throws {
+        let step = "Disconnecting GlobalProtect before stopping its services…"
+        let working = TaskScopeFooterView(isWorking: true, message: step, workingMessage: step, expandsMessage: true, summary: nil, quitAction: {})
+        XCTAssertNoThrow(try working.inspect().find(text: step))
+        XCTAssertThrowsError(try working.inspect().find(text: "Working..."))
+        let detail = "GlobalProtect did not finish disconnecting. Complete any request in GlobalProtect and try Quit All again; its services were left running."
+        let failed = TaskScopeFooterView(isWorking: false, message: detail, expandsMessage: true, summary: nil, quitAction: {})
+        XCTAssertNil(try failed.inspect().find(text: detail).lineLimit())
+    }
+
     /// The Open button must address the preset it belongs to by identity. A
     /// display-name lookup also matches other presets' main process names, so a
     /// cross-field collision used to open a different preset than the one clicked.
@@ -885,7 +933,8 @@ final class SwiftUIHarnessTests: XCTestCase {
 
     private func makePopover(
         fixture: UIFixture,
-        confirmationState: ProcessConfirmationState
+        confirmationState: ProcessConfirmationState,
+        openFullWindow: (() -> Void)? = nil
     ) -> TaskScopePopoverView {
         TaskScopePopoverView(
             processManager: fixture.manager,
@@ -896,7 +945,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             autoStopRules: fixture.stores.autoStopRules,
             history: fixture.stores.history,
             presentationStyle: .menuBarCompact,
-            openFullWindow: nil,
+            openFullWindow: openFullWindow,
             confirmationState: confirmationState,
             activityMonitor: UIActivityMonitor()
         )

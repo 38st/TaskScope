@@ -5,11 +5,30 @@ enum GlobalProtectDisconnectResult: Equatable, Sendable {
     case failed(String)
 }
 
-enum GlobalProtectConnectionState: Sendable {
+enum GlobalProtectConnectionState: Equatable, Sendable {
     case connected
     case disconnected
     case busy
     case unavailable
+}
+
+/// An Error tooltip alone is ambiguous. The vendor's Connection Failed view
+/// with an enabled Connect control and no Disconnect control is an idle VPN.
+struct GlobalProtectConnectionObservation {
+    var status: String?
+    var showsConnectionFailed = false
+    var canConnect = false
+    var hasDisconnect = false
+
+    var state: GlobalProtectConnectionState {
+        switch status {
+        case "Not Connected": .disconnected
+        case "Connected": .connected
+        case "Connecting...", "Disconnecting...": .busy
+        case "Error" where showsConnectionFailed && canConnect && !hasDisconnect: .disconnected
+        default: .unavailable
+        }
+    }
 }
 
 protocol GlobalProtectDisconnectRuntime: Sendable {

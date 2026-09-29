@@ -144,7 +144,10 @@ Required invariants:
   normal Disconnect control is pressed; credentials and management challenges
   are never filled. Unknown state, denial, timeout, or a failed press aborts
   before writing new Keep Off intent or changing launch jobs. AX reads run on a
-  bounded worker queue; consecutive disconnected observations precede shutdown;
+  bounded worker queue; consecutive disconnected observations precede shutdown.
+  An Error tooltip counts as disconnected only with the same vendor window's
+  Connection Failed text, enabled Connect control, and no Disconnect control;
+  Error alone, contradictory controls, and unreadable state still abort;
 - validate the complete built-in identity and fixed job fields before privileged
   commands; require the installed matching plist before introducing a disable
   override so the restore path remains available;

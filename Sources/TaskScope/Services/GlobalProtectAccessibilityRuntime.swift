@@ -51,6 +51,7 @@ enum GlobalProtectAccessibilityDisconnect {
 private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRuntime, @unchecked Sendable {
     private let queue = DispatchQueue(label: "TaskScope.GlobalProtectDisconnect", qos: .userInitiated)
     private let pid: Int32
+    private var revealedFailureView = false
 
     init(pid: Int32) { self.pid = pid }
 
@@ -61,14 +62,31 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
                     continuation.resume(returning: .unavailable)
                     return
                 }
-                let state: GlobalProtectConnectionState
-                switch string(item, kAXHelpAttribute) {
-                case "Not Connected": state = .disconnected
-                case "Connected": state = .connected
-                case "Connecting...", "Disconnecting...": state = .busy
-                default: state = .unavailable
+                var observation = GlobalProtectConnectionObservation(status: string(item, kAXHelpAttribute))
+                if observation.status == "Error", let app = application() {
+                    if elements(app, kAXWindowsAttribute).isEmpty && !revealedFailureView {
+                        revealedFailureView = true
+                        _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
+                        for _ in 0..<20 {
+                            Thread.sleep(forTimeInterval: 0.1)
+                            if !elements(app, kAXWindowsAttribute).isEmpty { break }
+                        }
+                    }
+                    // All controls must belong to the same vendor window.
+                    for window in elements(app, kAXWindowsAttribute) {
+                        let roots = [window]
+                        guard find(in: roots, role: kAXStaticTextRole, title: "Connection Failed") != nil else { continue }
+                        observation.showsConnectionFailed = true
+                        observation.canConnect = find(in: roots, role: kAXButtonRole, title: "Connect")
+                            .map { boolean($0, kAXEnabledAttribute) } == true
+                        observation.hasDisconnect = find(in: roots, role: kAXButtonRole, title: "Disconnect") != nil
+                        break
+                    }
+                    // Do not accept an idle view if the status changed while
+                    // its controls were being read.
+                    observation.status = string(item, kAXHelpAttribute)
                 }
-                continuation.resume(returning: state)
+                continuation.resume(returning: observation.state)
             }
         }
     }
@@ -139,13 +157,20 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
         return value as? String
     }
 
+    private func boolean(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
+        return value as? Bool == true
+    }
+
     private func find(in roots: [AXUIElement], role: String, title: String? = nil) -> AXUIElement? {
         var pending = roots.map { ($0, 0) }
         var inspected = 0
         while let (element, depth) = pending.popLast(), inspected < 100 {
             inspected += 1
             if string(element, kAXRoleAttribute) == role,
-               title == nil || string(element, kAXTitleAttribute) == title || string(element, kAXDescriptionAttribute) == title {
+               title == nil || string(element, kAXTitleAttribute) == title || string(element, kAXDescriptionAttribute) == title
+                || (role == kAXStaticTextRole && string(element, kAXValueAttribute) == title) {
                 return element
             }
             if depth < 8 {

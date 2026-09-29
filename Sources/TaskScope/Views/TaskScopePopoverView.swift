@@ -209,6 +209,14 @@ struct TaskScopePopoverView: View {
                 let action = pending.action
                 confirmationState.clearPresetAction()
                 Task {
+                    // GlobalProtect opens its own menu to disconnect, which
+                    // dismisses MenuBarExtra. Keep this user-requested action
+                    // and its result visible in the regular window instead.
+                    if !isExpandedWindow, preset.hasCanonicalGlobalProtectIdentity,
+                       action == .quitAll || action == .keepOff {
+                        await Task.yield()
+                        openFullWindow?()
+                    }
                     switch action {
                     case .quitApp:
                         _ = await processManager.quitMainApp(preset)
@@ -746,6 +754,8 @@ struct TaskScopePopoverView: View {
         TaskScopeFooterView(
             isWorking: processManager.isWorking,
             message: processManager.message,
+            workingMessage: settings.selectedSection == .presets ? processManager.message : nil,
+            expandsMessage: settings.selectedSection == .presets,
             summary: footerSummary,
             quitAction: { NSApplication.shared.terminate(nil) }
         )
@@ -872,13 +882,21 @@ struct TaskScopePopoverView: View {
 
     private var lifecycleReportBinding: Binding<LifecycleReport?> {
         Binding(
-            get: { processManager.lifecycleReport },
+            get: { ownsLifecycleReportPresentation ? processManager.lifecycleReport : nil },
             set: { value in
-                if value == nil {
+                if value == nil && ownsLifecycleReportPresentation {
                     processManager.dismissLifecycleReport()
                 }
             }
         )
+    }
+
+    private var ownsLifecycleReportPresentation: Bool {
+        // Both views share the manager. Once the regular window is visible it
+        // owns the report; the menu must not create or dismiss a second sheet.
+        isExpandedWindow || !NSApplication.shared.windows.contains {
+            $0.isVisible && ($0.title == "TaskScope" || $0.title == "TaskScope Processes")
+        }
     }
 
     private var batchActionReportBinding: Binding<ProcessBatchActionReport?> {

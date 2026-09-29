@@ -20,8 +20,10 @@ Open no longer re-enables a service that the session restoration path does not
 use. System-only layouts retain the administrator path.
 
 Quit All now uses the full Keep Off path. Explicit full stops press the vendor's
-Disconnect control through Accessibility and require a stable Not Connected
-state before changing launch jobs. The UI adapter currently recognizes the
+Disconnect control through Accessibility and require a stable idle
+state before changing launch jobs: Not Connected, or Error accompanied by
+Connection Failed, an enabled Connect control, and no Disconnect control in
+the same vendor window. The UI adapter currently recognizes the
 English status/control labels; unsupported layouts or states fail without
 stopping services. URL Close and Shortcuts Stop retain their existing scope.
 The [automatic Quit All test](Evidence/GlobalProtect/2026-09-28-quit-all.md)
@@ -32,6 +34,10 @@ The [restore regression follow-up](Evidence/GlobalProtect/2026-09-29-restore.md)
 records the enabled-but-unloaded service failure and duplicate UI, the fix that
 makes toggle-off perform a complete restoration, final live checks, and the
 remaining limits of the orphan-recovery validation.
+
+The [menu-bar Quit All follow-up](Evidence/GlobalProtect/2026-09-29-menu-quit-all.md)
+covers persistent progress/results and full shutdown from the vendor's failed
+connection view. It does not establish that an unreachable VPN portal can connect.
 
 On the tested 6.3.3-1121 layout, the GUI-session `pangps` job runs a setuid
 PanGPS process as root. A root process therefore does not by itself establish
@@ -52,6 +58,7 @@ build shares the same bug or behavior.
 | Passwordless session lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope source `3c8d401` | [Follow-up record](Evidence/GlobalProtect/2026-09-28-passwordless.md): Open restored the session service with the system job still disabled; VPN reached Connected; Keep Off stopped all processes; no administrator window during these actions; public HTTPS worked afterward | Initial system-disable approval was required. Other layouts, pre-login, logout/reboot, policy changes, and private-resource connectivity remain untested; earlier DNS limitation is not fixed |
 | Automatic Quit All, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope 1.0.0 (3), final executable `0742281e…` | [Live record](Evidence/GlobalProtect/2026-09-28-quit-all.md): TaskScope pressed Disconnect, verified Not Connected, disabled/unloaded all known jobs and stopped all processes; public HTTPS worked; final menu-bar frame unchanged | One-time Accessibility authorization required. English UI exercised; other layouts, policies, login/reboot, and private-resource connectivity untested |
 | Restore regression, 2026-09-29 UTC | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope executable `35383249…` | [Follow-up](Evidence/GlobalProtect/2026-09-29-restore.md): toggle-off restored service and one UI; healthy Open preserved PIDs and connection; final state Connected with public HTTPS working | Orphan recovery and direct-UI duplicate prevention unit-tested; exact orphan setup on final binary aborted because clean disconnect was not confirmed. Other layouts, policy, login/reboot and private resources untested |
+| Menu-bar Quit All, 2026-09-29 UTC | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope executable `81e7ae1f…` | [Follow-up](Evidence/GlobalProtect/2026-09-29-menu-quit-all.md): two final menu-bar full stops from Connection Failed; visible progress and one result sheet; zero vendor processes; Open restored one UI and service; public HTTPS 200 | Portal connection attempts reported unreachable/unresponsive, so no new connected-to-off cycle; translated UI, other layouts, policy and reboot untested |
 
 The September 12 live report describes the Mac's existing state. The check did not create
 that state and no repair was attempted. In particular, the absent protected

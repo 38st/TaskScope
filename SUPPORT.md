@@ -214,6 +214,13 @@ managed installer or IT support when its protected service cannot be restored.
 
 ### GlobalProtect keeps reopening
 
+**Quit All** from the menu bar opens the regular TaskScope window so the
+disconnect/stop progress and final result remain visible when GlobalProtect's
+menu takes focus. The Presets footer wraps long failure messages. A vendor
+**Connection Failed** view can be stopped once TaskScope verifies its enabled
+Connect control and absence of Disconnect for consecutive observations; an
+unknown Error state still leaves services running and explains the failure.
+
 Use **Keep GlobalProtect Off** on the built-in preset. Confirm the action and
 approve the macOS administrator dialog if the system service still needs to be
 disabled/unloaded. This disconnects any VPN. Choose **Open** to restore the
@@ -247,8 +254,9 @@ An off result verifies the known processes and launchd jobs, not VPN health or
 system extension removal. If policy restores or rejects changes to services,
 consult the organization managing the Mac.
 
-Disconnect in GlobalProtect before using Keep Off so the VPN can restore normal
-networking. Live tests on 6.3.3-1121 found public DNS unavailable after stopping
+Quit All and explicit Keep Off press Disconnect automatically and wait for a
+stable idle state so the VPN can restore normal networking. Earlier live tests
+on 6.3.3-1121 found public DNS unavailable after stopping
 following VPN use, including one stop after the client showed Disconnected.
 Open restored DNS without reconnecting the VPN; stopping that idle service
 retained public DNS/HTTPS access. If DNS fails, choose Open, leave the VPN

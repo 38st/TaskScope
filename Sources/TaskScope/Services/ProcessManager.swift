@@ -515,6 +515,9 @@ final class ProcessManager: ObservableObject {
             if recordIntent {
                 setPresetKeptOffHandler?(preset, true)
             }
+            if recordIntent && preset.hasCanonicalGlobalProtectIdentity {
+                message = "Stopping GlobalProtect and its services…"
+            }
 
             let inventoryWasAvailable: Bool
             switch await currentSnapshot(for: preset) {
@@ -550,6 +553,9 @@ final class ProcessManager: ObservableObject {
             }
 
             let terminationOutcomes = await terminateProcesses(for: preset, scope: .all)
+            if recordIntent && preset.hasCanonicalGlobalProtectIdentity {
+                message = "Verifying GlobalProtect is off…"
+            }
             await lifecycle.settleAfterProcessChange()
             let refreshed = await refreshAfterMutation()
             let nowSnapshot = snapshot(for: preset)

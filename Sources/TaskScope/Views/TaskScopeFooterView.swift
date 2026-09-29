@@ -3,6 +3,8 @@ import SwiftUI
 struct TaskScopeFooterView: View {
     var isWorking: Bool
     var message: String
+    var workingMessage: String? = nil
+    var expandsMessage: Bool = false
     var summary: String?
     var quitAction: () -> Void
 
@@ -11,12 +13,15 @@ struct TaskScopeFooterView: View {
             if isWorking {
                 ProgressView()
                     .controlSize(.small)
-                Text("Working...")
+                Text(workingMessage ?? "Working...")
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: expandsMessage)
             } else {
                 Text(message)
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .lineLimit(expandsMessage ? nil : 1)
+                    .fixedSize(horizontal: false, vertical: expandsMessage)
+                    .help(message)
             }
 
             Spacer()

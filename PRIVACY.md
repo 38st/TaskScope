@@ -125,6 +125,11 @@ screenshot to a public issue.
   TaskScope does not need it for ordinary process monitoring. When selection
   requires a temporary search, process-scope, or PID-column change, TaskScope
   restores the prior Activity Monitor state after the handoff delay.
+  Explicit GlobalProtect Quit All and Keep Off actions also use Accessibility
+  to read the fixed vendor app's connection status and press Disconnect.
+  Recognizing a failed connection reads its Connection Failed text and
+  Connect/Disconnect controls. These UI reads are not stored or exported;
+  credentials and authentication challenges are never filled.
 - **Administrator authorization:** requested to stop, re-enable, or restore the fixed system
   daemon in the immutable built-in GlobalProtect definition. Custom presets
   cannot add privileged daemon jobs, and TaskScope does not store the password.
@@ -133,8 +138,9 @@ screenshot to a public issue.
 
 Keep GlobalProtect Off stores launchd disable overrides for the fixed user-agent
 labels and, after explicit administrator approval, the fixed system VPN service.
-Turning it off clears those overrides without starting anything. Open clears
-them before restoring the services. Background enforcement never requests
+Turning it off performs the same service and app restoration as Open. Both
+preserve the unused system-daemon override when the installed session agent
+provides the VPN service. Background enforcement never requests
 administrator authorization. No new preferences, credentials, network data, or
 export fields are introduced by system service control.
 

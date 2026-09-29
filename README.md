@@ -14,7 +14,11 @@ choose **Open**. The Keep Off toggle uses the same full shutdown. TaskScope uses
 Accessibility permission to press the vendor's Disconnect button and waits for
 a stable disconnected state before stopping services. If permission is denied,
 the control is unavailable, or disconnect cannot be verified, shutdown stops
-with an explanation. After confirmation and macOS administrator approval when needed, TaskScope disables
+with an explanation. A menu-bar full stop opens the regular TaskScope window
+before controlling GlobalProtect, keeping progress and the complete result visible.
+A failed connection can also be stopped when the vendor shows **Connection Failed**
+with an enabled **Connect** control and no **Disconnect** control; an **Error**
+tooltip alone is insufficient. After confirmation and macOS administrator approval when needed, TaskScope disables
 and unloads the known per-user agents and the fixed system `PanGPS` VPN service.
 **Open** clears the required disable overrides and
 restores the installed login-session VPN service (`pangps`) before the app.

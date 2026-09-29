@@ -2,6 +2,35 @@ import XCTest
 @testable import TaskScope
 
 final class GlobalProtectDisconnectTests: XCTestCase {
+    func testConnectionFailureRequiresTheCompleteIdleView() async {
+        let idle = GlobalProtectConnectionObservation(
+            status: "Error", showsConnectionFailed: true, canConnect: true, hasDisconnect: false
+        )
+        XCTAssertEqual(idle.state, .disconnected)
+        let runtime = FakeDisconnectRuntime(states: [idle.state])
+        let result = await GlobalProtectDisconnectController.disconnect(using: runtime)
+        XCTAssertEqual(result, .disconnected)
+        let counts = await runtime.counts()
+        XCTAssertEqual(counts.reads, 5)
+        XCTAssertEqual(counts.presses, 0)
+    }
+
+    func testErrorOrIncompleteAndContradictoryFailureControlsNeverAuthorizeShutdown() {
+        for observation in [
+            GlobalProtectConnectionObservation(status: "Error"),
+            GlobalProtectConnectionObservation(status: "Error", showsConnectionFailed: true),
+            GlobalProtectConnectionObservation(status: "Error", canConnect: true),
+            GlobalProtectConnectionObservation(status: "Error", showsConnectionFailed: true, canConnect: true, hasDisconnect: true),
+            GlobalProtectConnectionObservation(status: nil, showsConnectionFailed: true, canConnect: true),
+            GlobalProtectConnectionObservation(status: "Unknown", showsConnectionFailed: true, canConnect: true)
+        ] {
+            XCTAssertEqual(observation.state, .unavailable)
+        }
+        for (status, expected) in [("Connected", GlobalProtectConnectionState.connected), ("Connecting...", .busy), ("Disconnecting...", .busy)] {
+            XCTAssertEqual(GlobalProtectConnectionObservation(status: status, showsConnectionFailed: true, canConnect: true).state, expected)
+        }
+    }
+
     func testConnectedVPNIsDisconnectedOnceAndWaitsForStableDisconnectedState() async {
         let runtime = FakeDisconnectRuntime(states: [
             .connected, .connected, .busy, .disconnected, .busy,
