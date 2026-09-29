@@ -302,11 +302,44 @@ final class ProcessManager: ObservableObject {
                 return
             }
 
-            guard case .success = await currentSnapshot(for: preset) else {
+            guard case .success(let beforeServices) = await currentSnapshot(for: preset) else {
                 message = "Could not verify whether \(preset.displayName) is already running; nothing was opened."
                 diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
+            }
+
+            // A UI started directly while PanGPS was stopped can remain stuck
+            // retrieving configuration even after the service returns. Restart
+            // that orphaned UI before restoration; never unload the VPN job.
+            if preset.hasCanonicalGlobalProtectIdentity,
+               beforeServices.isMainRunning,
+               beforeServices.protectedRunning.isEmpty,
+               beforeServices.unprivilegedProtectedRunning.isEmpty {
+                var uiOnly = preset
+                uiOnly.userLaunchAgentJobs = [WatchedAppPreset.globalProtectUserLaunchAgentJobs[0]]
+                // Do not match the legacy built-in payload, which expands to
+                // both user jobs through lifecycleUserLaunchAgentJobs.
+                uiOnly.systemLaunchDaemonJobs = []
+                let unloadedUI = await lifecycle.unloadUserLaunchAgents(for: uiOnly)
+                diagnosticJobs += unloadedUI.jobs
+                guard unloadedUI.succeeded else {
+                    lifecycleReport = LifecycleReport(title: "GlobalProtect UI Recovery", jobs: unloadedUI.jobs)
+                    message = "Could not close GlobalProtect's stalled interface. Its VPN service was not stopped."
+                    diagnosticReason = .userLaunchAgentFailed
+                    commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                    return
+                }
+                let stoppedUI = await lifecycle.terminateMainProcess(for: preset)
+                await lifecycle.settleAfterProcessChange()
+                guard [.signalled, .noMatchingProcesses, .targetsExited].contains(stoppedUI),
+                      case .success(let afterUIStop) = await currentSnapshot(for: preset),
+                      !afterUIStop.isMainRunning else {
+                    message = "Could not verify that GlobalProtect's stalled interface closed; no second instance was started."
+                    diagnosticReason = .verificationUnavailable
+                    commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                    return
+                }
             }
 
             let systemEnable = preset.hasCanonicalGlobalProtectIdentity

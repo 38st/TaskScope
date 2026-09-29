@@ -293,11 +293,16 @@ enum ProcessLifecycleController {
         for preset: WatchedAppPreset,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> LifecycleBatchResult {
-        await bootstrapUserLaunchAgents(jobs: preset.lifecycleUserLaunchAgentJobs, runtime: runtime)
+        await bootstrapUserLaunchAgents(
+            jobs: preset.lifecycleUserLaunchAgentJobs,
+            avoidDuplicateGlobalProtectUI: preset.hasCanonicalGlobalProtectIdentity,
+            runtime: runtime
+        )
     }
 
     private static func bootstrapUserLaunchAgents(
         jobs: [UserLaunchAgentJob],
+        avoidDuplicateGlobalProtectUI: Bool = false,
         runtime: ProcessLifecycleRuntime
     ) async -> LifecycleBatchResult {
         guard !jobs.isEmpty else { return .notNeeded }
@@ -350,6 +355,28 @@ enum ProcessLifecycleController {
                 continue
             case .notLoaded:
                 break
+            }
+
+            if avoidDuplicateGlobalProtectUI,
+               job == WatchedAppPreset.globalProtectUserLaunchAgentJobs[0] {
+                guard case .success(let inventory) = await runtime.loadProcessInventory() else {
+                    results.append(LifecycleJobResult(
+                        label: job.label, state: .failed,
+                        detail: "Could not check for an existing GlobalProtect window; no second instance was started."
+                    ))
+                    continue
+                }
+                let existingUI = inventory.contains {
+                    $0.uid == runtime.userID
+                        && runtime.executablePathForPID($0.pid) == GlobalProtectAccessibilityDisconnect.executable
+                }
+                if existingUI {
+                    results.append(LifecycleJobResult(
+                        label: job.label, state: .verified,
+                        detail: "GlobalProtect is already open outside this launch job; the UI agent was left unloaded to avoid a duplicate instance."
+                    ))
+                    continue
+                }
             }
 
             let enable = await runtime.runCommand(

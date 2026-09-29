@@ -44,7 +44,14 @@ struct PresetsSectionView: View {
                                     preset: snapshot.preset
                                 )
                             } else {
-                                Task { await processManager.allowToRun(snapshot.preset) }
+                                // Turning the switch off means the VPN is usable
+                                // again, including its service, not just enabled
+                                // launchd overrides with no running service.
+                                let target = WatchedPresetCommandTarget(
+                                    id: snapshot.preset.id,
+                                    displayName: snapshot.preset.displayName
+                                )
+                                Task { _ = await AppCommandBus.shared.submit(.openPresetEntity(target)) }
                             }
                         }
                     )

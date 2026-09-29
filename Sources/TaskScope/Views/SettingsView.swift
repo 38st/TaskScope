@@ -431,7 +431,7 @@ struct SettingsView: View {
         }
         if preset.id == WatchedAppPreset.globalProtectID {
             operations.append(
-                "Keep Off: disconnect the VPN in GlobalProtect first so it can restore normal networking, then persistently disable and unload GlobalProtect's per-user launch agents even if process inventory is unavailable; process signaling still requires a fresh inventory; an explicit action requests administrator approval only if needed to disable and unload the fixed system VPN service, disconnecting any VPN still active. Stopping an active tunnel can leave DNS unavailable; Open restores the service if that happens. Background enforcement never requests privileges. Open restores the required services. For session-agent installations, the separate system daemon stays disabled so subsequent Open and Keep Off actions need no system change. Turning Keep Off off allows the required services to run without starting them."
+                "Quit All and Keep Off: use Accessibility to disconnect GlobalProtect, verify a stable disconnected state, then disable and unload its known services and stop its processes. An unverified disconnect stops the action before new Keep Off intent is saved. An explicit action requests administrator approval only if needed for the fixed system VPN service. Background enforcement never requests privileges. Open and turning Keep Off off restore the required VPN service and app. A window started without its service is closed and restored; an already running UI is not duplicated. For session-agent installations, the unused system daemon remains disabled."
             )
         }
         return operations

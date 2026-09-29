@@ -44,7 +44,7 @@ struct PresetCard: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Keep GlobalProtect Off")
                             .fontWeight(.medium)
-                        Text("Quit All disconnects and stops GlobalProtect. Open brings it back.")
+                        Text("Quit All disconnects and stops GlobalProtect. Open or turning this switch off restores it.")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
@@ -52,7 +52,7 @@ struct PresetCard: View {
                 .toggleStyle(.switch)
                 .disabled(!isKeepOffControlEnabled)
                 .accessibilityHint(
-                    "Automatically disconnects and stops GlobalProtect. Keeps it off until you turn this off or choose Open."
+                    "Automatically disconnects and stops GlobalProtect. Turning this off restores its VPN service and opens the app."
                 )
                 if isKeptOff {
                     Button("Apply Keep Off…", role: .destructive) { onKeepOffChanged(true) }

@@ -162,7 +162,16 @@ Required invariants:
   daemon. This avoids privilege requests by avoiding the unnecessary system
   mutation; it installs no helper, stores no credentials, and changes no
   authorization policy. Missing session agents retain the administrator path;
-- turning Keep Off off clears required service overrides without starting jobs;
+- turning Keep Off off uses the same full restoration command as Open;
+- Open restarts an orphaned GlobalProtect UI only when a fresh inventory shows
+  that UI running without any PanGPS service. Recovery unloads only the fixed
+  `pangpa` UI job and verifies the old UI is gone before restoration. It never
+  unloads `pangps` or the system daemon to recover a window. A healthy running
+  service and UI are preserved;
+- before bootstrapping an unloaded `pangpa` job, check a fresh inventory and
+  current-user ownership plus kernel executable path for a directly opened
+  GlobalProtect UI. Preserve that UI instead of starting a duplicate; unknown
+  inventory fails without launching;
 - report cancellation and partial failures, retaining requested intent until
   restoration succeeds; show a running system service instead of an off badge;
 - escape command arguments, retain no credentials, and never remove, rename,

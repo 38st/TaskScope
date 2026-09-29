@@ -524,6 +524,52 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertLessThan(enableIndex, bootstrapIndex, "enable must precede bootstrap")
     }
 
+    func testGlobalProtectDoesNotBootstrapUIJobWhenAppIsAlreadyOpenDirectly() async {
+        let job = WatchedAppPreset.globalProtectUserLaunchAgentJobs[0]
+        var ui = process(pid: 42, command: GlobalProtectAccessibilityDisconnect.executable)
+        ui.uid = 501
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [job.plistPath],
+            launchAgentLabels: [job.plistPath: job.label],
+            commandResults: [result(stderr: "Could not find service", exitCode: 113)],
+            inventory: [ui]
+        )
+        let result = await ProcessLifecycleController.bootstrapUserLaunchAgents(for: .globalProtect, runtime: harness.runtime)
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(result.jobs.first?.state, .verified)
+        XCTAssertFalse(harness.commands.contains { $0.contains(" bootstrap ") || $0.contains("kickstart") })
+    }
+
+    func testGlobalProtectUnknownInventoryCannotStartADuplicateUI() async {
+        let job = WatchedAppPreset.globalProtectUserLaunchAgentJobs[0]
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [job.plistPath],
+            launchAgentLabels: [job.plistPath: job.label],
+            commandResults: [result(stderr: "Could not find service", exitCode: 113)],
+            inventoryResults: [.failure(.commandFailed("Unavailable"))]
+        )
+        let result = await ProcessLifecycleController.bootstrapUserLaunchAgents(for: .globalProtect, runtime: harness.runtime)
+        XCTAssertFalse(result.succeeded)
+        XCTAssertFalse(harness.commands.contains { $0.contains(" bootstrap ") || $0.contains("kickstart") })
+    }
+
+    func testGlobalProtectDoesNotTrustAnImpostorOrAnotherUsersUI() async {
+        let job = WatchedAppPreset.globalProtectUserLaunchAgentJobs[0]
+        for (uid, path) in [(uid_t(501), "/tmp/GlobalProtect"), (uid_t(502), GlobalProtectAccessibilityDisconnect.executable)] {
+            var ui = process(pid: 42, command: path)
+            ui.uid = uid
+            let harness = LifecycleRuntimeHarness(
+                existingPaths: [job.plistPath],
+                launchAgentLabels: [job.plistPath: job.label],
+                commandResults: [result(stderr: "Could not find service", exitCode: 113)] + Array(repeating: result(exitCode: 0), count: 4),
+                inventory: [ui]
+            )
+            let result = await ProcessLifecycleController.bootstrapUserLaunchAgents(for: .globalProtect, runtime: harness.runtime)
+            XCTAssertTrue(result.succeeded)
+            XCTAssertTrue(harness.commands.contains { $0.contains(" bootstrap ") })
+        }
+    }
+
     /// launchd refuses to bootstrap a job that carries a persistent disable
     /// override, which is exactly the state Keep Off leaves behind. Enabling
     /// after the bootstrap therefore never ran when it mattered.

@@ -217,8 +217,14 @@ managed installer or IT support when its protected service cannot be restored.
 Use **Keep GlobalProtect Off** on the built-in preset. Confirm the action and
 approve the macOS administrator dialog if the system service still needs to be
 disabled/unloaded. This disconnects any VPN. Choose **Open** to restore the
-required services without reinstalling, or turn Keep Off off to allow those
-services to run without starting anything.
+required services without reinstalling. Turning Keep Off off now performs the
+same restoration, starting the VPN service and app together.
+
+If GlobalProtect is stuck retrieving portal configuration after being opened
+directly, choose **Open** in TaskScope. When the UI is running without PanGPS,
+TaskScope closes that orphaned UI and restores the service before starting one
+new instance. An existing healthy VPN service is left running. Open also avoids
+loading another UI agent over an app instance opened outside launchd.
 
 When the installed `pangps` session agent supplies the VPN service, Open and
 toggle-off retain the separate system daemon's disabled override. After the

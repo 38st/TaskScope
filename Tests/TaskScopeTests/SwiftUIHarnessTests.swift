@@ -58,7 +58,10 @@ final class SwiftUIHarnessTests: XCTestCase {
 
         let globalProtectOperations = SettingsView.lifecycleDryRunOperations(for: .globalProtect)
         XCTAssertTrue(globalProtectOperations.contains { $0.contains("Keep Off") })
-        XCTAssertTrue(globalProtectOperations.contains { $0.contains("administrator approval only if needed to disable and unload") })
+        XCTAssertTrue(globalProtectOperations.contains {
+            $0.contains("administrator approval only if needed") && $0.contains("system VPN service")
+        })
+        XCTAssertTrue(globalProtectOperations.contains { $0.contains("Open and turning Keep Off off restore the required VPN service and app") })
         XCTAssertTrue(globalProtectOperations.contains { $0.contains("preserve the separate system daemon disable override") })
     }
 
@@ -407,7 +410,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try card.find(text: "Keep GlobalProtect Off"))
         XCTAssertNoThrow(
             try card.find(
-                text: "Quit All disconnects and stops GlobalProtect. Open brings it back."
+                text: "Quit All disconnects and stops GlobalProtect. Open or turning this switch off restores it."
             )
         )
 
@@ -488,6 +491,32 @@ final class SwiftUIHarnessTests: XCTestCase {
             recorder.commands,
             [.openPresetEntity(WatchedPresetCommandTarget(id: beta.id, displayName: "Beta"))]
         )
+    }
+
+    func testTurningKeepOffOffSubmitsFullRestoreCommand() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.keepGlobalProtectOff = true
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { fixture.stores.watchedApps.presets }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        let recorder = CommandRecorder()
+        AppCommandBus.shared.install { command in
+            recorder.record(command)
+            return TaskScopeCommandResult(status: .completed, message: "recorded")
+        }
+        defer {
+            AppCommandBus.shared.install { _ in
+                TaskScopeCommandResult(status: .rejected, message: "No handler installed by this test.")
+            }
+        }
+        let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
+        let card = try view.inspect().find(PresetCard.self).actualView()
+        card.onKeepOffChanged(false)
+        await settle()
+        XCTAssertEqual(recorder.commands, [.openPresetEntity(WatchedPresetCommandTarget(
+            id: WatchedAppPreset.globalProtectID, displayName: "GlobalProtect"
+        ))])
     }
 
     /// A row can be on screen purely because the search filter surfaced it, even

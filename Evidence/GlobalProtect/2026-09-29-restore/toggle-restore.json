@@ -1,0 +1,69 @@
+{
+  "phase": "open",
+  "before": {
+    "time_utc": "2026-09-29T00:32:52.909609+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangps": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 0,
+      "PanGPA": 0,
+      "PanGPS": 0
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "3538324909db4badb0c6d75889746f9a446bef2325b75d008ae55c60b8fc164d"
+  },
+  "menu_bar_before": "1071, 4, 34, 24",
+  "taskscope_status": "TaskScope, Watched app running, Status: Active, Sort, Not loaded, PID, PPID, NET KB TOTAL, DISK MB TOTAL, CPU, MEM MB, Idle Until Needed, Load a lightweight top-process snapshot when you need it., Opened GlobalProtect after restoring required services.",
+  "max_globalprotect_processes": 1,
+  "expected_state_observed": true,
+  "after": {
+    "time_utc": "2026-09-29T00:32:56.911912+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "3538324909db4badb0c6d75889746f9a446bef2325b75d008ae55c60b8fc164d"
+  },
+  "menu_bar_after": "1071, 4, 34, 24",
+  "administrator_windows_observed": 0,
+  "authentication_monitor_failed": false,
+  "connection_events": [
+    {
+      "elapsed": 3.33,
+      "state": "Absent"
+    },
+    {
+      "elapsed": 5.46,
+      "state": "Not Connected"
+    }
+  ],
+  "elapsed": 5.46
+}

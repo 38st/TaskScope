@@ -1010,7 +1010,7 @@ struct TaskScopePopoverView: View {
             sentences.append(
                 "TaskScope will persistently disable GlobalProtect's per-user launch agents (\(agentList)) and stop current user-facing matches: \(targets)."
             )
-            sentences.append("Open restores the required services without reinstalling; turning Keep Off off allows them to run without starting them.")
+            sentences.append("Open restores the required services without reinstalling.")
         case .quitHelpers:
             if !agentLabels.isEmpty {
                 sentences.append(

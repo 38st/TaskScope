@@ -24,8 +24,11 @@ instead of choosing a service solely from its owner. For installations with a
 valid session agent, Open leaves the separate system daemon disabled. After
 the first full stop, later Open/Keep Off cycles need no administrator prompt
 unless something restores that system service or changes the installed layout.
-Turning Keep Off off enables the required services without starting anything,
-also preserving the unused system daemon's disable override. No uninstall,
+Turning Keep Off off now performs the same full restoration as Open, starting
+the required VPN service and app while preserving the unused system daemon's
+disable override. Open also recovers an app window that was launched without
+its VPN service, and does not bootstrap a duplicate UI over an existing one.
+No uninstall,
 reinstall, or changes to vendor files or VPN configuration are needed.
 
 Before automatic disconnect, stopping after VPN use could leave public DNS unavailable,
