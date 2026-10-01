@@ -200,8 +200,8 @@ fi
 # in the real compatibility matrix or a managed GlobalProtect installation.
 bash "$ROOT_DIR/script/test_release_compatibility.sh"
 
-PACKAGE_LOCK="$ROOT_DIR/dist/.TaskScope.package.lock"
-mkdir -p "$ROOT_DIR/dist"
+PACKAGE_LOCK="$ROOT_DIR/dist/build.noindex/.TaskScope.package.lock"
+mkdir -p "$ROOT_DIR/dist/build.noindex"
 /usr/bin/shlock -f "$PACKAGE_LOCK" -p "$$"
 rm -f "$SWIFT_MARKER"
 if TASKSCOPE_BUNDLE_ID='com.example.TaskScopeTests' PATH="$FAKE_BIN:$PATH" \
@@ -224,7 +224,7 @@ TASKSCOPE_BUNDLE_ID="$TEST_BUNDLE_ID" \
   TASKSCOPE_VERIFIED_BUNDLE_COPY="$VERIFIED_COPY_BUNDLE" \
   "$BUILD_SCRIPT" --stage >/dev/null
 
-STAGED_PLIST="$ROOT_DIR/dist/TaskScope.app/Contents/Info.plist"
+STAGED_PLIST="$ROOT_DIR/dist/build.noindex/TaskScope.app/Contents/Info.plist"
 STAGED_ID="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STAGED_PLIST")"
 if [[ "$STAGED_ID" != "$TEST_BUNDLE_ID" ]]; then
   echo "Staged bundle did not use the configured identifier." >&2
@@ -247,6 +247,18 @@ for stale_key in NSAppleEventsUsageDescription NSServerUsageDescription; do
 done
 
 TASKSCOPE_BUNDLE_ID="$TEST_BUNDLE_ID" "$BUILD_SCRIPT" --verify >/dev/null
+
+# A startup check launches the staged bundle. It must leave no duplicate
+# launcher registration even though the build folder is excluded from metadata.
+swift - "$ROOT_DIR/dist/build.noindex/TaskScope.app" "$TEST_BUNDLE_ID" <<'SWIFT'
+import AppKit
+let stagedPath = CommandLine.arguments[1]
+let bundleID = CommandLine.arguments[2]
+if NSWorkspace.shared.urlsForApplications(withBundleIdentifier: bundleID).contains(where: { $0.path == stagedPath }) {
+    print("Startup verification left the staged app registered with Launch Services.")
+    exit(1)
+}
+SWIFT
 
 DEST_DIR="$TEST_DIR/Applications" TASKSCOPE_BUNDLE_ID="$TEST_BUNDLE_ID" \
   "$INSTALL_SCRIPT" --no-open >/dev/null 2>&1 && {

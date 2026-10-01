@@ -20,7 +20,9 @@ MIN_SYSTEM_VERSION="14.0"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT_DIR/script/packaging_common.sh"
 BUNDLE_ID="$(taskscope_resolve_bundle_id)"
-DIST_DIR="$ROOT_DIR/dist"
+# Keep the local build out of Spotlight beside the installed /Applications copy.
+# Release archives still go to dist/releases through release.sh.
+DIST_DIR="$ROOT_DIR/dist/build.noindex"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
@@ -250,6 +252,16 @@ verify_icon_members() {
   rm -rf "$iconset_dir"
 }
 
+unregister_staged_app() {
+  local registrar="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+
+  # Startup verification registers the temporary build as a launchable app.
+  # Excluding metadata alone does not remove that second Spotlight source.
+  if [[ -x "$registrar" ]]; then
+    "$registrar" -u "$APP_BUNDLE" >/dev/null 2>&1 || true
+  fi
+}
+
 verify_startup_readiness() (
   local bundle="$1"
   local executable="$bundle/Contents/MacOS/$APP_NAME"
@@ -294,6 +306,7 @@ verify_startup_readiness() (
       fi
     fi
     rm -rf "$readiness_home"
+    unregister_staged_app
   }
   trap cleanup_readiness_process EXIT
 
@@ -545,6 +558,7 @@ open_app() {
 
 case "$MODE" in
   --stage|stage)
+    unregister_staged_app
     echo "$APP_BUNDLE"
     ;;
   run)

@@ -19,7 +19,7 @@ staged app is not itself a published release.
   Developer ID signature, hardened-runtime review, notarization, stapling, or a
   public downloadable app bundle
 
-Do not attach `dist/TaskScope.app` or an archive of it to the GitHub 1.0.0
+Do not attach `dist/build.noindex/TaskScope.app` or an archive of it to the GitHub 1.0.0
 source release as a production binary. GitHub's generated source archives are
 the only release artifacts within this scope unless the credential-gated
 pipeline and full binary gate below complete with real Apple credentials.
@@ -139,11 +139,11 @@ Stage and verify the current-architecture bundle:
 ```bash
 ./script/build_and_run.sh --stage
 ./script/build_and_run.sh --verify   # verifies the bundle staged above without rebuilding it
-codesign --verify --deep --strict dist/TaskScope.app
-lipo -archs dist/TaskScope.app/Contents/MacOS/TaskScope
-/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' dist/TaskScope.app/Contents/Info.plist
-/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/TaskScope.app/Contents/Info.plist
-/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/TaskScope.app/Contents/Info.plist
+codesign --verify --deep --strict dist/build.noindex/TaskScope.app
+lipo -archs dist/build.noindex/TaskScope.app/Contents/MacOS/TaskScope
+/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' dist/build.noindex/TaskScope.app/Contents/Info.plist
+/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' dist/build.noindex/TaskScope.app/Contents/Info.plist
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' dist/build.noindex/TaskScope.app/Contents/Info.plist
 ```
 
 Inspect the displayed signature with `codesign -dv --verbose=4`. Record it as

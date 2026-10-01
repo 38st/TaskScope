@@ -87,11 +87,16 @@ ID signing and notarization.
 
 ## Build, verify, and run
 
-Build the release executable, stage `dist/TaskScope.app`, and open it:
+Build the release executable, stage `dist/build.noindex/TaskScope.app`, and open it:
 
 ```bash
 ./script/build_and_run.sh
 ```
+
+The local bundle stays in a `.noindex` build folder so Spotlight shows the
+installed `/Applications/TaskScope.app` without a duplicate build result.
+Staging and startup verification also remove the build's temporary launcher
+registration. Running the development app explicitly still launches that copy.
 
 Other modes:
 
