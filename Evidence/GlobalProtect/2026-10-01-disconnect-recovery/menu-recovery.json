@@ -1,0 +1,140 @@
+{
+  "test": "Unresponsive vendor UI, menu Keep Off, cancel recovery, confirm recovery",
+  "before": {
+    "time_utc": "2026-10-01T19:12:03.923792+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "2b7c5d689d4617f17e59522a05370f8a75d49f12873c5d0b5e2efe8cf20a0edf"
+  },
+  "restored": {
+    "time_utc": "2026-10-01T19:12:07.251072+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "2b7c5d689d4617f17e59522a05370f8a75d49f12873c5d0b5e2efe8cf20a0edf"
+  },
+  "connection_before_freeze": "Not Connected",
+  "menu_action": "Confirmed Keep Off from menu",
+  "failure": {
+    "elapsed": 7.38,
+    "status": "TaskScope, Watched app running, Status: Active, TaskScope could not verify GlobalProtect's connection state. Its services were left running.",
+    "state": {
+      "time_utc": "2026-10-01T19:12:15.147169+00:00",
+      "jobs": {
+        "pangpa": {
+          "loaded": true,
+          "override": "enabled"
+        },
+        "pangps": {
+          "loaded": true,
+          "override": "enabled"
+        },
+        "pangpsd": {
+          "loaded": false,
+          "override": "disabled"
+        }
+      },
+      "process_counts": {
+        "GlobalProtect": 1,
+        "PanGPA": 0,
+        "PanGPS": 1
+      },
+      "vendor_launch_files_unchanged": true,
+      "taskscope_executable_sha256": "2b7c5d689d4617f17e59522a05370f8a75d49f12873c5d0b5e2efe8cf20a0edf"
+    },
+    "main_window": "true, 900, 600"
+  },
+  "cancel": "Confirmed recovery choice",
+  "after_cancel": {
+    "time_utc": "2026-10-01T19:12:16.234350+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "2b7c5d689d4617f17e59522a05370f8a75d49f12873c5d0b5e2efe8cf20a0edf"
+  },
+  "confirm": "Confirmed recovery choice",
+  "after": {
+    "time_utc": "2026-10-01T19:12:22.611415+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangps": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 0,
+      "PanGPA": 0,
+      "PanGPS": 0
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "2b7c5d689d4617f17e59522a05370f8a75d49f12873c5d0b5e2efe8cf20a0edf"
+  },
+  "expected_off": true,
+  "result": "TaskScope, No watched apps running, Status: Quiet, GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling.",
+  "stop_elapsed": 5.77,
+  "result_window": "true, 900, 600, 1",
+  "public_https": {
+    "exit": 0,
+    "status": "200"
+  }
+}

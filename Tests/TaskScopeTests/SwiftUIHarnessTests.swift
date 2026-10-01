@@ -450,7 +450,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             })
             try view.inspect().find(ViewType.ConfirmationDialog.self).actions().find(button: confirmation.pendingPresetAction!.title).tap()
             await settle()
-            XCTAssertEqual(windowRequests, 1)
+            XCTAssertEqual(windowRequests, 2, "Show progress before the menu closes and return focus to the result")
             XCTAssertNil(confirmation.pendingPresetAction)
             XCTAssertEqual(fixture.stores.settings.selectedSection, .presets)
             XCTAssertEqual(fixture.manager.message, "Automatic GlobalProtect disconnect is unavailable. Its services were left running.")
@@ -471,6 +471,34 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertEqual(windowRequests, 0)
         XCTAssertEqual(fixture.manager.message, previousMessage)
         XCTAssertNil(confirmation.pendingPresetAction)
+    }
+
+    func testFailedDisconnectOffersASeparateConfirmedServiceStop() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { [.globalProtect] }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        let confirmation = ProcessConfirmationState()
+        let view = makePopover(fixture: fixture, confirmationState: confirmation)
+        XCTAssertThrowsError(try view.inspect().find(button: "Stop Services Anyway…"))
+
+        _ = await fixture.manager.keepOff(.globalProtect)
+        let failureID = try XCTUnwrap(fixture.manager.globalProtectDisconnectFailureID)
+        try view.inspect().find(button: "Stop Services Anyway…").tap()
+        XCTAssertEqual(confirmation.pendingPresetAction?.action, .stopServices)
+        XCTAssertEqual(confirmation.pendingPresetAction?.disconnectFailureID, failureID)
+        let message = TaskScopePopoverView.presetConfirmationMessage(for: try XCTUnwrap(confirmation.pendingPresetAction))
+        XCTAssertTrue(message.contains("leave VPN DNS settings behind"))
+        XCTAssertTrue(message.contains("choose Open"))
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+
+        try view.inspect().find(ViewType.ConfirmationDialog.self).actions().find(button: "Cancel").tap()
+        await settle()
+        XCTAssertNil(confirmation.pendingPresetAction)
+        XCTAssertEqual(fixture.manager.globalProtectDisconnectFailureID, failureID)
+        XCTAssertFalse(fixture.stores.settings.keepGlobalProtectOff)
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
     }
 
     func testPresetFooterShowsTheActiveStepAndFullFailureMessage() throws {

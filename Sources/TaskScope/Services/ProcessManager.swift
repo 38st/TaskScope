@@ -32,6 +32,9 @@ final class ProcessManager: ObservableObject {
     @Published private(set) var processLoadError: String?
     @Published private(set) var lastSuccessfulInventoryAt: Date?
     @Published private(set) var lifecycleReport: LifecycleReport?
+    /// One explicit failed disconnect may be followed by a separately confirmed
+    /// service stop. Never persisted, exposed to URLs, or used by polling.
+    @Published private(set) var globalProtectDisconnectFailureID: UUID?
     @Published private(set) var batchActionReport: ProcessBatchActionReport?
     private(set) var lifecycleDiagnostics = LifecycleDiagnosticsHistory()
 
@@ -284,6 +287,7 @@ final class ProcessManager: ObservableObject {
             message: "Open did not complete."
         )
         await runAction(kind: .mutation) {
+            if preset.hasCanonicalGlobalProtectIdentity { globalProtectDisconnectFailureID = nil }
             var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
             var diagnosticJobs: [LifecycleJobResult] = []
             defer {
@@ -477,11 +481,32 @@ final class ProcessManager: ObservableObject {
         _ preset: WatchedAppPreset,
         recordIntent: Bool = true
     ) async -> TaskScopeCommandResult {
+        await applyKeepOff(preset, recordIntent: recordIntent)
+    }
+
+    @discardableResult
+    func stopGlobalProtectAfterFailedDisconnect(failureID: UUID) async -> TaskScopeCommandResult {
+        await applyKeepOff(.globalProtect, recordIntent: true, confirmedFailureID: failureID)
+    }
+
+    private func applyKeepOff(
+        _ preset: WatchedAppPreset,
+        recordIntent: Bool,
+        confirmedFailureID: UUID? = nil
+    ) async -> TaskScopeCommandResult {
         var commandResult = TaskScopeCommandResult(
             status: .failed,
             message: "Keep Off did not complete."
         )
         await runAction(kind: .mutation) {
+            if let confirmedFailureID {
+                guard recordIntent, preset.hasCanonicalGlobalProtectIdentity,
+                      confirmedFailureID == globalProtectDisconnectFailureID else {
+                    commandResult = TaskScopeCommandResult(status: .rejected, message: "This disconnect failure is no longer current. Choose Keep GlobalProtect Off again.")
+                    message = commandResult.message
+                    return
+                }
+            }
             var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
             var diagnosticJobs: [LifecycleJobResult] = []
             defer {
@@ -502,16 +527,20 @@ final class ProcessManager: ObservableObject {
             }
 
             if recordIntent && preset.hasCanonicalGlobalProtectIdentity {
-                message = "Disconnecting GlobalProtect before stopping its services…"
-                if case .failed(let detail) = await lifecycle.disconnectGlobalProtectIfNeeded() {
-                    message = detail
-                    diagnosticReason = .disconnectFailed
-                    commandResult = TaskScopeCommandResult(status: .failed, message: detail)
-                    return
+                globalProtectDisconnectFailureID = nil
+                if confirmedFailureID == nil {
+                    message = "Disconnecting GlobalProtect before stopping its services…"
+                    if case .failed(let detail) = await lifecycle.disconnectGlobalProtectIfNeeded() {
+                        globalProtectDisconnectFailureID = UUID()
+                        message = detail
+                        diagnosticReason = .disconnectFailed
+                        commandResult = TaskScopeCommandResult(status: .failed, message: detail)
+                        return
+                    }
                 }
             }
-            // Record only after a clean disconnect and while holding the gate:
-            // polling must not stop the service ahead of this preparation.
+            // Record after a clean disconnect or separately confirmed recovery,
+            // while holding the gate so polling cannot race the preparation.
             if recordIntent {
                 setPresetKeptOffHandler?(preset, true)
             }
@@ -611,6 +640,7 @@ final class ProcessManager: ObservableObject {
             message: "Could not allow \(preset.displayName) to run."
         )
         await runAction(kind: .mutation) {
+            if preset.hasCanonicalGlobalProtectIdentity { globalProtectDisconnectFailureID = nil }
             var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
             var diagnosticJobs: [LifecycleJobResult] = []
             defer {

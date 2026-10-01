@@ -220,6 +220,14 @@ menu takes focus. The Presets footer wraps long failure messages. A vendor
 **Connection Failed** view can be stopped once TaskScope verifies its enabled
 Connect control and absence of Disconnect for consecutive observations; an
 unknown Error state still leaves services running and explains the failure.
+TaskScope brings its result window forward again when the operation finishes.
+
+If automatic disconnect fails or times out, the preset shows **Stop Services
+Anyway…**. This separately confirmed recovery stops and disables the known
+services even when the VPN UI cannot finish disconnecting. It can leave stale
+VPN DNS settings or interrupt internet access; choose **Open** to restore the
+service if that happens. Normal Keep Off still attempts a verified disconnect
+first. The recovery choice is cleared by a new attempt, Open, or an app restart.
 
 Use **Keep GlobalProtect Off** on the built-in preset. Confirm the action and
 approve the macOS administrator dialog if the system service still needs to be

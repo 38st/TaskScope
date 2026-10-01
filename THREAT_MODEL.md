@@ -142,12 +142,22 @@ Required invariants:
 - automatic disconnect uses Accessibility only for the fixed GlobalProtect
   executable, rechecking its kernel path before inspection/actions. Only the
   normal Disconnect control is pressed; credentials and management challenges
-  are never filled. Unknown state, denial, timeout, or a failed press aborts
-  before writing new Keep Off intent or changing launch jobs. AX reads run on a
+  are never filled. The vendor app is brought forward to reveal its controls;
+  a lost popover gets bounded retries. Unknown state, denial, timeout, or a
+  failed press aborts the normal attempt before writing new Keep Off intent or
+  changing launch jobs. AX reads run on a
   bounded worker queue; consecutive disconnected observations precede shutdown.
   An Error tooltip counts as disconnected only with the same vendor window's
   Connection Failed text, enabled Connect control, and no Disconnect control;
   Error alone, contradictory controls, and unreadable state still abort;
+- after a failed explicit disconnect, **Stop Services Anyway** offers a separate
+  in-app confirmation that discloses interruption and stale VPN DNS risk, with
+  Open as the recovery path. It uses the same fixed service operations and
+  administrator authorization, but skips the connection-state prerequisite.
+  The recovery is bound to the current failure by a one-use in-memory ID,
+  checked inside the mutation gate. Retry, Open, and allow-to-run invalidate
+  older failures. No URL, Shortcut, background tick, or persisted preference
+  can authorize this exception;
 - validate the complete built-in identity and fixed job fields before privileged
   commands; require the installed matching plist before introducing a disable
   override so the restore path remains available;

@@ -207,15 +207,18 @@ struct TaskScopePopoverView: View {
             Button(pending.title, role: .destructive) {
                 let preset = pending.preset
                 let action = pending.action
+                let failureID = pending.disconnectFailureID
+                let presentsResult = preset.hasCanonicalGlobalProtectIdentity
+                    && (action == .quitAll || action == .keepOff || action == .stopServices)
+                let showResult = openFullWindow
                 confirmationState.clearPresetAction()
                 Task {
                     // GlobalProtect opens its own menu to disconnect, which
                     // dismisses MenuBarExtra. Keep this user-requested action
                     // and its result visible in the regular window instead.
-                    if !isExpandedWindow, preset.hasCanonicalGlobalProtectIdentity,
-                       action == .quitAll || action == .keepOff {
+                    if !isExpandedWindow, presentsResult {
                         await Task.yield()
-                        openFullWindow?()
+                        showResult?()
                     }
                     switch action {
                     case .quitApp:
@@ -226,7 +229,14 @@ struct TaskScopePopoverView: View {
                         _ = await processManager.quitAll(preset)
                     case .keepOff:
                         _ = await processManager.keepOff(preset)
+                    case .stopServices:
+                        if let failureID {
+                            _ = await processManager.stopGlobalProtectAfterFailedDisconnect(failureID: failureID)
+                        }
                     }
+                    // The vendor UI or authorization dialog may have taken
+                    // focus. Bring the completed result back to the user.
+                    if presentsResult { showResult?() }
                 }
             }
             Button("Cancel", role: .cancel) {
@@ -1009,7 +1019,7 @@ struct TaskScopePopoverView: View {
             names = preset.helperProcessNames
         case .quitAll:
             names = preset.killableNames
-        case .keepOff:
+        case .keepOff, .stopServices:
             names = preset.killableNames
         }
         let targets = names.isEmpty ? "no configured processes" : names.joined(separator: ", ")
@@ -1018,13 +1028,17 @@ struct TaskScopePopoverView: View {
         let window = Int(ProcessTerminationController.gracefulExitWindowSeconds)
         let forceStopDisclosure = "A process still running \(window) seconds after the stop request is force stopped."
 
+        if pending.action == .stopServices {
+            return "GlobalProtect did not complete a normal disconnect. TaskScope will stop and disable its services anyway and keep them off until you choose Open. This can interrupt network access or leave VPN DNS settings behind. If internet access stops working, choose Open to restore the service. Administrator approval may be required. \(forceStopDisclosure)"
+        }
+
         if preset.hasCanonicalGlobalProtectIdentity && (pending.action == .quitAll || pending.action == .keepOff) {
             return "TaskScope will disconnect the VPN, stop GlobalProtect and its services, and keep them off until you choose Open. Accessibility permission lets TaskScope press Disconnect for you; administrator approval is requested only when needed to stop the system service. \(forceStopDisclosure)"
         }
 
         var sentences: [String] = []
         switch pending.action {
-        case .keepOff:
+        case .keepOff, .stopServices:
             sentences.append(
                 "TaskScope will persistently disable GlobalProtect's per-user launch agents (\(agentList)) and stop current user-facing matches: \(targets)."
             )

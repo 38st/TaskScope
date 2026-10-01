@@ -46,11 +46,14 @@ enum GlobalProtectDisconnectController {
     ) async -> GlobalProtectDisconnectResult {
         var requested = false
         var disconnectedObservations = 0
+        var unavailableObservations = 0
         for _ in 0..<observationLimit {
             guard !Task.isCancelled else {
                 return .failed("GlobalProtect shutdown was cancelled before its services were stopped.")
             }
-            switch await runtime.connectionState() {
+            let state = await runtime.connectionState()
+            if state != .unavailable { unavailableObservations = 0 }
+            switch state {
             case .disconnected:
                 disconnectedObservations += 1
                 if disconnectedObservations >= 5 { return .disconnected }
@@ -65,7 +68,13 @@ enum GlobalProtectDisconnectController {
             case .busy:
                 disconnectedObservations = 0
             case .unavailable:
-                return .failed("TaskScope could not verify GlobalProtect's connection state. Its services were left running.")
+                disconnectedObservations = 0
+                unavailableObservations += 1
+                // A menu can disappear during a focus change. Give the runtime
+                // a bounded chance to reopen it; unreadable state is never idle.
+                if unavailableObservations >= 3 {
+                    return .failed("TaskScope could not verify GlobalProtect's connection state. Its services were left running.")
+                }
             }
             await runtime.waitForNextObservation()
         }

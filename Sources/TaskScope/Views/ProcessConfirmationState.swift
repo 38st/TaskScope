@@ -49,11 +49,13 @@ final class ProcessConfirmationState: ObservableObject {
         case quitHelpers = "Quit Helpers"
         case quitAll = "Quit All Killable"
         case keepOff = "Keep GlobalProtect Off"
+        case stopServices = "Stop Services Anyway"
     }
 
     struct PendingPresetAction: Equatable {
         var preset: WatchedAppPreset
         var action: PresetAction
+        var disconnectFailureID: UUID?
 
         var title: String {
             action == .quitAll && preset.hasCanonicalGlobalProtectIdentity ? "Quit All" : action.rawValue
@@ -82,8 +84,8 @@ final class ProcessConfirmationState: ObservableObject {
         pendingBatchTermination = nil
     }
 
-    func requestPresetAction(_ action: PresetAction, preset: WatchedAppPreset) {
-        pendingPresetAction = PendingPresetAction(preset: preset, action: action)
+    func requestPresetAction(_ action: PresetAction, preset: WatchedAppPreset, disconnectFailureID: UUID? = nil) {
+        pendingPresetAction = PendingPresetAction(preset: preset, action: action, disconnectFailureID: disconnectFailureID)
     }
 
     func clearPresetAction() {

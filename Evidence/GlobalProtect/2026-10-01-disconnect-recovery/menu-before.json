@@ -1,0 +1,84 @@
+{
+  "test": "october-baseline",
+  "before": {
+    "time_utc": "2026-10-01T19:00:30.748917+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "81e7ae1f7e3e6171b15c588db700fbe9b1fbbf5fbebcebbdd2ea99548446df0b"
+  },
+  "connection_before": "Error",
+  "action": "Confirmed from 480-point menu window",
+  "observations": [
+    {
+      "elapsed": 3.82,
+      "connection": "Error",
+      "ui": ", 480, 600, TaskScope, Watched app running, Status: Active, Disconnecting GlobalProtect before stopping its services\u2026, TaskScope, 900, 600, TaskScope, Watched app running, Status: Active, Disconnecting GlobalProtect before stopping its services\u2026",
+      "process_counts": {
+        "GlobalProtect": 1,
+        "PanGPA": 0,
+        "PanGPS": 1
+      },
+      "administrator_windows": "0"
+    },
+    {
+      "elapsed": 6.31,
+      "connection": "Error",
+      "ui": "TaskScope, 900, 600, TaskScope, Watched app running, Status: Active, TaskScope could not verify GlobalProtect's connection state. Its services were left running.",
+      "process_counts": {
+        "GlobalProtect": 1,
+        "PanGPA": 0,
+        "PanGPS": 1
+      },
+      "administrator_windows": "0"
+    }
+  ],
+  "after": {
+    "time_utc": "2026-10-01T19:00:36.326666+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "81e7ae1f7e3e6171b15c588db700fbe9b1fbbf5fbebcebbdd2ea99548446df0b"
+  },
+  "expected_off": false,
+  "elapsed": 6.31,
+  "result_sheets": "TaskScope, 900, 600, 0",
+  "public_https": {
+    "exit": 0,
+    "status": "200"
+  }
+}

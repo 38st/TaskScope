@@ -53,7 +53,8 @@ struct PresetsSectionView: View {
                                 )
                                 Task { _ = await AppCommandBus.shared.submit(.openPresetEntity(target)) }
                             }
-                        }
+                        },
+                        onStopWithoutDisconnect: stopRecoveryAction(for: snapshot.preset)
                     )
                 }
 
@@ -86,6 +87,14 @@ struct PresetsSectionView: View {
                 }
             }
             .padding(16)
+        }
+    }
+
+    private func stopRecoveryAction(for preset: WatchedAppPreset) -> (() -> Void)? {
+        guard preset.hasCanonicalGlobalProtectIdentity,
+              let failureID = processManager.globalProtectDisconnectFailureID else { return nil }
+        return {
+            confirmationState.requestPresetAction(.stopServices, preset: preset, disconnectFailureID: failureID)
         }
     }
 }

@@ -293,7 +293,7 @@ struct TaskScopeApp: App {
                         autoStopRules: autoStopRules,
                         history: processHistory,
                         presentationStyle: .expandedWindow,
-                        openFullWindow: nil,
+                        openFullWindow: { showTaskScopeWindow() },
                         activityMonitor: activityMonitor
                     )
                     .frame(minWidth: 760, minHeight: 560)

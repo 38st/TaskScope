@@ -1,0 +1,95 @@
+{
+  "test": "october-final-normal",
+  "before": {
+    "time_utc": "2026-10-01T19:12:57.832614+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangps": {
+        "loaded": true,
+        "override": "enabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 1,
+      "PanGPA": 0,
+      "PanGPS": 1
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "2b7c5d689d4617f17e59522a05370f8a75d49f12873c5d0b5e2efe8cf20a0edf"
+  },
+  "connection_before": "Not Connected",
+  "action": "Confirmed from 480-point menu window",
+  "observations": [
+    {
+      "elapsed": 2.21,
+      "connection": "Not Connected",
+      "ui": ", 480, 600, TaskScope, Watched app running, Status: Active, Disconnecting GlobalProtect before stopping its services\u2026, TaskScope, 900, 600, TaskScope, Watched app running, Status: Active, Disconnecting GlobalProtect before stopping its services\u2026",
+      "process_counts": {
+        "GlobalProtect": 1,
+        "PanGPA": 0,
+        "PanGPS": 1
+      },
+      "administrator_windows": "0"
+    },
+    {
+      "elapsed": 4.72,
+      "connection": "Not Connected",
+      "ui": ", 480, 600, TaskScope, Watched app running, Status: Active, Stopping GlobalProtect and its services\u2026, TaskScope, 900, 600, TaskScope, Watched app running, Status: Active, Stopping GlobalProtect and its services\u2026",
+      "process_counts": {
+        "GlobalProtect": 1,
+        "PanGPA": 0,
+        "PanGPS": 1
+      },
+      "administrator_windows": "0"
+    },
+    {
+      "elapsed": 8.73,
+      "connection": "Absent",
+      "ui": ", 480, 600, TaskScope, No watched apps running, Status: Quiet, GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling., TaskScope, 900, 600, TaskScope, No watched apps running, Status: Quiet, GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling.",
+      "process_counts": {
+        "GlobalProtect": 0,
+        "PanGPA": 0,
+        "PanGPS": 0
+      },
+      "administrator_windows": "0"
+    }
+  ],
+  "after": {
+    "time_utc": "2026-10-01T19:13:06.289936+00:00",
+    "jobs": {
+      "pangpa": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangps": {
+        "loaded": false,
+        "override": "disabled"
+      },
+      "pangpsd": {
+        "loaded": false,
+        "override": "disabled"
+      }
+    },
+    "process_counts": {
+      "GlobalProtect": 0,
+      "PanGPA": 0,
+      "PanGPS": 0
+    },
+    "vendor_launch_files_unchanged": true,
+    "taskscope_executable_sha256": "2b7c5d689d4617f17e59522a05370f8a75d49f12873c5d0b5e2efe8cf20a0edf"
+  },
+  "expected_off": true,
+  "elapsed": 8.73,
+  "result_sheets": ", 480, 600, 0, TaskScope, 900, 600, 1",
+  "public_https": {
+    "exit": 0,
+    "status": "200"
+  }
+}

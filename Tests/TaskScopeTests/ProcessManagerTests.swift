@@ -1026,6 +1026,62 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertFalse(lifecycle.calls.contains("daemon.disable:true"))
     }
 
+    func testConfirmedDisconnectRecoveryStopsServicesAndConsumesFailure() async throws {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.disconnectResult = .failed("Authentication timed out")
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        var keptOff = false
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+        _ = await manager.keepOff(.globalProtect)
+        let failureID = try XCTUnwrap(manager.globalProtectDisconnectFailureID)
+        XCTAssertFalse(keptOff)
+        XCTAssertEqual(lifecycle.calls, ["vpn.disconnect"])
+
+        let result = await manager.stopGlobalProtectAfterFailedDisconnect(failureID: failureID)
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertTrue(keptOff)
+        XCTAssertNil(manager.globalProtectDisconnectFailureID)
+        XCTAssertEqual(lifecycle.calls, [
+            "vpn.disconnect", "agents.disable", "daemon.disable:true",
+            "terminate:GlobalProtect", "terminate.helper:PanGPA", "settle"
+        ])
+        let previousCalls = lifecycle.calls
+        let repeated = await manager.stopGlobalProtectAfterFailedDisconnect(failureID: failureID)
+        XCTAssertEqual(repeated.status, .rejected)
+        XCTAssertEqual(lifecycle.calls, previousCalls)
+    }
+
+    func testDisconnectRecoveryRejectsUnrequestedAndSupersededFailures() async throws {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.disconnectResult = .failed("Authentication timed out")
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        let unsolicited = await manager.stopGlobalProtectAfterFailedDisconnect(failureID: UUID())
+        XCTAssertEqual(unsolicited.status, .rejected)
+        XCTAssertTrue(lifecycle.calls.isEmpty)
+
+        _ = await manager.keepOff(.globalProtect)
+        let oldFailure = try XCTUnwrap(manager.globalProtectDisconnectFailureID)
+        _ = await manager.keepOff(.globalProtect)
+        XCTAssertNotEqual(manager.globalProtectDisconnectFailureID, oldFailure)
+        let stale = await manager.stopGlobalProtectAfterFailedDisconnect(failureID: oldFailure)
+        XCTAssertEqual(stale.status, .rejected)
+        XCTAssertEqual(lifecycle.calls, ["vpn.disconnect", "vpn.disconnect"])
+    }
+
+    func testOpeningGlobalProtectInvalidatesPendingDisconnectRecovery() async throws {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.disconnectResult = .failed("Authentication timed out")
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        _ = await manager.keepOff(.globalProtect)
+        let failureID = try XCTUnwrap(manager.globalProtectDisconnectFailureID)
+        _ = await manager.openApp(.globalProtect)
+        XCTAssertNil(manager.globalProtectDisconnectFailureID)
+        let previousCalls = lifecycle.calls
+        let result = await manager.stopGlobalProtectAfterFailedDisconnect(failureID: failureID)
+        XCTAssertEqual(result.status, .rejected)
+        XCTAssertEqual(lifecycle.calls, previousCalls)
+    }
+
     func testGlobalProtectSystemFailureCannotReportSuccessfulStop() async {
         let lifecycle = FakeLifecycleService()
         lifecycle.systemDisableResult = LifecycleBatchResult(jobs: [

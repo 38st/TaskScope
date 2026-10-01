@@ -130,6 +130,9 @@ screenshot to a public issue.
   Recognizing a failed connection reads its Connection Failed text and
   Connect/Disconnect controls. These UI reads are not stored or exported;
   credentials and authentication challenges are never filled.
+  The vendor app may be brought forward to reveal its status panel. A failed
+  disconnect enables a separately confirmed service-stop recovery using a
+  one-use random identifier held only in memory; it is not exported or saved.
 - **Administrator authorization:** requested to stop, re-enable, or restore the fixed system
   daemon in the immutable built-in GlobalProtect definition. Custom presets
   cannot add privileged daemon jobs, and TaskScope does not store the password.

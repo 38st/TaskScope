@@ -51,7 +51,6 @@ enum GlobalProtectAccessibilityDisconnect {
 private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRuntime, @unchecked Sendable {
     private let queue = DispatchQueue(label: "TaskScope.GlobalProtectDisconnect", qos: .userInitiated)
     private let pid: Int32
-    private var revealedFailureView = false
 
     init(pid: Int32) { self.pid = pid }
 
@@ -64,14 +63,7 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
                 }
                 var observation = GlobalProtectConnectionObservation(status: string(item, kAXHelpAttribute))
                 if observation.status == "Error", let app = application() {
-                    if elements(app, kAXWindowsAttribute).isEmpty && !revealedFailureView {
-                        revealedFailureView = true
-                        _ = AXUIElementPerformAction(item, kAXPressAction as CFString)
-                        for _ in 0..<20 {
-                            Thread.sleep(forTimeInterval: 0.1)
-                            if !elements(app, kAXWindowsAttribute).isEmpty { break }
-                        }
-                    }
+                    revealControls(app: app, item: item, role: kAXStaticTextRole, title: "Connection Failed")
                     // All controls must belong to the same vendor window.
                     for window in elements(app, kAXWindowsAttribute) {
                         let roots = [window]
@@ -101,20 +93,9 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
                 func button() -> AXUIElement? {
                     find(in: elements(app, kAXWindowsAttribute), role: kAXButtonRole, title: "Disconnect")
                 }
-                var disconnectButton = button()
-                if disconnectButton == nil {
-                    guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else {
-                        continuation.resume(returning: false)
-                        return
-                    }
-                    // The popover is created asynchronously after AXPress.
-                    for _ in 0..<20 {
-                        Thread.sleep(forTimeInterval: 0.1)
-                        disconnectButton = button()
-                        if disconnectButton != nil { break }
-                    }
-                }
-                guard let disconnectButton, application() != nil else {
+                revealControls(app: app, item: item, role: kAXButtonRole, title: "Disconnect")
+                guard let disconnectButton = button(), boolean(disconnectButton, kAXEnabledAttribute),
+                      application() != nil else {
                     continuation.resume(returning: false)
                     return
                 }
@@ -127,6 +108,21 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
 
     func waitForNextObservation() async {
         try? await Task.sleep(nanoseconds: 500_000_000)
+    }
+
+    private func revealControls(app: AXUIElement, item: AXUIElement, role: String, title: String) {
+        // AXPress can succeed without leaving a usable popover when another
+        // app owns focus. Activate the fixed vendor app before opening it.
+        // Reacquire on every observation: a one-time reveal is invalidated by
+        // TaskScope's window handoff or a user switching applications.
+        guard application() != nil else { return }
+        _ = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        if find(in: elements(app, kAXWindowsAttribute), role: role, title: title) != nil { return }
+        guard AXUIElementPerformAction(item, kAXPressAction as CFString) == .success else { return }
+        for _ in 0..<20 {
+            Thread.sleep(forTimeInterval: 0.1)
+            if find(in: elements(app, kAXWindowsAttribute), role: role, title: title) != nil { return }
+        }
     }
 
     private func application() -> AXUIElement? {

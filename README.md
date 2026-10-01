@@ -198,6 +198,9 @@ be exported from Settings when their stored data is readable. See
   the required services without reinstalling; session installations keep the
   separate system daemon disabled to avoid repeated administrator prompts.
   Login/reboot behavior still needs live validation.
+  If automatic disconnect fails, **Stop Services Anyway…** offers a separately
+  confirmed stop with a network-recovery explanation. The result window is
+  brought forward after either success or failure.
 - Create Prompt, Auto Stop, or Log Only runtime rules with event history. Auto
   Stop requires a trusted executable path; legacy name-only Auto Stop rules
   load disabled until reviewed.

@@ -9,6 +9,7 @@ struct PresetCard: View {
     var isKeptOff: Bool
     var isKeepOffControlEnabled: Bool
     var onKeepOffChanged: @MainActor @Sendable (Bool) -> Void
+    var onStopWithoutDisconnect: (() -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -58,6 +59,13 @@ struct PresetCard: View {
                     Button("Apply Keep Off…", role: .destructive) { onKeepOffChanged(true) }
                         .disabled(!isKeepOffControlEnabled)
                         .help("Retry stopping all GlobalProtect services with administrator approval.")
+                }
+                if let onStopWithoutDisconnect {
+                    Text("Automatic disconnect failed. You can still stop the services.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Stop Services Anyway…", role: .destructive, action: onStopWithoutDisconnect)
+                        .disabled(!isKeepOffControlEnabled)
                 }
                 GlobalProtectCompatibilityButton(
                     keepOffRequested: isKeepOffControlEnabled ? isKeptOff : nil
