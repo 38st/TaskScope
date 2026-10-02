@@ -107,7 +107,7 @@ final class AutoStopRulesStore: ObservableObject {
             message: rulesLoad.backupKey.map {
                 PersistenceRecovery.unreadableDataMessage(
                     backupKey: $0,
-                    didWriteBackup: rulesLoad.didWriteBackup
+                    isPreserved: rulesLoad.isBackupPreserved
                 )
             }
         )
@@ -116,7 +116,7 @@ final class AutoStopRulesStore: ObservableObject {
             message: eventsLoad.backupKey.map {
                 PersistenceRecovery.unreadableDataMessage(
                     backupKey: $0,
-                    didWriteBackup: eventsLoad.didWriteBackup
+                    isPreserved: eventsLoad.isBackupPreserved
                 )
             }
         )
@@ -128,7 +128,7 @@ final class AutoStopRulesStore: ObservableObject {
                suffix: "rejectedMigrationBackup"
            ) {
             permitsRulesPersistence = false
-            rulesMessage = "Rejected \(validatedRules.rejectedCount) invalid or duplicate stored auto-stop rule\(validatedRules.rejectedCount == 1 ? "" : "s"). The first rejected payload is preserved as \(backup.key); reset after review to commit only the recovered safe rules."
+            rulesMessage = "Rejected \(validatedRules.rejectedCount) invalid or duplicate stored auto-stop rule\(validatedRules.rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); reset after review to commit only the recovered safe rules."
         }
         // A decode failure must never lead to the unreadable payload being replaced
         // by the empty array we fell back to, so persistence stays disabled for that
@@ -387,7 +387,15 @@ final class AutoStopRulesStore: ObservableObject {
                 outcome: .stopRequested,
                 detail: "Stop requested after confirmation; waiting for the process to exit."
             )
+        } else if result == .stale {
+            record(prompt, outcome: .processEnded, detail: "Process ended before the stop request.")
+        } else if result == .refused {
+            record(prompt, outcome: .failed, detail: "The system refused the stop request.")
         } else {
+            // Nothing was signalled for a reason that may clear (an unreadable
+            // process list, a stopped engine). Un-handle so a still-running
+            // occurrence prompts again instead of being silently abandoned.
+            handledOccurrences.remove(prompt.id)
             record(prompt, outcome: .failed, detail: "Stop request did not complete.")
         }
     }
@@ -534,7 +542,8 @@ final class AutoStopRulesStore: ObservableObject {
             return
         }
 
-        if result.succeeded {
+        switch result {
+        case .stopped:
             reportedFailures.remove(occurrence)
             pendingExits[occurrence] = nil
             record(
@@ -542,20 +551,39 @@ final class AutoStopRulesStore: ObservableObject {
                 outcome: .stopped,
                 detail: isRetry ? "Stopped automatically after a second stop request." : "Stopped automatically."
             )
-        } else if result.isAwaitingExit, !isRetry {
+        case .stale:
+            // The verified identity is gone: the process exited after the
+            // engine observed it, or after the first stop request on a retry.
+            pendingExits[occurrence] = nil
+            if isRetry {
+                record(prompt, outcome: .stopped, detail: "Exited after the stop request.")
+            } else {
+                record(prompt, outcome: .processEnded, detail: "Process ended before the automatic stop.")
+            }
+        case .requestedStillRunning where !isRetry:
             pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true)
             record(prompt, outcome: .stopRequested, detail: "Stop requested; waiting for the process to exit.")
-        } else if isRetry {
+        case .requestedStillRunning:
             // Two stop requests were accepted and the process is still running.
             // Stop retrying so a process that ignores SIGTERM is not signalled on
-            // every tick; the user can force stop it.
-            pendingExits[occurrence] = nil
+            // every tick; the user can force stop it. A later exit is still
+            // recorded when the identity disappears.
+            pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: false)
             record(
                 prompt,
                 outcome: .failed,
                 detail: "Still running after a second stop request; automatic stopping will not retry. Use Force Stop if it must exit."
             )
-        } else {
+        case .refused:
+            // The kernel or a safety guard refused the signal. Retrying every tick
+            // cannot succeed, so the occurrence stays handled until it exits.
+            pendingExits[occurrence] = nil
+            record(prompt, outcome: .failed, detail: "The system refused the stop request; automatic stopping will not retry.")
+        case .rejected where isRetry:
+            // The re-signal never ran (most often an unreadable process list).
+            // Keep the single retry available for the next tick.
+            pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true)
+        case .rejected:
             // Nothing was signalled — most often because the process list could
             // not be read. Un-handle so the next tick retries instead of
             // abandoning a still-running process, but log the failure only once

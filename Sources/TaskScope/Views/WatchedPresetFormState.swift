@@ -42,6 +42,22 @@ final class WatchedPresetFormState: ObservableObject {
         guard agents.errors.isEmpty else {
             return .failure(ValidationError(message: agents.errors.joined(separator: " ")))
         }
+        // The form edits only labels and paths. Carry each unchanged job's
+        // optional/required flag through, so renaming a preset cannot turn an
+        // optional agent into a required one.
+        let existingJobs = existing?.userLaunchAgentJobs ?? []
+        let jobs = agents.value.map { parsed -> UserLaunchAgentJob in
+            guard let match = existingJobs.first(where: {
+                $0.label == parsed.label && $0.plistPath == parsed.plistPath
+            }) else {
+                return parsed
+            }
+            return UserLaunchAgentJob(
+                label: parsed.label,
+                plistPath: parsed.plistPath,
+                isRequired: match.isRequired
+            )
+        }
 
         return .success(WatchedAppPreset(
             id: existing?.id ?? UUID(),
@@ -50,7 +66,7 @@ final class WatchedPresetFormState: ObservableObject {
             helperProcessNames: PresetInputParser.list(from: helpers),
             protectedProcessNames: PresetInputParser.list(from: protectedProcesses),
             appPath: appPath,
-            userLaunchAgentJobs: agents.value,
+            userLaunchAgentJobs: jobs,
             systemLaunchDaemonJobs: existing?.systemLaunchDaemonJobs ?? [],
             notificationsEnabled: existing?.notificationsEnabled ?? true
         ))

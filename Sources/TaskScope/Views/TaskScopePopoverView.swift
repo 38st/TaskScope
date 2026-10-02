@@ -18,6 +18,9 @@ struct TaskScopePopoverView: View {
     @State private var detailData: ProcessDetail?
     @State private var detailFailed: Bool = false
     @State private var keyboardSelectedPid: Int32?
+    /// The identity of the focused row, so a recycled PID cannot inherit focus
+    /// and turn Return into a stop request for a different process.
+    @State private var keyboardSelectedIdentity: ProcessIdentity?
     @State private var filterMode: ProcessFilterMode = .all
     @State private var treeMode: Bool = false
     @State private var expandedTreePids: Set<Int32> = []
@@ -114,8 +117,11 @@ struct TaskScopePopoverView: View {
             let livePIDs = Set(processManager.inventorySnapshot.map(\.pid))
             // Search can show processes below the unfiltered display limit.
             // Preserve their keyboard focus for as long as they are live.
-            if let pid = keyboardSelectedPid, !livePIDs.contains(pid) {
-                keyboardSelectedPid = nil
+            if let pid = keyboardSelectedPid {
+                let live = processManager.inventorySnapshot.first { $0.pid == pid }
+                if live == nil || (keyboardSelectedIdentity.map { $0 != live?.identity } ?? false) {
+                    keyboardSelectedPid = nil
+                }
             }
             expandedTreePids = expandedTreePids.intersection(livePIDs)
         }
@@ -132,7 +138,17 @@ struct TaskScopePopoverView: View {
                 expandFilteredTreeAncestors()
             }
         }
+        // A persisted search can be active before the first list loads; expand
+        // its matches' ancestors once there is a tree to expand.
+        .onChange(of: processManager.hasLoadedProcessList) { _, loaded in
+            if loaded {
+                expandFilteredTreeAncestors()
+            }
+        }
         .onChange(of: keyboardSelectedPid) { _, pid in
+            keyboardSelectedIdentity = pid.flatMap { pid in
+                processManager.inventorySnapshot.first { $0.pid == pid }?.identity
+            }
             if pid != nil {
                 processListFocused = true
             }
@@ -503,13 +519,19 @@ struct TaskScopePopoverView: View {
                         ForEach(savedSelections.selections) { sel in
                             Menu(sel.name) {
                                 Button("Preview & Recall…") {
-                                    pendingRecallResult = savedSelections.resolve(
-                                        sel,
-                                        in: processManager.inventorySnapshot
-                                    )
-                                    pendingRecallSelection = sel
+                                    // Resolve against a fresh inventory: the list may
+                                    // never have been loaded, or may be a poll old.
+                                    Task {
+                                        await processManager.loadProcessList(showMessage: false)
+                                        pendingRecallResult = savedSelections.resolve(
+                                            sel,
+                                            in: processManager.inventorySnapshot
+                                        )
+                                        pendingRecallSelection = sel
+                                    }
                                 }
                                 Button("Rename…") {
+                                    savedSelections.clearValidationError()
                                     renameSelectionName = sel.name
                                     renameSelection = sel
                                 }
@@ -523,6 +545,7 @@ struct TaskScopePopoverView: View {
                     }
                     if !processManager.selectedPids.isEmpty {
                         Button("Save Current Selection…") {
+                            savedSelections.clearValidationError()
                             saveSelectionName = ""
                             showSaveSelectionSheet = true
                         }
@@ -690,11 +713,16 @@ struct TaskScopePopoverView: View {
                         return .handled
                     }
                     .onKeyPress { keyPress in
-                        if keyPress.key == KeyEquivalent("a") && keyPress.modifiers == .command {
-                            processManager.select(keyboardNavigationProcesses)
+                        // Shift may arrive applied to the character ("A"), and Caps
+                        // Lock adds a modifier, so compare case-insensitively and
+                        // ignore modifiers that do not change the shortcut.
+                        guard keyPress.characters.lowercased() == "a" else { return .ignored }
+                        let modifiers = keyPress.modifiers.subtracting([.capsLock, .numericPad])
+                        if modifiers == .command {
+                            processManager.select(selectableProcesses)
                             return .handled
                         }
-                        if keyPress.key == KeyEquivalent("a") && keyPress.modifiers == [.command, .shift] {
+                        if modifiers == [.command, .shift] {
                             processManager.clearSelection()
                             return .handled
                         }
@@ -775,7 +803,7 @@ struct TaskScopePopoverView: View {
         ProcessListQuery(
             searchText: settings.searchText,
             filterMode: filterMode,
-            watchedNames: Set(processManager.snapshots.flatMap { $0.preset.allProcessNames }),
+            watchedScopes: processManager.snapshots.map { WatchedProcessScope(preset: $0.preset) },
             cpuHighlightThreshold: settings.cpuHighlightThreshold,
             memoryHighlightThresholdMB: settings.memHighlightThresholdMB
         )
@@ -828,6 +856,15 @@ struct TaskScopePopoverView: View {
     private var keyboardNavigationProcesses: [AppProcess] {
         guard treeMode else { return filteredProcesses }
         return visibleTreeProcesses
+    }
+
+    /// Select All covers the rows that match the search and filter. Tree mode
+    /// also renders ancestors purely for hierarchy context; selecting those
+    /// would let a batch stop reach a parent app the user never matched.
+    private var selectableProcesses: [AppProcess] {
+        guard treeMode else { return filteredProcesses }
+        let matchedPIDs = Set(filteredProcesses.map(\.pid))
+        return visibleTreeProcesses.filter { matchedPIDs.contains($0.pid) }
     }
 
     private var visibleTreeProcesses: [AppProcess] {
@@ -911,9 +948,9 @@ struct TaskScopePopoverView: View {
 
     private var batchActionReportBinding: Binding<ProcessBatchActionReport?> {
         Binding(
-            get: { processManager.batchActionReport },
+            get: { ownsLifecycleReportPresentation ? processManager.batchActionReport : nil },
             set: { value in
-                if value == nil {
+                if value == nil && ownsLifecycleReportPresentation {
                     processManager.dismissBatchActionReport()
                 }
             }
@@ -1106,6 +1143,7 @@ struct TaskScopePopoverView: View {
         let outcome = QuickAutoStopRuleSaver.save(
             into: autoStopRules,
             processName: processName,
+            observedProcessName: quickAutoStopProcess?.name ?? "",
             observedExecutablePath: quickAutoStopProcess?.executablePath,
             runtimeMinutes: runtimeMinutes,
             action: action,

@@ -1,25 +1,43 @@
 import Foundation
 
 enum PersistenceRecovery {
-    /// Recovery slots preserve the oldest known unreadable or rejected payload.
-    /// Repeated launches must never replace the only surviving original bytes.
-    /// Returns whether this call wrote the backup; a `false` means an earlier
-    /// payload already occupies the slot and the current one was left in place.
-    @discardableResult
-    static func preserveFirstBackup(
+    /// Number of recovery slots per base key: `<base>`, `<base>.2`, … .
+    static let maximumBackupSlots = 10
+
+    /// Preserves `data` without ever replacing an earlier backup. The first
+    /// slot keeps the oldest payload; a later, different payload goes to the
+    /// next free numbered slot so a second corruption is not lost on reset.
+    /// Returns the slot that holds these exact bytes, or nil when every slot is
+    /// occupied by other payloads and nothing could be preserved.
+    static func preserveBackup(
         _ data: Data,
         in userDefaults: UserDefaults,
-        key: String
-    ) -> Bool {
-        guard userDefaults.data(forKey: key) == nil else { return false }
-        userDefaults.set(data, forKey: key)
-        return true
+        baseKey: String
+    ) -> String? {
+        var firstFreeKey: String?
+        for slot in 1...maximumBackupSlots {
+            let key = slot == 1 ? baseKey : "\(baseKey).\(slot)"
+            guard let existing = userDefaults.data(forKey: key) else {
+                if firstFreeKey == nil { firstFreeKey = key }
+                continue
+            }
+            if existing == data { return key }
+        }
+        guard let firstFreeKey else { return nil }
+        userDefaults.set(data, forKey: firstFreeKey)
+        return firstFreeKey
     }
 
-    static func unreadableDataMessage(backupKey: String, didWriteBackup: Bool) -> String {
-        didWriteBackup
+    static func unreadableDataMessage(backupKey: String, isPreserved: Bool) -> String {
+        isPreserved
             ? "Unreadable data was backed up as \(backupKey)."
-            : "Unreadable data was not backed up: \(backupKey) already preserves an earlier unreadable payload, and the current payload remains at its primary key."
+            : "Unreadable data was not backed up: every recovery slot starting at \(backupKey) already preserves an earlier payload, and the current payload remains at its primary key."
+    }
+
+    static func preservedPayloadDescription(backupKey: String, isPreserved: Bool) -> String {
+        isPreserved
+            ? "The payload is preserved as \(backupKey)"
+            : "The payload could not be backed up because every recovery slot starting at \(backupKey) is occupied"
     }
 }
 
@@ -27,9 +45,10 @@ struct RecoveringCodableStorage<Value: Codable> {
     struct LoadOutcome {
         var value: Value?
         var backupKey: String?
-        /// True only when this load wrote the backup. False with a non-nil
-        /// `backupKey` means an earlier backup already occupied the slot.
-        var didWriteBackup: Bool
+        /// True when a recovery slot holds these exact bytes, whether this load
+        /// wrote it or an earlier launch did. False with a non-nil `backupKey`
+        /// means every slot was occupied by other payloads.
+        var isBackupPreserved: Bool
     }
 
     let userDefaults: UserDefaults
@@ -37,18 +56,22 @@ struct RecoveringCodableStorage<Value: Codable> {
 
     func load() -> LoadOutcome {
         guard let data = userDefaults.data(forKey: key) else {
-            return LoadOutcome(value: nil, backupKey: nil, didWriteBackup: false)
+            return LoadOutcome(value: nil, backupKey: nil, isBackupPreserved: false)
         }
         do {
             return LoadOutcome(
                 value: try JSONDecoder().decode(Value.self, from: data),
                 backupKey: nil,
-                didWriteBackup: false
+                isBackupPreserved: false
             )
         } catch {
-            let backupKey = "\(key).corruptBackup"
-            let didWrite = PersistenceRecovery.preserveFirstBackup(data, in: userDefaults, key: backupKey)
-            return LoadOutcome(value: nil, backupKey: backupKey, didWriteBackup: didWrite)
+            let baseKey = "\(key).corruptBackup"
+            let preservedKey = PersistenceRecovery.preserveBackup(data, in: userDefaults, baseKey: baseKey)
+            return LoadOutcome(
+                value: nil,
+                backupKey: preservedKey ?? baseKey,
+                isBackupPreserved: preservedKey != nil
+            )
         }
     }
 
@@ -63,10 +86,10 @@ struct RecoveringCodableStorage<Value: Codable> {
         return true
     }
 
-    func preserveCurrentPayload(suffix: String) -> (key: String, didWrite: Bool)? {
+    func preserveCurrentPayload(suffix: String) -> (key: String, isPreserved: Bool)? {
         guard let data = rawData else { return nil }
-        let backupKey = "\(key).\(suffix)"
-        let didWrite = PersistenceRecovery.preserveFirstBackup(data, in: userDefaults, key: backupKey)
-        return (backupKey, didWrite)
+        let baseKey = "\(key).\(suffix)"
+        let preservedKey = PersistenceRecovery.preserveBackup(data, in: userDefaults, baseKey: baseKey)
+        return (preservedKey ?? baseKey, preservedKey != nil)
     }
 }

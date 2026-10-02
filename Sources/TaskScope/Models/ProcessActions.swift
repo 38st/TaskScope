@@ -4,7 +4,13 @@ enum ProcessActionResult: Equatable, Sendable {
     case stopped
     case requestedStillRunning
     case stale
+    /// Nothing was signalled for a reason that may clear on its own, such as an
+    /// unreadable process list or a cancelled request. Retrying can succeed.
     case rejected
+    /// Nothing was signalled and retrying cannot change that: the kernel denied
+    /// the signal (for example `EPERM` on another user's process), or the target
+    /// is TaskScope itself or a PID that must never be signalled.
+    case refused
 
     var succeeded: Bool {
         self == .stopped

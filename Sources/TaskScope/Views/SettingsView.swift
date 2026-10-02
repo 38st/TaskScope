@@ -260,7 +260,9 @@ struct SettingsView: View {
                 }
             }
 
-            if let error = presetValidationError ?? watchedApps.validationError {
+            // Only this editor's own errors: the store's shared error may belong
+            // to an earlier import or deletion and would greet a blank form.
+            if let error = presetValidationError {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)

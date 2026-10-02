@@ -324,25 +324,48 @@ final class AutoStopRulesStoreTests: XCTestCase {
         XCTAssertEqual(AutoStopEvent.Outcome(rawValue: "stopRequested"), .stopRequested)
     }
 
-    /// The backup slot keeps the *first* unreadable payload. A later unreadable
-    /// launch must say that its payload was not backed up rather than claiming
-    /// a backup that never happened.
-    func testSecondUnreadableLaunchReportsThatTheEarlierBackupWasKept() {
+    /// The first slot keeps the *first* unreadable payload. A later, different
+    /// unreadable payload is preserved in the next numbered slot, so resetting
+    /// after a second corruption cannot destroy the only copy of its bytes.
+    func testSecondUnreadableLaunchPreservesItsPayloadInTheNextSlot() {
         let first = Data([0xAA, 0x01])
         let second = Data([0xBB, 0x02])
         userDefaults.set(first, forKey: key)
         let firstStore = makeStore()
-        XCTAssertTrue(firstStore.rulesRecoveryMessage?.contains("was backed up as") == true)
+        XCTAssertTrue(firstStore.rulesRecoveryMessage?.contains("was backed up as \(key).corruptBackup.") == true)
 
         userDefaults.set(second, forKey: key)
         let secondStore = makeStore()
 
         XCTAssertTrue(
-            secondStore.rulesRecoveryMessage?.contains("was not backed up") == true,
+            secondStore.rulesRecoveryMessage?.contains("was backed up as \(key).corruptBackup.2.") == true,
             secondStore.rulesRecoveryMessage ?? "nil"
         )
         XCTAssertEqual(userDefaults.data(forKey: "\(key).corruptBackup"), first)
+        XCTAssertEqual(userDefaults.data(forKey: "\(key).corruptBackup.2"), second)
         XCTAssertEqual(userDefaults.data(forKey: key), second)
+
+        // Relaunching with the same bytes reuses their slot instead of filling another.
+        let thirdStore = makeStore()
+        XCTAssertTrue(thirdStore.rulesRecoveryMessage?.contains("\(key).corruptBackup.2.") == true)
+        XCTAssertNil(userDefaults.data(forKey: "\(key).corruptBackup.3"))
+    }
+
+    /// When every slot holds another payload, the message must not claim a backup.
+    func testUnreadableLaunchWithEveryBackupSlotOccupiedSaysItWasNotBackedUp() {
+        for slot in 1...PersistenceRecovery.maximumBackupSlots {
+            let slotKey = slot == 1 ? "\(key).corruptBackup" : "\(key).corruptBackup.\(slot)"
+            userDefaults.set(Data([0xC0, UInt8(slot)]), forKey: slotKey)
+        }
+        userDefaults.set(Data([0xDD, 0x04]), forKey: key)
+
+        let store = makeStore()
+
+        XCTAssertTrue(
+            store.rulesRecoveryMessage?.contains("was not backed up") == true,
+            store.rulesRecoveryMessage ?? "nil"
+        )
+        XCTAssertEqual(userDefaults.data(forKey: key), Data([0xDD, 0x04]))
     }
 
     func testCorruptRulesAndEventsAreBackedUp() {

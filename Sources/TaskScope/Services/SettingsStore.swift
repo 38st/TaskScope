@@ -71,7 +71,7 @@ final class SettingsStore: ObservableObject {
         } else {
             decoded = .defaults
             let backupKey = result.backupKey ?? "\(key).corruptBackup"
-            recoveryMessage = "Settings were unreadable. The first unreadable payload is preserved as \(backupKey), and the current primary remains untouched until reset."
+            recoveryMessage = "Settings were unreadable. \(PersistenceRecovery.preservedPayloadDescription(backupKey: backupKey, isPreserved: result.isBackupPreserved)), and the current primary remains untouched until reset."
             allowsPersistence = false
         }
 

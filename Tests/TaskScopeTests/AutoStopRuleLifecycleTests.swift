@@ -277,6 +277,115 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         XCTAssertEqual(store.events.map(\.outcome), [.stopped])
     }
 
+    /// A signal the kernel refuses (EPERM on another user's process) can never
+    /// succeed. It must be logged once and not retried on every tick.
+    func testRefusedStopIsLoggedOnceAndNotRetried() async {
+        let store = makeStore(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
+
+        var attempts = 0
+        store.start(cadence: 3_600) { _, _ in
+            attempts += 1
+            return .refused
+        }
+        for _ in 0..<100 where attempts == 0 || store.events.isEmpty {
+            await Task.yield()
+        }
+
+        await store.evaluateNow()
+        await store.evaluateNow()
+        store.stop()
+
+        XCTAssertEqual(attempts, 1, "a refused signal must not be re-attempted every tick")
+        XCTAssertEqual(store.events.map(\.outcome), [.failed])
+    }
+
+    /// A process that exits between the engine's observation and the stop's
+    /// identity check ended on its own; it is not a failed stop.
+    func testStaleTargetIsRecordedAsEndedNotFailed() async {
+        let store = makeStore(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
+
+        var attempts = 0
+        store.start(cadence: 3_600) { _, _ in
+            attempts += 1
+            return .stale
+        }
+        for _ in 0..<100 where attempts == 0 || store.events.isEmpty {
+            await Task.yield()
+        }
+        await store.evaluateNow()
+        store.stop()
+
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(store.events.map(\.outcome), [.processEnded])
+    }
+
+    /// After the single re-signal leaves the process running, a later exit is
+    /// still recorded instead of being forgotten.
+    func testExitAfterTheFailedRetryIsStillRecorded() async {
+        let inventory = MutableAutoStopInventory(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        let store = makeStore(inventory: inventory)
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .kill
+        ))
+
+        var attempts = 0
+        store.start(cadence: 3_600) { _, _ in
+            attempts += 1
+            return .requestedStillRunning
+        }
+        for _ in 0..<100 where attempts == 0 || store.events.isEmpty {
+            await Task.yield()
+        }
+        await store.evaluateNow()
+        XCTAssertEqual(attempts, 2, "precondition: one automatic re-signal")
+        await inventory.set([])
+        await store.evaluateNow()
+        store.stop()
+
+        XCTAssertEqual(store.events.map(\.outcome), [.stopped, .failed, .stopRequested])
+        XCTAssertEqual(store.events.first?.detail, "Exited after the stop request.")
+    }
+
+    /// A confirmed prompt whose stop never ran (unreadable process list) must
+    /// prompt again rather than silently abandon a still-running process.
+    func testConfirmedPromptThatCouldNotRunPromptsAgain() async {
+        let store = makeStore(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        store.add(AutoStopRule(
+            processName: "Example",
+            executablePath: examplePath,
+            runtimeMinutes: 1,
+            action: .prompt
+        ))
+        store.start(cadence: 3_600) { _, _ in .rejected }
+        for _ in 0..<100 where store.currentPrompt == nil {
+            await Task.yield()
+        }
+        guard let prompt = store.currentPrompt, let claimed = store.claimPrompt(prompt) else {
+            return XCTFail("precondition: a prompt is queued")
+        }
+
+        await store.finishStop(claimed)
+        await store.evaluateNow()
+        store.stop()
+
+        XCTAssertEqual(store.pendingPrompts.map(\.id), [prompt.id])
+    }
+
     // MARK: - Helpers
 
     private func makeStore(
@@ -377,4 +486,20 @@ private actor BlockingLifecycleInventory: ProcessInventoryProviding {
     }
 
     func loadCount() -> Int { count }
+}
+
+private actor MutableAutoStopInventory: ProcessInventoryProviding {
+    private var processes: [AppProcess]
+
+    init(processes: [AppProcess]) {
+        self.processes = processes
+    }
+
+    func set(_ processes: [AppProcess]) {
+        self.processes = processes
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        .success(processes)
+    }
 }

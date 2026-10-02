@@ -81,6 +81,7 @@ enum QuickAutoStopRuleSaver {
     static func save(
         into rules: AutoStopRulesStore,
         processName: String,
+        observedProcessName: String,
         observedExecutablePath: String?,
         runtimeMinutes: Int,
         action: AutoStopRule.Action,
@@ -90,12 +91,23 @@ enum QuickAutoStopRuleSaver {
         guard !trimmedName.isEmpty else {
             return Outcome(error: "Process name is required.")
         }
+        // The observed path identifies the right-clicked process only. A rule
+        // typed for a different name must never be bound to that binary, or it
+        // could never match the process it names.
+        let observedPath = trimmedName.caseInsensitiveCompare(observedProcessName) == .orderedSame
+            ? observedExecutablePath
+            : nil
 
         if let existing = existingRule {
+            // A rule without a path matches every process of its name. Keep that
+            // scope unless the chosen action requires a path (Auto Stop).
+            let executablePath = existing.executablePath == nil && action != .kill
+                ? nil
+                : observedPath ?? existing.executablePath
             guard rules.update(AutoStopRule(
                 id: existing.id,
                 processName: trimmedName,
-                executablePath: observedExecutablePath ?? existing.executablePath,
+                executablePath: executablePath,
                 runtimeMinutes: runtimeMinutes,
                 action: action,
                 isEnabled: existing.isEnabled
@@ -114,7 +126,7 @@ enum QuickAutoStopRuleSaver {
         }
         guard rules.add(AutoStopRule(
             processName: trimmedName,
-            executablePath: observedExecutablePath,
+            executablePath: observedPath,
             runtimeMinutes: runtimeMinutes,
             action: action
         )) else {

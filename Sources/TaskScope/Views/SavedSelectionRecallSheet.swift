@@ -72,7 +72,9 @@ struct SavedSelectionRecallSheet: View {
 
     private func itemList(_ items: [String]) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            ForEach(items, id: \.self) { item in
+            // Labels repeat (several unmatched helpers share one name), so
+            // identify rows by position rather than by text.
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 Text(item)
                     .font(.caption)
             }

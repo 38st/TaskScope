@@ -192,7 +192,7 @@ final class ProcessManagerTests: XCTestCase {
         let query = ProcessListQuery(
             searchText: "",
             filterMode: .all,
-            watchedNames: [],
+            watchedScopes: [],
             cpuHighlightThreshold: 30,
             memoryHighlightThresholdMB: 1_024
         )
@@ -329,7 +329,7 @@ final class ProcessManagerTests: XCTestCase {
 
         let result = await manager.terminate(launchd)
 
-        XCTAssertEqual(result, .rejected)
+        XCTAssertEqual(result, .refused, "an unsignalable PID can never succeed, so callers must not retry it")
         XCTAssertTrue(signaler.sent.isEmpty)
         XCTAssertEqual(manager.message, "PID 1 can never be signalled.")
     }

@@ -127,6 +127,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         let collision = QuickAutoStopRuleSaver.save(
             into: store,
             processName: "Example",
+            observedProcessName: other.name,
             observedExecutablePath: other.executablePath,
             runtimeMinutes: 9,
             action: .kill,
@@ -143,6 +144,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         let update = QuickAutoStopRuleSaver.save(
             into: store,
             processName: "Example",
+            observedProcessName: example.name,
             observedExecutablePath: example.executablePath,
             runtimeMinutes: 9,
             action: .kill,
@@ -153,6 +155,53 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertEqual(update.statusMessage, "Updated auto-stop rule for Example.")
         XCTAssertEqual(store.rules.map(\.runtimeMinutes), [9])
         XCTAssertEqual(store.rules.map(\.executablePath), [examplePath])
+    }
+
+    /// Renaming the draft away from the right-clicked process must not bind the
+    /// new rule to that process's binary, where it could never match.
+    func testQuickRuleForARenamedProcessDoesNotCaptureTheObservedPath() async {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.autoStopRules
+        let node = process(pid: 72, parentPID: 1, name: "node")
+
+        let outcome = QuickAutoStopRuleSaver.save(
+            into: store,
+            processName: "python3",
+            observedProcessName: node.name,
+            observedExecutablePath: node.executablePath,
+            runtimeMinutes: 5,
+            action: .prompt,
+            existingRule: nil
+        )
+
+        XCTAssertNil(outcome.error)
+        XCTAssertEqual(store.rules.map(\.processName), ["python3"])
+        XCTAssertEqual(store.rules.map(\.executablePath), [nil])
+    }
+
+    /// Updating only the minutes of a name-wide prompt rule must keep it
+    /// name-wide instead of narrowing it to the right-clicked binary.
+    func testQuickRuleUpdateKeepsANameWideRuleNameWide() async {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.autoStopRules
+        XCTAssertTrue(store.add(AutoStopRule(processName: "Example", runtimeMinutes: 5, action: .prompt)))
+        let example = process(pid: 73, parentPID: 1, name: "Example")
+
+        let outcome = QuickAutoStopRuleSaver.save(
+            into: store,
+            processName: "Example",
+            observedProcessName: example.name,
+            observedExecutablePath: example.executablePath,
+            runtimeMinutes: 12,
+            action: .prompt,
+            existingRule: QuickAutoStopRuleSaver.existingRule(for: example, in: store)
+        )
+
+        XCTAssertNil(outcome.error)
+        XCTAssertEqual(store.rules.map(\.runtimeMinutes), [12])
+        XCTAssertEqual(store.rules.map(\.executablePath), [nil])
     }
 
     /// A stale list still has rows; when the filter matches none of them the

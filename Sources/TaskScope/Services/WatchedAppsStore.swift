@@ -99,12 +99,12 @@ final class WatchedAppsStore: ObservableObject {
             let validated = Self.validatedPresets(decoded)
             presets = validated.presets
             if validated.rejectedCount > 0 {
-                let backupKey = persistence.preserveCurrentPayload(
+                let backup = persistence.preserveCurrentPayload(
                     suffix: "rejectedMigrationBackup"
-                )?.key ?? "\(key).rejectedMigrationBackup"
+                ) ?? (key: "\(key).rejectedMigrationBackup", isPreserved: false)
                 allowsPersistence = false
                 recoveredDecodedPayload = true
-                persistenceIssue = "Rejected \(validated.rejectedCount) unsafe or invalid stored preset\(validated.rejectedCount == 1 ? "" : "s"). The first rejected payload is preserved as \(backupKey); review or export the recovered presets, then reset to commit them."
+                persistenceIssue = "Rejected \(validated.rejectedCount) unsafe or invalid stored preset\(validated.rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); review or export the recovered presets, then reset to commit them."
             } else {
                 allowsPersistence = true
                 recoveredDecodedPayload = false
@@ -117,7 +117,7 @@ final class WatchedAppsStore: ObservableObject {
             presets = []
             allowsPersistence = false
             recoveredDecodedPayload = false
-            persistenceIssue = "Preset data was unreadable. The first unreadable payload is preserved as \(backupKey), and the current primary remains untouched until reset."
+            persistenceIssue = "Preset data was unreadable. \(PersistenceRecovery.preservedPayloadDescription(backupKey: backupKey, isPreserved: loaded.isBackupPreserved)), and the current primary remains untouched until reset."
         }
     }
 

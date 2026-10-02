@@ -139,13 +139,19 @@ final class SavedSelectionsStore: ObservableObject {
             recoveryMessage = "Saved selections were unreadable. "
                 + PersistenceRecovery.unreadableDataMessage(
                     backupKey: backupKey,
-                    didWriteBackup: loaded.didWriteBackup
+                    isPreserved: loaded.isBackupPreserved
                 )
         }
     }
 
     var isReadOnlyAfterCorruption: Bool {
         !allowsPersistence
+    }
+
+    /// Clears a message left by an earlier attempt so a newly presented sheet
+    /// does not open with an unrelated error.
+    func clearValidationError() {
+        validationError = nil
     }
 
     /// Discards the unreadable payload and resumes durable mutations from an empty,

@@ -8,7 +8,7 @@ final class ProcessListProjectionTests: XCTestCase {
         let other = process(pid: 20, cpu: 10, memory: 100, name: "Other")
         var projection = ProcessListProjection(inventory: [parent, child, other])
         var query = ProcessListQuery(
-            searchText: "", filterMode: .all, watchedNames: [],
+            searchText: "", filterMode: .all, watchedScopes: [],
             cpuHighlightThreshold: 30, memoryHighlightThresholdMB: 1_024
         )
 

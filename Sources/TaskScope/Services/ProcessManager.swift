@@ -160,7 +160,13 @@ final class ProcessManager: ObservableObject {
     }
 
     func select(_ visibleProcesses: [AppProcess]) {
-        let selectable = visibleProcesses.filter { $0.pid != currentPID }
+        // Only identities present in the current inventory can be selected; a
+        // recalled or stale row whose process exited (or whose PID was reused)
+        // must not inflate the selection or mark an unrelated row.
+        let liveIdentities = Set(fullProcessInventory.map(\.identity))
+        let selectable = visibleProcesses.filter {
+            $0.pid != currentPID && liveIdentities.contains($0.identity)
+        }
         selectedPids = Set(selectable.map(\.pid))
         selectedIdentities = Dictionary(
             selectable.map { ($0.pid, $0.identity) },
@@ -791,11 +797,11 @@ final class ProcessManager: ObservableObject {
     ) async -> ProcessActionResult {
         guard process.pid != currentPID else {
             message = "Use Quit to close TaskScope."
-            return .rejected
+            return .refused
         }
         guard ProcessSignalGuard.isSignalablePID(process.pid) else {
             message = "PID \(process.pid) can never be signalled."
-            return .rejected
+            return .refused
         }
 
         var result: ProcessActionResult = .rejected
@@ -836,7 +842,7 @@ final class ProcessManager: ObservableObject {
             switch delivery {
             case .rejected:
                 message = "Could not send \(forceKill ? "force stop" : "stop") to \(process.name)."
-                result = .rejected
+                result = .refused
             case .noSuchProcess:
                 // It exited between the identity check and the signal; the
                 // requested outcome holds.
