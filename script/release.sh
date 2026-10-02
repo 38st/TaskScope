@@ -200,7 +200,7 @@ validate_credential_independent_inputs() {
   local tagged_build
   latest_tag="$(git -C "$ROOT_DIR" tag --list 'v*' --sort=-version:refname | head -n 1)"
   if [[ -n "$latest_tag" ]]; then
-    tagged_build="$(git -C "$ROOT_DIR" show "$latest_tag:BUILD_NUMBER" 2>/dev/null | tr -d '[:space:]')"
+    tagged_build="$(git -C "$ROOT_DIR" show "$latest_tag:BUILD_NUMBER" 2>/dev/null | tr -d '[:space:]' || true)"
     if [[ "$tagged_build" =~ ^[0-9]+$ ]] && (( APP_BUILD_NUMBER <= tagged_build )); then
       fail "BUILD_NUMBER ($APP_BUILD_NUMBER) must be greater than the value at $latest_tag ($tagged_build)."
     fi
@@ -289,7 +289,7 @@ verify_release_signature() {
   /usr/bin/grep -Fq "TeamIdentifier=$TASKSCOPE_EXPECTED_TEAM_ID" <<< "$signature_info" \
     || fail "Release verification failed: signing Team ID mismatch."
 
-  entitlements="$(/usr/bin/codesign -d --entitlements - "$bundle" 2>/dev/null || true)"
+  entitlements="$(/usr/bin/codesign -d --entitlements - --xml "$bundle" 2>/dev/null || true)"
   if /usr/bin/grep -q '<key>' <<< "$entitlements"; then
     fail "Release verification failed: the release unexpectedly contains entitlements."
   fi
@@ -323,18 +323,17 @@ fi
 
 [[ -n "${TASKSCOPE_CODE_SIGN_IDENTITY:-}" ]] \
   || fail "TASKSCOPE_CODE_SIGN_IDENTITY is required."
-[[ "$TASKSCOPE_CODE_SIGN_IDENTITY" == "Developer ID Application:"* ]] \
-  || fail "TASKSCOPE_CODE_SIGN_IDENTITY must name a Developer ID Application identity."
 [[ "${TASKSCOPE_EXPECTED_TEAM_ID:-}" =~ ^[A-Z0-9]{10}$ ]] \
   || fail "TASKSCOPE_EXPECTED_TEAM_ID must be a 10-character Apple Team ID."
 [[ -n "${TASKSCOPE_NOTARY_KEYCHAIN_PROFILE:-}" ]] \
   || fail "TASKSCOPE_NOTARY_KEYCHAIN_PROFILE is required."
 
-if ! /usr/bin/security find-identity -v -p codesigning \
-  | /usr/bin/awk -F '"' -v expected="$TASKSCOPE_CODE_SIGN_IDENTITY" \
-      '$2 == expected { found = 1 } END { exit found ? 0 : 1 }'; then
-  fail "The requested Developer ID Application identity is not available with its private key."
-fi
+# Accept a name or SHA-1, then sign by SHA-1 so duplicate names are not ambiguous.
+SIGNING_IDENTITY="$(taskscope_find_signing_identity "$TASKSCOPE_CODE_SIGN_IDENTITY")" \
+  || fail "The requested Developer ID Application identity is not available with its private key."
+[[ "${SIGNING_IDENTITY#* }" == "Developer ID Application:"* ]] \
+  || fail "TASKSCOPE_CODE_SIGN_IDENTITY must name a Developer ID Application identity."
+SIGNING_IDENTITY_HASH="${SIGNING_IDENTITY%% *}"
 
 cd "$ROOT_DIR"
 [[ -z "$(git status --porcelain --untracked-files=all)" ]] \
@@ -370,7 +369,7 @@ CHECKSUMS="$OUTPUT_DIR/SHA256SUMS"
 
 TASKSCOPE_SIGNING_STYLE=distribution \
 TASKSCOPE_BUNDLE_ID="$BUNDLE_ID" \
-TASKSCOPE_CODE_SIGN_IDENTITY="$TASKSCOPE_CODE_SIGN_IDENTITY" \
+TASKSCOPE_CODE_SIGN_IDENTITY="$SIGNING_IDENTITY_HASH" \
 TASKSCOPE_VERIFIED_BUNDLE_COPY="$WORK_APP" \
 BUILD_CONFIGURATION=release \
   "$ROOT_DIR/script/build_and_run.sh" --stage >/dev/null

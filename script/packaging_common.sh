@@ -42,6 +42,26 @@ taskscope_read_release_value() {
   printf '%s' "$value"
 }
 
+taskscope_find_signing_identity() {
+  local requested="$1"
+
+  # Prints "<SHA-1> <name>" for the first valid identity whose SHA-1 or exact
+  # name is requested. Signing by SHA-1 avoids codesign's "ambiguous" error
+  # when several valid certificates share a name, e.g. after a renewal.
+  /usr/bin/security find-identity -v -p codesigning 2>/dev/null \
+    | /usr/bin/awk -F '"' -v requested="$requested" '
+        {
+          split($1, fields, " ")
+          hash = fields[2]
+          if (length(hash) == 40 && (hash == toupper(requested) || $2 == requested)) {
+            print hash " " $2
+            found = 1
+            exit
+          }
+        }
+        END { exit found ? 0 : 1 }'
+}
+
 taskscope_process_command() {
   local pid="$1"
   local command
@@ -66,10 +86,22 @@ taskscope_process_identity() {
 taskscope_wait_for_process_identity() {
   local pid="$1"
   local attempts="${2:-20}"
+  local expected_executable="${3:-}"
   local identity
+  local command
   local attempt
 
   for ((attempt = 1; attempt <= attempts; attempt += 1)); do
+    # Right after `&` the child can still be the forked shell; when the caller
+    # names the executable, wait for the exec so the identity is the program's.
+    if [[ -n "$expected_executable" ]]; then
+      command="$(taskscope_process_command "$pid")" || command=""
+      if [[ "$command" != "$expected_executable" \
+        && "$command" != "$expected_executable "* ]]; then
+        /bin/sleep 0.05
+        continue
+      fi
+    fi
     if identity="$(taskscope_process_identity "$pid")"; then
       printf '%s' "$identity"
       return 0

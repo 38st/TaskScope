@@ -43,6 +43,35 @@ final class GlobalProtectDisconnectTests: XCTestCase {
         XCTAssertEqual(counts.reads, 10)
     }
 
+    /// A just-launched interface needs time to create its menu bar item. The
+    /// startup budget covers that, and once state is readable the normal
+    /// three-strike limit applies again.
+    func testJustLaunchedInterfaceGetsAStartupBudgetBeforeItsFirstReadableState() async {
+        let lateStart = FakeDisconnectRuntime(
+            states: Array(repeating: .unavailable, count: 8) + [.disconnected]
+        )
+        let launched = await GlobalProtectDisconnectController.disconnect(
+            using: lateStart,
+            startupUnavailableObservations: 20
+        )
+        XCTAssertEqual(launched, .disconnected)
+
+        let alreadyRunning = FakeDisconnectRuntime(
+            states: Array(repeating: .unavailable, count: 8) + [.disconnected]
+        )
+        let running = await GlobalProtectDisconnectController.disconnect(using: alreadyRunning)
+        XCTAssertNotEqual(running, .disconnected)
+
+        let lostAfterStart = FakeDisconnectRuntime(
+            states: [.disconnected, .unavailable, .unavailable, .unavailable, .disconnected]
+        )
+        let lost = await GlobalProtectDisconnectController.disconnect(
+            using: lostAfterStart,
+            startupUnavailableObservations: 20
+        )
+        XCTAssertNotEqual(lost, .disconnected, "the startup budget must not extend past the first readable state")
+    }
+
     func testIdleVPNDoesNotPressDisconnect() async {
         let runtime = FakeDisconnectRuntime(states: [.disconnected])
         let result = await GlobalProtectDisconnectController.disconnect(using: runtime)

@@ -40,6 +40,34 @@ final class ProcessOperationGateTests: XCTestCase {
         XCTAssertFalse(gate.isWorking)
     }
 
+    /// `state` shows the latest queue activity, so a read queued behind a
+    /// running mutation replaces `.runningMutation`. Logic that must not queue
+    /// behind a user mutation relies on `isMutationActive` instead.
+    func testMutationStaysActiveWhileAReadQueuesBehindIt() async {
+        let blocker = OperationGateBlocker()
+        let gate = ProcessOperationGate()
+
+        let mutation = Task {
+            await gate.run(kind: .mutation) {
+                await blocker.block()
+            }
+        }
+        await blocker.waitUntilBlocked()
+        let read = Task {
+            await gate.run(kind: .read(.processList)) {}
+        }
+        for _ in 0..<100 where gate.state != .queued {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(gate.state, .queued)
+        XCTAssertTrue(gate.isMutationActive)
+        await blocker.release()
+        _ = await mutation.value
+        _ = await read.value
+        XCTAssertFalse(gate.isMutationActive)
+    }
+
     func testEquivalentReadJoinsMatchingQueuedRead() async {
         let activeBlocker = OperationGateBlocker()
         let queuedBlocker = OperationGateBlocker()

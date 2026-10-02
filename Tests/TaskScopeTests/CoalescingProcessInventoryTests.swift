@@ -51,6 +51,41 @@ final class CoalescingProcessInventoryTests: XCTestCase {
         XCTAssertEqual(try served.get().map(\.name), ["NewExtended"], "the older basic read must not win")
     }
 
+    /// After a mutation the shared cache is invalidated, so the next observer
+    /// reads fresh state instead of a list taken before the process stopped.
+    func testInvalidationDiscardsTheCachedRead() async {
+        let upstream = ScriptedCoalescingInventory(results: [
+            .success([process(pid: 1, name: "BeforeStop")]),
+            .success([process(pid: 2, name: "AfterStop")])
+        ])
+        let inventory = CoalescingProcessInventory(upstream: upstream, maximumAge: 60)
+
+        _ = await inventory.load(fetchExtendedStats: false)
+        await inventory.invalidate()
+        let served = await inventory.load(fetchExtendedStats: false)
+
+        XCTAssertEqual(try served.get().map(\.name), ["AfterStop"])
+    }
+
+    /// A read already in flight when the cache is invalidated finished against
+    /// pre-mutation state; its result must not become the cached list.
+    func testAReadInFlightDuringInvalidationIsNotCached() async {
+        let upstream = FirstCallBlockingInventory(results: [
+            [process(pid: 1, name: "BeforeStop")],
+            [process(pid: 2, name: "AfterStop")]
+        ])
+        let inventory = CoalescingProcessInventory(upstream: upstream, maximumAge: 60)
+
+        let inFlight = Task { await inventory.load(fetchExtendedStats: false) }
+        await upstream.waitUntilFirstCallStarted()
+        await inventory.invalidate()
+        await upstream.releaseFirstCall()
+        _ = await inFlight.value
+        let served = await inventory.load(fetchExtendedStats: false)
+
+        XCTAssertEqual(try served.get().map(\.name), ["AfterStop"], "the pre-invalidation read must not be cached")
+    }
+
     func testFailuresAreNeverCached() async {
         let upstream = ScriptedCoalescingInventory(results: [
             .failure(.commandFailed("ps unavailable")),
@@ -204,5 +239,37 @@ private actor BlockingCoalescingInventory: ProcessInventoryProviding {
     func release() {
         loadContinuation?.resume()
         loadContinuation = nil
+    }
+}
+
+private actor FirstCallBlockingInventory: ProcessInventoryProviding {
+    private var results: [[AppProcess]]
+    private var calls = 0
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var firstCallContinuation: CheckedContinuation<Void, Never>?
+
+    init(results: [[AppProcess]]) {
+        self.results = results
+    }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        calls += 1
+        let result = results.isEmpty ? [] : results.removeFirst()
+        if calls == 1 {
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { firstCallContinuation = $0 }
+        }
+        return .success(result)
+    }
+
+    func waitUntilFirstCallStarted() async {
+        guard calls == 0 else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseFirstCall() {
+        firstCallContinuation?.resume()
+        firstCallContinuation = nil
     }
 }

@@ -177,7 +177,7 @@ final class ProcessManagerTests: XCTestCase {
         await inventory.waitForBlockedCall()
         reload.cancel()
         await inventory.releaseBlockedCall()
-        await reload.value
+        _ = await reload.value
 
         XCTAssertNil(manager.processLoadError, "a cancelled read must not become a persistent load error")
         XCTAssertEqual(manager.processes, [original])
@@ -387,6 +387,24 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(manager.message, "Original is no longer the same running process.")
     }
 
+    /// postgres backends and sshd sessions rewrite argv (and so `ps comm`) while
+    /// running. A title change between the list read and the verification read
+    /// is still the same process and must be stoppable.
+    func testTerminateSignalsAProcessWhoseTitleChangedSinceTheListRead() async {
+        var listed = process(pid: 42, startTime: "start-a", name: "postgres")
+        listed.command = "postgres: user db [local] idle"
+        var verified = listed
+        verified.command = "postgres: user db [local] SELECT"
+        let inventory = FakeProcessInventory(results: [.success([verified]), .success([])])
+        let signaler = FakeProcessSignaler(alivePids: [])
+        let manager = makeManager(inventory: inventory, signaler: signaler)
+
+        let result = await manager.terminate(listed)
+
+        XCTAssertEqual(result, .stopped)
+        XCTAssertEqual(signaler.sent.map(\.pid), [42])
+    }
+
     func testBatchStopSignalsTheConfirmedIdentitySnapshotOnly() async {
         let confirmed = process(pid: 42, startTime: "start-a", name: "Confirmed")
         let replacement = process(pid: 42, startTime: "start-b", name: "Replacement")
@@ -427,7 +445,9 @@ final class ProcessManagerTests: XCTestCase {
             manager.batchActionReport?.targets.map(\.name),
             ["Stopped", "Rejected", "Stale"]
         )
-        XCTAssertEqual(manager.message, "Stop requested; 1 still running, 1 no longer matched.")
+        // The rejected signal is reported as rejected, not as a process that is
+        // still running after a delivered stop.
+        XCTAssertEqual(manager.message, "Stop requested; 0 still running, 1 signal rejected, 1 no longer matched.")
     }
 
     func testBatchStopReportsTaskScopeSelfTargetInsteadOfOmittingIt() async {
@@ -514,7 +534,7 @@ final class ProcessManagerTests: XCTestCase {
         queuedRefresh.cancel()
         await inventory.finishFirstCall()
         _ = await activeRefresh.value
-        await queuedRefresh.value
+        _ = await queuedRefresh.value
 
         let finalLoadCount = await inventory.currentLoadCount()
         XCTAssertEqual(finalLoadCount, 1)
@@ -544,7 +564,7 @@ final class ProcessManagerTests: XCTestCase {
         await inventory.finishFirstCall()
         _ = await activeRefresh.value
         _ = await queuedMutation.value
-        await queuedListRefresh.value
+        _ = await queuedListRefresh.value
 
         XCTAssertEqual(signaler.sent.map(\.signal), [SIGTERM])
         let fetchOrder = await inventory.fetchOrder()
@@ -716,6 +736,28 @@ final class ProcessManagerTests: XCTestCase {
 
         XCTAssertEqual(lifecycle.calls, ["exists"])
         XCTAssertTrue(manager.message.contains("app bundle is missing"))
+    }
+
+    /// Turning Keep Off off routes through Open. With the app bundle gone (an
+    /// uninstall or reinstall in progress) it must still clear the persistent
+    /// overrides and the Keep Off intent, while reporting that nothing opened.
+    func testMissingAppBundleStillClearsKeepOffOverrides() async {
+        let lifecycle = FakeLifecycleService()
+        lifecycle.appExists = false
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([])]),
+            lifecycle: lifecycle
+        )
+        var keptOff = true
+        manager.isPresetKeptOffProvider = { _ in keptOff }
+        manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+
+        let result = await manager.openApp(lifecyclePreset())
+
+        XCTAssertEqual(result.status, .failed)
+        XCTAssertEqual(lifecycle.calls, ["exists", "agents.enable"])
+        XCTAssertFalse(keptOff)
+        XCTAssertTrue(result.message.contains("no longer kept off"), result.message)
     }
 
     func testDaemonFailurePreventsAgentAndAppLaunch() async {
@@ -1024,6 +1066,29 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertFalse(lifecycle.calls.contains("vpn.disconnect"))
         XCTAssertFalse(lifecycle.calls.contains("agents.disable"))
         XCTAssertFalse(lifecycle.calls.contains("daemon.disable:true"))
+    }
+
+    /// Quit App, Quit Helpers, URL Close, and Shortcuts Stop do not disconnect,
+    /// so they must leave the session VPN service job (`pangps`) loaded rather
+    /// than drop a connected tunnel underneath the client.
+    func testNonDisconnectingStopsLeaveTheGlobalProtectVPNServiceLoaded() async {
+        for scope in ["app", "helpers", "all"] {
+            let lifecycle = FakeLifecycleService()
+            let manager = makeManager(
+                inventory: FakeProcessInventory(results: [.success([]), .success([])]),
+                lifecycle: lifecycle
+            )
+            switch scope {
+            case "app": _ = await manager.quitMainApp(.globalProtect)
+            case "helpers": _ = await manager.quitHelpers(.globalProtect)
+            default: _ = await manager.quitAllKillable(.globalProtect)
+            }
+            XCTAssertEqual(
+                lifecycle.unloadedPresets.first?.lifecycleUserLaunchAgentJobs.map(\.label),
+                ["com.paloaltonetworks.gp.pangpa"],
+                "scope \(scope) must not unload the VPN service job"
+            )
+        }
     }
 
     func testConfirmedDisconnectRecoveryStopsServicesAndConsumesFailure() async throws {
@@ -1682,6 +1747,7 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
         for preset: WatchedAppPreset,
         preservingPIDs: Set<Int32>
     ) async -> LifecycleBatchResult {
+        unloadedPresets.append(preset)
         preservedPIDs.append(preservingPIDs)
         calls.append("agents.unload")
         return agentUnloadResult

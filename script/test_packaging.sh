@@ -24,7 +24,9 @@ source "$COMMON_SCRIPT"
 (
   /bin/sleep 30 &
   identity_test_pid="$!"
-  identity_test_value="$(taskscope_wait_for_process_identity "$identity_test_pid")"
+  identity_test_value="$(
+    taskscope_wait_for_process_identity "$identity_test_pid" 20 /bin/sleep
+  )"
   identity_test_executable="$(taskscope_process_executable_path "$identity_test_pid")"
   trap 'taskscope_signal_process_if_identity_matches KILL "$identity_test_pid" "$identity_test_value" "$identity_test_executable" >/dev/null 2>&1 || true' EXIT
 
@@ -53,7 +55,9 @@ source "$COMMON_SCRIPT"
 
   bash -c 'exec -a "$1" /bin/sleep 30' taskscope-forged-argv "$forged_executable" &
   forged_pid="$!"
-  forged_identity="$(taskscope_wait_for_process_identity "$forged_pid")"
+  forged_identity="$(
+    taskscope_wait_for_process_identity "$forged_pid" 20 "$forged_executable"
+  )"
   actual_executable="$(taskscope_process_executable_path "$forged_pid")"
   trap 'taskscope_signal_process_if_identity_matches KILL "$forged_pid" "$forged_identity" "$actual_executable" >/dev/null 2>&1 || true' EXIT
 
@@ -89,10 +93,14 @@ source "$COMMON_SCRIPT"
   expected_executable="$TEST_DIR/Genuine/TaskScope"
   mkdir -p "$(dirname "$expected_executable")"
   cp /bin/sleep "$expected_executable"
+  # A copied platform binary is killed at launch; an ad-hoc signature runs.
+  /usr/bin/codesign --force --sign - "$expected_executable" >/dev/null 2>&1
 
   "$expected_executable" 30 &
   expected_pid="$!"
-  expected_identity="$(taskscope_wait_for_process_identity "$expected_pid")"
+  expected_identity="$(
+    taskscope_wait_for_process_identity "$expected_pid" 20 "$expected_executable"
+  )"
   trap 'taskscope_signal_process_if_identity_matches KILL "$expected_pid" "$expected_identity" "$expected_executable" >/dev/null 2>&1 || true' EXIT
 
   taskscope_stop_processes_for_executable "$expected_executable"
@@ -191,9 +199,17 @@ if [[ -e "$SWIFT_MARKER" ]]; then
   exit 1
 fi
 
+RELEASE_PREFLIGHT_OUTPUT="$TEST_DIR/release-preflight.out"
 if TASKSCOPE_BUNDLE_ID='com.local.TaskScope' \
-  "$RELEASE_SCRIPT" --preflight >/dev/null 2>&1; then
+  "$RELEASE_SCRIPT" --preflight >"$RELEASE_PREFLIGHT_OUTPUT" 2>&1; then
   echo "Release preflight accepted the development bundle identifier." >&2
+  exit 1
+fi
+if ! /usr/bin/grep -Fq \
+  "Public releases cannot use the development bundle identifier 'com.local.TaskScope'." \
+  "$RELEASE_PREFLIGHT_OUTPUT"; then
+  echo "Release preflight did not reject the development bundle identifier." >&2
+  cat "$RELEASE_PREFLIGHT_OUTPUT" >&2
   exit 1
 fi
 # Lifecycle evidence cases use a disposable repository, never invented passes

@@ -45,6 +45,13 @@ final class ProcessOperationGate: ObservableObject {
     private var waiters: [Waiter] = []
     private var joiners: [Joiner] = []
 
+    /// True while a mutation holds the gate. Unlike `state`, which shows the most
+    /// recent queue activity, this is not overwritten when another caller queues
+    /// or joins behind the running mutation.
+    var isMutationActive: Bool {
+        activeOperation?.kind.isMutation == true
+    }
+
     @discardableResult
     func run(
         kind: Kind,

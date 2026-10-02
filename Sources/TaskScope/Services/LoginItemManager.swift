@@ -78,8 +78,17 @@ final class LoginItemManager: ObservableObject {
         delayedRefreshTask?.cancel()
         do {
             if enabled {
-                if service.state == .notRegistered {
+                switch service.state {
+                case .notRegistered, .notFound:
+                    // `.notFound` is also reported for a stale registration of a
+                    // moved or replaced bundle; registering this bundle repairs it.
                     try service.register()
+                case .requiresApproval:
+                    // Already registered; only the user can approve it, so take
+                    // them to the setting instead of silently doing nothing.
+                    service.openSystemSettings()
+                case .enabled:
+                    break
                 }
             } else if service.state != .notRegistered {
                 // `.notFound` still gets an unregister attempt: a stale

@@ -73,9 +73,11 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
         // An absent plist with the job not loaded means there was nothing to unload,
         // so the stop succeeded. `.missing` is now reserved for the bootstrap paths,
         // where an absent plist really does block the requested action.
+        // Only the interface agent is in scope: a stop that does not disconnect
+        // leaves the session VPN service job alone.
         XCTAssertEqual(
             manager.lifecycleReport?.jobs.map(\.state),
-            [.alreadyUnloaded, .alreadyUnloaded]
+            [.alreadyUnloaded]
         )
         XCTAssertTrue(manager.lifecycleReport?.jobs.allSatisfy(\.succeeded) ?? false)
 

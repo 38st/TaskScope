@@ -43,7 +43,9 @@ The later [automatic Quit All tests](Evidence/GlobalProtect/2026-09-28-quit-all.
 preserved public DNS/HTTPS through two connected-to-off cycles on that Mac.
 
 Quit App, Quit Helpers, URL Close, and Shortcuts Stop retain their existing
-user-process scope. Background Keep Off
+user-process scope. They do not disconnect, so for GlobalProtect they unload only
+the interface agent (`pangpa`) and leave the login-session VPN service (`pangps`)
+loaded; stopping it under a connected tunnel can leave DNS unusable. Background Keep Off
 enforcement never requests privileges; if the system service returns, its
 running state and **Apply Keep Off…** remain visible. Existing Keep Off
 preferences from older builds do not authorize a background system stop: choose
@@ -161,11 +163,15 @@ should be assumed until a release explicitly documents and tests one.
 To uninstall a local build:
 
 1. Turn off **Keep GlobalProtect Off** on the GlobalProtect preset (or choose
-   **Open**). This clears the persistent user and system launchd overrides; deleting
-   TaskScope's preferences does not clear them. If the app is
-   already gone, run `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa`
-   and `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`, plus
-   `sudo launchctl enable system/com.paloaltonetworks.gp.pangpsd`.
+   **Open**). This clears the persistent user launchd overrides, and the system
+   override on installations that use the system daemon; deleting TaskScope's
+   preferences does not clear them. This works even if GlobalProtect itself was
+   already removed. On installations with the login-session agent, Open
+   deliberately leaves the unused system daemon (`pangpsd`) disabled; clear it
+   with `sudo launchctl enable system/com.paloaltonetworks.gp.pangpsd`. If
+   TaskScope is already gone, also run
+   `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa` and
+   `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`.
 2. Turn off **Launch at Login** in TaskScope Settings.
 3. Quit TaskScope and move `TaskScope.app` to the Trash.
 4. Remove TaskScope from Accessibility and Notifications in System Settings if

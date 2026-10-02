@@ -20,6 +20,9 @@ actor CoalescingProcessInventory: ProcessInventoryProviding {
     private var cached: CachedResult?
     private var basicTask: Task<Result<[AppProcess], ProcessInventoryError>, Never>?
     private var extendedTask: Task<Result<[AppProcess], ProcessInventoryError>, Never>?
+    /// Advanced by `invalidate()`. A read that started under an older
+    /// generation is neither cached nor joined by later callers.
+    private var generation = 0
 
     init(
         upstream: any ProcessInventoryProviding = SystemProcessInventory(),
@@ -43,13 +46,14 @@ actor CoalescingProcessInventory: ProcessInventoryProviding {
                 return await extendedTask.value
             }
             let startedAt = now()
+            let startedGeneration = generation
             let task = Task { [upstream] in
                 await upstream.load(fetchExtendedStats: true)
             }
             extendedTask = task
             let result = await task.value
-            extendedTask = nil
-            store(result, startedAt: startedAt, includesExtendedStats: true)
+            if extendedTask == task { extendedTask = nil }
+            store(result, startedAt: startedAt, generation: startedGeneration, includesExtendedStats: true)
             return result
         }
 
@@ -60,21 +64,34 @@ actor CoalescingProcessInventory: ProcessInventoryProviding {
             return await basicTask.value
         }
         let startedAt = now()
+        let startedGeneration = generation
         let task = Task { [upstream] in
             await upstream.load(fetchExtendedStats: false)
         }
         basicTask = task
         let result = await task.value
-        basicTask = nil
-        store(result, startedAt: startedAt, includesExtendedStats: false)
+        if basicTask == task { basicTask = nil }
+        store(result, startedAt: startedAt, generation: startedGeneration, includesExtendedStats: false)
         return result
+    }
+
+    /// Discards the cached read and detaches in-flight reads after a mutation,
+    /// so an observer cannot be served a list taken before a process was
+    /// stopped or started.
+    func invalidate() {
+        generation &+= 1
+        cached = nil
+        basicTask = nil
+        extendedTask = nil
     }
 
     private func store(
         _ result: Result<[AppProcess], ProcessInventoryError>,
         startedAt: Date,
+        generation startedGeneration: Int,
         includesExtendedStats: Bool
     ) {
+        guard startedGeneration == generation else { return }
         guard case .success(let processes) = result else { return }
         if let cached, cached.startedAt > startedAt { return }
         cached = CachedResult(

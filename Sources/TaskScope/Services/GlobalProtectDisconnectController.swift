@@ -40,19 +40,27 @@ protocol GlobalProtectDisconnectRuntime: Sendable {
 /// Never shuts down the service on a timeout, failed click, or an unknown state.
 /// Consecutive disconnected observations give the vendor time to restore DNS.
 enum GlobalProtectDisconnectController {
+    /// `startupUnavailableObservations` extends the unreadable-state budget
+    /// until the first readable observation, for an interface that was just
+    /// launched and has not yet created its menu bar item.
     static func disconnect(
         using runtime: any GlobalProtectDisconnectRuntime,
-        observationLimit: Int = 60
+        observationLimit: Int = 60,
+        startupUnavailableObservations: Int = 0
     ) async -> GlobalProtectDisconnectResult {
         var requested = false
         var disconnectedObservations = 0
         var unavailableObservations = 0
+        var hasReadState = false
         for _ in 0..<observationLimit {
             guard !Task.isCancelled else {
                 return .failed("GlobalProtect shutdown was cancelled before its services were stopped.")
             }
             let state = await runtime.connectionState()
-            if state != .unavailable { unavailableObservations = 0 }
+            if state != .unavailable {
+                unavailableObservations = 0
+                hasReadState = true
+            }
             switch state {
             case .disconnected:
                 disconnectedObservations += 1
@@ -72,7 +80,8 @@ enum GlobalProtectDisconnectController {
                 unavailableObservations += 1
                 // A menu can disappear during a focus change. Give the runtime
                 // a bounded chance to reopen it; unreadable state is never idle.
-                if unavailableObservations >= 3 {
+                let allowed = hasReadState ? 3 : 3 + max(0, startupUnavailableObservations)
+                if unavailableObservations >= allowed {
                     return .failed("TaskScope could not verify GlobalProtect's connection state. Its services were left running.")
                 }
             }

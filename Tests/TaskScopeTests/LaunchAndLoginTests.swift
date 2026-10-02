@@ -244,6 +244,19 @@ final class LoginItemManagerTests: XCTestCase {
         XCTAssertTrue(failingManager.message?.contains("The system refused the change.") == true)
     }
 
+    /// The switch shows Off for these states, so turning it on must act:
+    /// register an unavailable registration, or open approval settings.
+    func testEnablingFromUnavailableOrPendingApprovalActs() {
+        let unavailable = FakeLoginItemService(state: .notFound)
+        LoginItemManager(service: unavailable).setEnabled(true)
+        XCTAssertEqual(unavailable.registerCount, 1)
+
+        let pending = FakeLoginItemService(state: .requiresApproval)
+        LoginItemManager(service: pending).setEnabled(true)
+        XCTAssertEqual(pending.registerCount, 0)
+        XCTAssertEqual(pending.openSettingsCount, 1)
+    }
+
     func testActivationRefreshUpdatesLoginAndNotificationState() async {
         var events: [String] = []
 

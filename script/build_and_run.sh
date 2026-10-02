@@ -33,27 +33,33 @@ APP_ICON="$APP_RESOURCES/AppIcon.icns"
 VERSION_FILE="$ROOT_DIR/VERSION"
 BUILD_NUMBER_FILE="$ROOT_DIR/BUILD_NUMBER"
 
+# Prints "<SHA-1> <name>" for the signing identity, or "-" for ad-hoc signing.
+# TASKSCOPE_CODE_SIGN_IDENTITY may be an identity name or its SHA-1.
 resolve_code_sign_identity() {
-  if [[ -n "${TASKSCOPE_CODE_SIGN_IDENTITY:-}" ]]; then
-    printf '%s' "$TASKSCOPE_CODE_SIGN_IDENTITY"
+  local requested="${TASKSCOPE_CODE_SIGN_IDENTITY:-}"
+
+  if [[ -z "$requested" ]]; then
+    requested="$(
+      /usr/bin/security find-identity -v -p codesigning 2>/dev/null \
+        | /usr/bin/awk -F '"' '/Apple Development:/ { print $2; exit }'
+    )"
+  fi
+  if [[ -z "$requested" || "$requested" == "-" ]]; then
+    printf '%s' "-"
     return
   fi
 
-  local development_identity
-  development_identity="$(
-    /usr/bin/security find-identity -v -p codesigning 2>/dev/null \
-      | /usr/bin/awk -F '"' '/Apple Development:/ { print $2; exit }'
-  )"
-  if [[ -n "$development_identity" ]]; then
-    printf '%s' "$development_identity"
-  else
-    printf '%s' "-"
-  fi
+  taskscope_find_signing_identity "$requested" || {
+    echo "Code signing identity is not available with its private key: $requested" >&2
+    return 1
+  }
 }
 
 APP_VERSION="$(taskscope_read_release_value "$VERSION_FILE" "version")"
 APP_BUILD_NUMBER="$(taskscope_read_release_value "$BUILD_NUMBER_FILE" "build number")"
-CODE_SIGN_IDENTITY="$(resolve_code_sign_identity)"
+CODE_SIGN_RECORD="$(resolve_code_sign_identity)"
+CODE_SIGN_IDENTITY="${CODE_SIGN_RECORD%% *}"
+CODE_SIGN_IDENTITY_NAME="${CODE_SIGN_RECORD#* }"
 SIGNING_STYLE="${TASKSCOPE_SIGNING_STYLE:-development}"
 
 if [[ ! "$APP_VERSION" =~ ^[0-9]+(\.[0-9]+){1,2}$ ]]; then
@@ -90,7 +96,7 @@ case "$SIGNING_STYLE" in
   development)
     ;;
   distribution)
-    if [[ "$CODE_SIGN_IDENTITY" != "Developer ID Application:"* ]]; then
+    if [[ "$CODE_SIGN_IDENTITY_NAME" != "Developer ID Application:"* ]]; then
       echo "Distribution packaging requires an explicit Developer ID Application identity." >&2
       exit 1
     fi
@@ -274,15 +280,6 @@ verify_startup_readiness() (
 
   readiness_home="$(mktemp -d "${TMPDIR:-/tmp}/taskscope-startup.XXXXXX")"
 
-  CFFIXED_USER_HOME="$readiness_home" \
-    "$executable" --automation --verify-startup >/dev/null 2>&1 &
-  verify_pid="$!"
-  verify_pid_identity="$(taskscope_wait_for_process_identity "$verify_pid")" || {
-    wait "$verify_pid" 2>/dev/null || true
-    echo "Bundle verification failed: could not capture startup process identity." >&2
-    return 1
-  }
-
   cleanup_readiness_process() {
     if [[ -n "$verify_pid" ]] \
       && taskscope_process_matches_identity "$verify_pid" "$verify_pid_identity"; then
@@ -309,6 +306,18 @@ verify_startup_readiness() (
     unregister_staged_app
   }
   trap cleanup_readiness_process EXIT
+
+  CFFIXED_USER_HOME="$readiness_home" \
+    "$executable" --automation --verify-startup >/dev/null 2>&1 &
+  verify_pid="$!"
+  verify_pid_identity="$(
+    taskscope_wait_for_process_identity "$verify_pid" 40 "$executable"
+  )" || {
+    # Let cleanup stop it anyway; signalling re-verifies the kernel executable.
+    verify_pid_identity="$(taskscope_process_identity "$verify_pid" || true)"
+    echo "Bundle verification failed: could not capture startup process identity." >&2
+    return 1
+  }
 
   for attempt in {1..50}; do
     if ! taskscope_process_matches_identity "$verify_pid" "$verify_pid_identity"; then
@@ -432,11 +441,20 @@ fi
 /usr/bin/plutil -extract constValueProtocols json -o "$APP_INTENTS_PROTOCOLS" \
   "$APP_INTENTS_PROTOCOL_SOURCE"
 
+# SwiftPM links with the deployment target as the binary's SDK version, which
+# opts the app into old-SDK compatibility behavior. Record the real SDK.
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+LINKER_PLATFORM_FLAGS=(
+  -Xlinker -platform_version -Xlinker macos
+  -Xlinker "$MIN_SYSTEM_VERSION" -Xlinker "$SDK_VERSION"
+)
+
 if [[ "$BUILD_CONFIGURATION" == "debug" ]]; then
-  swift build -c debug --disable-index-store
+  swift build -c debug --disable-index-store "${LINKER_PLATFORM_FLAGS[@]}"
 fi
 
 swift build -c "$METADATA_BUILD_CONFIGURATION" --disable-index-store \
+  "${LINKER_PLATFORM_FLAGS[@]}" \
   -Xswiftc -emit-const-values \
   -Xswiftc -Xfrontend \
   -Xswiftc -const-gather-protocols-file \
@@ -508,6 +526,15 @@ else
 fi
 verify_bundle "$STAGING_BUNDLE"
 
+case "$MODE" in
+  run|--debug|debug|--logs|logs|--telemetry|telemetry)
+    # Stop running copies before the swap: afterwards their executable is the
+    # deleted backup, which the kernel-path check can no longer match, and the
+    # relaunch below would leave two instances running.
+    stop_staged_app_instances
+    ;;
+esac
+
 if [[ -d "$APP_BUNDLE" ]]; then
   mv "$APP_BUNDLE" "$OUTPUT_BACKUP"
 fi
@@ -562,20 +589,16 @@ case "$MODE" in
     echo "$APP_BUNDLE"
     ;;
   run)
-    stop_staged_app_instances
     open_app
     ;;
   --debug|debug)
-    stop_staged_app_instances
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)
-    stop_staged_app_instances
     open_app
     /usr/bin/log stream --info --style compact --predicate "process == \"$APP_NAME\""
     ;;
   --telemetry|telemetry)
-    stop_staged_app_instances
     open_app
     /usr/bin/log stream --info --style compact --predicate "subsystem == \"$BUNDLE_ID\""
     ;;

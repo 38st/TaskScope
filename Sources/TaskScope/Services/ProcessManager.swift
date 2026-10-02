@@ -76,6 +76,7 @@ final class ProcessManager: ObservableObject {
         }
     }
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
+    private var appliedWatchedStatusReads = 0
     private var extendedMetricsConsumers = 0
     private let now: () -> Date
     private var successfulInventoryReads: UInt64 = 0
@@ -241,16 +242,20 @@ final class ProcessManager: ObservableObject {
     /// equivalent read it joined).
     @discardableResult
     func refreshWatchedStatus(showMessage: Bool = true) async -> Bool {
-        let readsBefore = successfulInventoryReads
+        // Counts only watched-status reads that applied snapshots. The general
+        // read counter also moves for reads made inside a queued mutation, which
+        // would report a refresh that this call never delivered.
+        let appliedBefore = appliedWatchedStatusReads
         await runAction(kind: .read(.watchedStatus)) {
             switch await currentSnapshots() {
             case .success(let watched):
                 apply(watched)
+                appliedWatchedStatusReads &+= 1
             case .failure(let error):
                 recordInventoryFailure(error)
             }
         }
-        let refreshed = successfulInventoryReads != readsBefore
+        let refreshed = appliedWatchedStatusReads != appliedBefore
         // An equivalent refresh may have been coalesced with a silent polling
         // refresh. Publish the explicit caller's message after the joined read has
         // completed so automation never returns a stale status string.
@@ -264,7 +269,10 @@ final class ProcessManager: ObservableObject {
         return refreshed
     }
 
-    func loadProcessList(showMessage: Bool = true) async {
+    /// Returns whether this call performed the read. `false` means it joined an
+    /// equivalent read already in flight (or was cancelled while queued).
+    @discardableResult
+    func loadProcessList(showMessage: Bool = true) async -> Bool {
         await runAction(kind: .read(.processList)) {
             switch await processInventory.load(fetchExtendedStats: fetchExtendedStats) {
             case .success(let inventory):
@@ -306,7 +314,18 @@ final class ProcessManager: ObservableObject {
                 }
             }
             guard lifecycle.appBundleExists(at: preset.appPath) else {
-                message = "Could not open \(preset.displayName): app bundle is missing at \(preset.appPath)."
+                // Turning Keep Off off (or Open) must still remove the launchd
+                // overrides when the app is gone, for example mid-reinstall or
+                // before uninstalling, or a reinstalled client cannot start.
+                if isPresetKeptOffProvider?(preset) == true {
+                    let allowed = await clearKeepOffOverrides(preset)
+                    diagnosticJobs += allowed.jobs
+                    message = allowed.result.succeeded
+                        ? "\(preset.displayName) is no longer kept off, but its app bundle is missing at \(preset.appPath); nothing was opened."
+                        : allowed.result.message
+                } else {
+                    message = "Could not open \(preset.displayName): app bundle is missing at \(preset.appPath)."
+                }
                 diagnosticReason = .appBundleMissing
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
@@ -326,12 +345,7 @@ final class ProcessManager: ObservableObject {
                beforeServices.isMainRunning,
                beforeServices.protectedRunning.isEmpty,
                beforeServices.unprivilegedProtectedRunning.isEmpty {
-                var uiOnly = preset
-                uiOnly.userLaunchAgentJobs = [WatchedAppPreset.globalProtectUserLaunchAgentJobs[0]]
-                // Do not match the legacy built-in payload, which expands to
-                // both user jobs through lifecycleUserLaunchAgentJobs.
-                uiOnly.systemLaunchDaemonJobs = []
-                let unloadedUI = await lifecycle.unloadUserLaunchAgents(for: uiOnly)
+                let unloadedUI = await lifecycle.unloadUserLaunchAgents(for: preset.globalProtectInterfaceOnly)
                 diagnosticJobs += unloadedUI.jobs
                 guard unloadedUI.succeeded else {
                     lifecycleReport = LifecycleReport(title: "GlobalProtect UI Recovery", jobs: unloadedUI.jobs)
@@ -647,41 +661,46 @@ final class ProcessManager: ObservableObject {
         )
         await runAction(kind: .mutation) {
             if preset.hasCanonicalGlobalProtectIdentity { globalProtectDisconnectFailureID = nil }
-            var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
-            var diagnosticJobs: [LifecycleJobResult] = []
-            defer {
-                if commandResult.status == .failed {
-                    lifecycleDiagnostics.record(
-                        presetID: preset.id, action: .allowToRun,
-                        backgroundEnforcement: false, reason: diagnosticReason,
-                        jobs: diagnosticJobs, at: now()
-                    )
-                }
-            }
-            let systemEnable = preset.hasCanonicalGlobalProtectIdentity
-                ? await lifecycle.enableSystemLaunchDaemons(for: preset) : .notNeeded
-            // Do not start restoring user jobs after a cancelled system request.
-            let userEnable = systemEnable.succeeded
-                ? await lifecycle.enableUserLaunchAgents(for: preset) : .notNeeded
-            let enableResult = LifecycleBatchResult(jobs: systemEnable.jobs + userEnable.jobs)
-            diagnosticJobs += enableResult.jobs
-            lifecycleReport = enableResult.jobs.isEmpty
-                ? nil
-                : LifecycleReport(
-                    title: "\(preset.displayName) Keep Off",
-                    jobs: enableResult.jobs
+            let allowed = await clearKeepOffOverrides(preset)
+            commandResult = allowed.result
+            if commandResult.status == .failed {
+                lifecycleDiagnostics.record(
+                    presetID: preset.id, action: .allowToRun,
+                    backgroundEnforcement: false, reason: allowed.reason,
+                    jobs: allowed.jobs, at: now()
                 )
-            guard enableResult.succeeded else {
-                message = "Keep Off remains requested: \(enableResult.failureSummary ?? "service could not be enabled")."
-                diagnosticReason = systemEnable.succeeded ? .userLaunchAgentFailed : .systemServiceFailed
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-                return
             }
-            setPresetKeptOffHandler?(preset, false)
-            message = "\(preset.displayName) is allowed to run. Nothing was started."
-            commandResult = TaskScopeCommandResult(status: .completed, message: message)
         }
         return commandResult
+    }
+
+    /// The body of Allow to Run, for callers already holding the mutation gate.
+    private func clearKeepOffOverrides(
+        _ preset: WatchedAppPreset
+    ) async -> (result: TaskScopeCommandResult, reason: LifecycleDiagnosticFailure.Reason, jobs: [LifecycleJobResult]) {
+        let systemEnable = preset.hasCanonicalGlobalProtectIdentity
+            ? await lifecycle.enableSystemLaunchDaemons(for: preset) : .notNeeded
+        // Do not start restoring user jobs after a cancelled system request.
+        let userEnable = systemEnable.succeeded
+            ? await lifecycle.enableUserLaunchAgents(for: preset) : .notNeeded
+        let enableResult = LifecycleBatchResult(jobs: systemEnable.jobs + userEnable.jobs)
+        lifecycleReport = enableResult.jobs.isEmpty
+            ? nil
+            : LifecycleReport(
+                title: "\(preset.displayName) Keep Off",
+                jobs: enableResult.jobs
+            )
+        guard enableResult.succeeded else {
+            message = "Keep Off remains requested: \(enableResult.failureSummary ?? "service could not be enabled")."
+            return (
+                TaskScopeCommandResult(status: .failed, message: message),
+                systemEnable.succeeded ? .userLaunchAgentFailed : .systemServiceFailed,
+                enableResult.jobs
+            )
+        }
+        setPresetKeptOffHandler?(preset, false)
+        message = "\(preset.displayName) is allowed to run. Nothing was started."
+        return (TaskScopeCommandResult(status: .completed, message: message), .incomplete, enableResult.jobs)
     }
 
     /// Enforces persisted Keep Off intent after startup and if a user-facing job
@@ -695,7 +714,7 @@ final class ProcessManager: ObservableObject {
     /// that had already decided before the mutation started.
     func enforceKeptOffPresets(force: Bool = false) async {
         for preset in keptOffPresetsProvider?() ?? [] {
-            guard operationGate.state != .runningMutation else { continue }
+            guard !operationGate.isMutationActive else { continue }
             if !force {
                 guard case .success(let current) = await currentSnapshot(for: preset),
                       current.hasKeepOffTargets else {
@@ -749,14 +768,20 @@ final class ProcessManager: ObservableObject {
                 result = scope.inventoryFailure(for: preset)
                 return
             }
+            // These scopes never disconnect the VPN, so for GlobalProtect they
+            // leave its session VPN service loaded; Keep Off/Quit All stops it
+            // only after a verified disconnect.
+            let agentPreset = preset.hasSupportedGlobalProtectIdentity
+                ? preset.globalProtectInterfaceOnly
+                : preset
             let agents: LifecycleBatchResult
             if scope == .helpers {
                 // Unloading an agent running the main binary would also quit the app.
                 agents = await lifecycle.unloadUserLaunchAgents(
-                    for: preset, preservingPIDs: before.mainProcessPIDs
+                    for: agentPreset, preservingPIDs: before.mainProcessPIDs
                 )
             } else {
-                agents = await lifecycle.unloadUserLaunchAgents(for: preset)
+                agents = await lifecycle.unloadUserLaunchAgents(for: agentPreset)
             }
             diagnosticJobs = agents.jobs
             lifecycleReport = agents.jobs.isEmpty
@@ -969,7 +994,11 @@ final class ProcessManager: ObservableObject {
         guard extendedMetricsConsumers == 1 else { return }
         fetchExtendedStats = true
         if hasLoadedProcessList {
-            await loadProcessList(showMessage: false)
+            // Joining a basic list read already in flight would leave the
+            // extended columns empty until a later refresh, so read once more.
+            if await !loadProcessList(showMessage: false), fetchExtendedStats {
+                await loadProcessList(showMessage: false)
+            }
         }
     }
 
@@ -1051,7 +1080,14 @@ final class ProcessManager: ObservableObject {
         kind: ProcessOperationGate.Kind,
         _ operation: () async -> Void
     ) async -> Bool {
-        await operationGate.run(kind: kind, operation)
+        await operationGate.run(kind: kind) {
+            await operation()
+            if kind == .mutation, let shared = processInventory as? CoalescingProcessInventory {
+                // Reads queued behind this mutation, and observers outside the
+                // gate, must not be served a list cached before it ran.
+                await shared.invalidate()
+            }
+        }
     }
 
     var watchedAppsProvider: (() -> [WatchedAppPreset])?

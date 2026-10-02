@@ -56,6 +56,19 @@ struct WatchedAppPreset: Codable, Identifiable, Equatable, Hashable, Sendable {
         return userLaunchAgentJobs
     }
 
+    /// The built-in preset reduced to its interface agent (`pangpa`). Actions
+    /// that do not disconnect first use it, because unloading the session
+    /// `pangps` job stops PanGPS and drops a connected tunnel without the
+    /// vendor's disconnect, which can leave DNS unusable.
+    var globalProtectInterfaceOnly: WatchedAppPreset {
+        var value = self
+        value.userLaunchAgentJobs = [Self.globalProtectUserLaunchAgentJobs[0]]
+        // Clearing the daemon jobs also stops the legacy-payload match that
+        // would expand back to both user jobs in lifecycleUserLaunchAgentJobs.
+        value.systemLaunchDaemonJobs = []
+        return value
+    }
+
     var lifecycleSystemLaunchDaemonJobs: [SystemLaunchDaemonJob] {
         if hasSupportedGlobalProtectIdentity {
             return Self.globalProtectSystemLaunchDaemonJobs

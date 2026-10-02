@@ -201,12 +201,17 @@ struct ProcessBatchTerminator {
         } else if stopped == signalTargets.count, staleCount == 0, selfTargets.isEmpty {
             message = "Stopped \(stopped) of \(requestedIdentities.count) selected."
         } else {
-            let stillRunning = signalTargets.count - stopped
-            if selfTargets.isEmpty {
-                message = "Stop requested; \(stillRunning) still running, \(staleCount) no longer matched."
-            } else {
-                message = "Stop requested; \(stillRunning) still running, \(selfTargets.count) TaskScope target rejected, \(staleCount) no longer matched."
+            let stillRunning = targetResults.filter { $0.state == .requestedStillRunning }.count
+            let rejected = targetResults.filter { $0.state == .signalRejected }.count
+            var parts = ["\(stillRunning) still running"]
+            if rejected > 0 {
+                parts.append("\(rejected) signal\(rejected == 1 ? "" : "s") rejected")
             }
+            if !selfTargets.isEmpty {
+                parts.append("\(selfTargets.count) TaskScope target rejected")
+            }
+            parts.append("\(staleCount) no longer matched")
+            message = "Stop requested; " + parts.joined(separator: ", ") + "."
         }
 
         return ProcessBatchTerminationOutcome(

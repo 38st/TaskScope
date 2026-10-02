@@ -32,3 +32,5 @@ DerivedData/
 *.mobileprovision
 *.p12
 *.pfx
+*.p8
+*.provisionprofile

@@ -13,36 +13,42 @@ enum GlobalProtectAccessibilityDisconnect {
         let snapshot = WatchedSnapshotBuilder(excludedPID: getpid()).snapshot(for: .globalProtect, in: processes)
         guard snapshot.hasAny else { return .disconnected }
 
-        // UI control is confined to the fixed vendor executable, never a name
-        // supplied by a preset. A running service without a UI gets its UI opened.
-        let pid = await applicationPID(openIfNeeded: true)
-        guard let pid, ProcessListReader.executablePath(for: pid) == executable else {
-            return .failed("GlobalProtect's interface could not be opened to disconnect. Its services were left running.")
-        }
+        // Check permission before touching the vendor app, so a denied request
+        // never leaves an interface running that was not running before.
         let trusted = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
         guard trusted else {
             return .failed("Allow TaskScope in System Settings → Privacy & Security → Accessibility, then choose Quit All again. This lets TaskScope disconnect the VPN for you. Its services were left running.")
         }
+        // UI control is confined to the fixed vendor executable, never a name
+        // supplied by a preset. A running service without a UI gets its UI opened.
+        let application = await applicationPID(openIfNeeded: true)
+        guard let pid = application?.pid, ProcessListReader.executablePath(for: pid) == executable else {
+            return .failed("GlobalProtect's interface could not be opened to disconnect. Its services were left running.")
+        }
         return await GlobalProtectDisconnectController.disconnect(
-            using: GlobalProtectAccessibilityRuntime(pid: pid)
+            using: GlobalProtectAccessibilityRuntime(pid: pid),
+            startupUnavailableObservations: application?.launched == true ? 20 : 0
         )
     }
 
     @MainActor
-    private static func applicationPID(openIfNeeded: Bool) async -> Int32? {
+    private static func applicationPID(openIfNeeded: Bool) async -> (pid: Int32, launched: Bool)? {
         func currentPID() -> Int32? {
             NSWorkspace.shared.runningApplications.first {
                 $0.executableURL?.path == executable && !$0.isTerminated
             }?.processIdentifier
         }
-        if let pid = currentPID() { return pid }
+        if let pid = currentPID() { return (pid, false) }
         guard openIfNeeded else { return nil }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = false
-        _ = try? await NSWorkspace.shared.openApplication(
+        // `runningApplications` refreshes only as the main run loop turns, so use
+        // the launched app's own PID rather than re-reading that list at once.
+        let launched = try? await NSWorkspace.shared.openApplication(
             at: URL(fileURLWithPath: "/Applications/GlobalProtect.app"), configuration: configuration
         )
-        return currentPID()
+        guard let pid = launched.map(\.processIdentifier) ?? currentPID() else { return nil }
+        return (pid, true)
     }
 }
 
@@ -51,12 +57,17 @@ enum GlobalProtectAccessibilityDisconnect {
 private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRuntime, @unchecked Sendable {
     private let queue = DispatchQueue(label: "TaskScope.GlobalProtectDisconnect", qos: .userInitiated)
     private let pid: Int32
+    /// Set when an Accessibility request times out. Queue-confined. A hung
+    /// vendor UI then fails the current observation quickly instead of costing
+    /// one messaging timeout per element in a tree walk.
+    private var isUnresponsive = false
 
     init(pid: Int32) { self.pid = pid }
 
     func connectionState() async -> GlobalProtectConnectionState {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
+                isUnresponsive = false
                 guard let item = statusItem() else {
                     continuation.resume(returning: .unavailable)
                     return
@@ -78,7 +89,7 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
                     // its controls were being read.
                     observation.status = string(item, kAXHelpAttribute)
                 }
-                continuation.resume(returning: observation.state)
+                continuation.resume(returning: isUnresponsive ? .unavailable : observation.state)
             }
         }
     }
@@ -86,6 +97,7 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
     func pressDisconnect() async -> Bool {
         await withCheckedContinuation { continuation in
             queue.async { [self] in
+                isUnresponsive = false
                 guard let app = application(), let item = statusItem() else {
                     continuation.resume(returning: false)
                     return
@@ -141,28 +153,32 @@ private final class GlobalProtectAccessibilityRuntime: GlobalProtectDisconnectRu
         return find(in: elements(menuBar, kAXChildrenAttribute), role: kAXMenuBarItemRole)
     }
 
-    private func elements(_ element: AXUIElement, _ attribute: String) -> [AXUIElement] {
+    /// Reads one attribute, recording a timeout so callers stop walking a
+    /// vendor UI that has stopped answering.
+    private func copyAttribute(_ element: AXUIElement, _ attribute: String) -> CFTypeRef? {
+        guard !isUnresponsive else { return nil }
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return [] }
-        return value as? [AXUIElement] ?? []
+        let error = AXUIElementCopyAttributeValue(element, attribute as CFString, &value)
+        if error == .cannotComplete { isUnresponsive = true }
+        return error == .success ? value : nil
+    }
+
+    private func elements(_ element: AXUIElement, _ attribute: String) -> [AXUIElement] {
+        copyAttribute(element, attribute) as? [AXUIElement] ?? []
     }
 
     private func string(_ element: AXUIElement, _ attribute: String) -> String? {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
-        return value as? String
+        copyAttribute(element, attribute) as? String
     }
 
     private func boolean(_ element: AXUIElement, _ attribute: String) -> Bool {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
-        return value as? Bool == true
+        copyAttribute(element, attribute) as? Bool == true
     }
 
     private func find(in roots: [AXUIElement], role: String, title: String? = nil) -> AXUIElement? {
         var pending = roots.map { ($0, 0) }
         var inspected = 0
-        while let (element, depth) = pending.popLast(), inspected < 100 {
+        while !isUnresponsive, let (element, depth) = pending.popLast(), inspected < 100 {
             inspected += 1
             if string(element, kAXRoleAttribute) == role,
                title == nil || string(element, kAXTitleAttribute) == title || string(element, kAXDescriptionAttribute) == title

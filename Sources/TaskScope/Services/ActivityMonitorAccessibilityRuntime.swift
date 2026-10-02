@@ -276,11 +276,15 @@ final class ActivityMonitorAccessibilityWorker: @unchecked Sendable {
     }
 
     /// Synchronous variant for application termination, where an async hop
-    /// would never complete.
-    func restoreNow() {
-        queue.sync {
+    /// would never complete. The wait is bounded: a handoff still walking an
+    /// unresponsive Activity Monitor must not hang TaskScope's quit.
+    func restoreNow(timeout: TimeInterval = 3) {
+        let finished = DispatchSemaphore(value: 0)
+        queue.async { [self] in
             restoreOnQueue()
+            finished.signal()
         }
+        _ = finished.wait(timeout: .now() + timeout)
     }
 
     private func restoreOnQueue() {

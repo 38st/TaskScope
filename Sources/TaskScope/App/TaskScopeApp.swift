@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 
 @MainActor
@@ -8,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Work that must happen before the process exits (restoring Activity
     /// Monitor state, flushing debounced settings writes).
     var willTerminate: (() -> Void)?
+    /// Shows the main window. Installed once the runtime is bootstrapped.
+    var showMainWindow: (() -> Void)?
     private let previouslyFrontmostApplication: NSRunningApplication?
     private var launchPhase = TaskScopeLaunchPhase.starting
     private var interactiveLaunchTask: Task<Void, Never>?
@@ -40,6 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         resolveLaunchContext(finalizeInteractiveLaunch: true)
+        // Bound every Accessibility request this process makes (GlobalProtect
+        // disconnect, Activity Monitor handoff). The default is about six
+        // seconds per call, which an unresponsive app multiplies per element.
+        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2)
 
         if launchContext != .startupVerification {
             HotkeyManager.shared.register()
@@ -54,6 +61,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationWillTerminate(_ notification: Notification) {
         willTerminate?()
+    }
+
+    /// Opening the running app again (Finder, Dock, Spotlight, Launchpad) is
+    /// an explicit request for its window, including after a quiet login-item,
+    /// automation, or URL launch whose windows were suppressed.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard launchContext != .startupVerification else { return false }
+        if let showMainWindow {
+            showMainWindow()
+            return false
+        }
+        permitWindowPresentation()
+        return true
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -151,6 +171,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func finalizeInactiveInteractiveLaunch() {
         let presentation = TaskScopeInteractiveLaunchPresentation.resolve(isActive: false)
         precondition(!presentation.demotesToAccessory)
+        // will-finish ran while the context was still pending and made the app
+        // an accessory; an interactive launch keeps its Dock presence.
+        NSApp.setActivationPolicy(.regular)
         hideAutomaticWindows()
         startAutomaticWindowSuppression()
     }
@@ -456,6 +479,9 @@ struct TaskScopeApp: App {
         processManager.sortKey = settings.sortKey
         processManager.enableNotifications = settings.enableNotifications
         HotkeyManager.shared.onShow = {
+            showTaskScopeWindow()
+        }
+        appDelegate.showMainWindow = {
             showTaskScopeWindow()
         }
         appDelegate.willTerminate = {
