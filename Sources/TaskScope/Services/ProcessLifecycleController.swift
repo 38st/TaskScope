@@ -608,8 +608,12 @@ enum ProcessLifecycleController {
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let normalized = detail.lowercased()
-        if result.exitCode == 113
-            || normalized.contains("could not find service")
+        // Only launchd's own "service not found" answer confirms absence. A bare
+        // exit 113, a timeout, or a signal says nothing about the job and must
+        // not let a stop report "already unloaded".
+        if result.terminatedBySignal == nil,
+           result.exitCode != ShellCommandRunner.timedOutExitCode,
+           normalized.contains("could not find service")
             || normalized.contains("service not found")
             || normalized.contains("no such process") {
             return .notLoaded

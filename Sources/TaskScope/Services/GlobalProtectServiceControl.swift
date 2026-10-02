@@ -41,17 +41,20 @@ extension ProcessLifecycleController {
     ) async -> LifecycleBatchResult {
         guard preset.hasCanonicalGlobalProtectIdentity else { return .notNeeded }
         let job = WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0]
+        let sessionJob = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        let usesSessionService = runtime.fileExists(sessionJob.plistPath)
         let before = await systemDisabledState(job, runtime: runtime)
         switch before {
         case .enabled, .noOverride:
             return systemResult(job, .verified, "No persistent system disable override; no process was started.")
-        case .unknown:
+        case .unknown where !usesSessionService:
             return systemResult(job, .failed, "Could not read the system service disable override. Refresh and try again; no system state was changed.")
-        case .disabled:
+        case .unknown, .disabled:
+            // A session installation never changes the system override here, so
+            // an unreadable override must not block restoring the session job.
             break
         }
-        let sessionJob = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
-        if runtime.fileExists(sessionJob.plistPath) {
+        if usesSessionService {
             guard runtime.launchAgentLabel(sessionJob.plistPath) == sessionJob.label else {
                 return systemResult(job, .failed, "The installed login-session service plist has an unreadable or mismatched label. The system disable override was preserved; no administrator command was requested.")
             }
