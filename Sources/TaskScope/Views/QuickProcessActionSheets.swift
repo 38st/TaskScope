@@ -78,6 +78,25 @@ enum QuickAutoStopRuleSaver {
         rules.rules.first { $0.processName.caseInsensitiveCompare(process.name) == .orderedSame }
     }
 
+    static func executablePath(
+        processName: String,
+        observedProcessName: String,
+        observedExecutablePath: String?,
+        action: AutoStopRule.Action,
+        existingRule: AutoStopRule?
+    ) -> String? {
+        let trimmedName = processName.trimmingCharacters(in: .whitespacesAndNewlines)
+        // The observed path identifies the right-clicked process only.
+        let observedPath = trimmedName.caseInsensitiveCompare(observedProcessName) == .orderedSame
+            ? observedExecutablePath
+            : nil
+        guard let existing = existingRule else { return observedPath }
+        // Keep a name-wide rule's scope unless Auto Stop requires a path.
+        return existing.executablePath == nil && action != .kill
+            ? nil
+            : observedPath ?? existing.executablePath
+    }
+
     static func save(
         into rules: AutoStopRulesStore,
         processName: String,
@@ -91,19 +110,15 @@ enum QuickAutoStopRuleSaver {
         guard !trimmedName.isEmpty else {
             return Outcome(error: "Process name is required.")
         }
-        // The observed path identifies the right-clicked process only. A rule
-        // typed for a different name must never be bound to that binary, or it
-        // could never match the process it names.
-        let observedPath = trimmedName.caseInsensitiveCompare(observedProcessName) == .orderedSame
-            ? observedExecutablePath
-            : nil
+        let executablePath = executablePath(
+            processName: trimmedName,
+            observedProcessName: observedProcessName,
+            observedExecutablePath: observedExecutablePath,
+            action: action,
+            existingRule: existingRule
+        )
 
         if let existing = existingRule {
-            // A rule without a path matches every process of its name. Keep that
-            // scope unless the chosen action requires a path (Auto Stop).
-            let executablePath = existing.executablePath == nil && action != .kill
-                ? nil
-                : observedPath ?? existing.executablePath
             guard rules.update(AutoStopRule(
                 id: existing.id,
                 processName: trimmedName,
@@ -126,7 +141,7 @@ enum QuickAutoStopRuleSaver {
         }
         guard rules.add(AutoStopRule(
             processName: trimmedName,
-            executablePath: observedPath,
+            executablePath: executablePath,
             runtimeMinutes: runtimeMinutes,
             action: action
         )) else {
@@ -195,6 +210,20 @@ struct QuickAutoStopRuleSheet: View {
                         Text(action.label).tag(action)
                     }
                 }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Executable")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(executablePath ?? "Any process named \(form.processName.trimmingCharacters(in: .whitespacesAndNewlines))")
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if form.action == .kill, executablePath == nil {
+                        Text("Auto Stop requires a trusted executable path. Use Prompt or Log Only for name-only rules.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             .formStyle(.grouped)
 
@@ -224,7 +253,17 @@ struct QuickAutoStopRuleSheet: View {
             }
         }
         .padding(20)
-        .frame(width: 420, height: 300)
+        .frame(width: 420, height: 400)
+    }
+
+    private var executablePath: String? {
+        QuickAutoStopRuleSaver.executablePath(
+            processName: form.processName,
+            observedProcessName: process.name,
+            observedExecutablePath: process.executablePath,
+            action: form.action,
+            existingRule: existingRule
+        )
     }
 }
 

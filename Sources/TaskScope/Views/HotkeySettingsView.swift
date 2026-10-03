@@ -39,7 +39,7 @@ struct HotkeySettingsView: View {
                             : Color.orange
                     )
 
-                Text("Default: ⌘⇧T shows the TaskScope window. A hotkey needs Command or Control; ⌘Q, ⌘Tab, and ⌘Space are reserved by macOS.")
+                Text("Default: ⌃⌥⌘T shows the TaskScope window. A hotkey needs Command or Control. Standard ⌘-letter app shortcuts, ⌘Tab, and ⌘Space are reserved.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

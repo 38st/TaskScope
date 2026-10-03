@@ -51,6 +51,48 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertEqual(store.memHighlightThresholdMB, SettingsStore.memoryThresholdRange.lowerBound)
     }
 
+    func testSavingPreservesUnknownFieldsAndNeverDowngradesANewerSchema() throws {
+        for version in [1, 3, 99] {
+            let payload: [String: Any] = [
+                "schemaVersion": version,
+                "refreshIntervalSeconds": 22,
+                "futureSetting": ["enabled": true, "choices": [1, 2]],
+                "futureNull": NSNull()
+            ]
+            defaults.set(try JSONSerialization.data(withJSONObject: payload), forKey: key)
+            let store = SettingsStore(userDefaults: defaults, key: key)
+
+            store.refreshIntervalSeconds = 18
+            store.searchText = "updated"
+            store.flushPendingWrites()
+
+            let data = try XCTUnwrap(defaults.data(forKey: key))
+            let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            XCTAssertEqual(saved["schemaVersion"] as? Int, max(3, version))
+            XCTAssertEqual(saved["refreshIntervalSeconds"] as? Double, 18)
+            XCTAssertEqual(saved["searchText"] as? String, "updated")
+            XCTAssertEqual(saved["futureSetting"] as? NSDictionary, payload["futureSetting"] as? NSDictionary)
+            XCTAssertTrue(saved["futureNull"] is NSNull)
+            XCTAssertNil(store.recoveryMessage)
+        }
+    }
+
+    func testUnreadableJSONObjectStillRequiresResetAndPreservesItsBackup() throws {
+        let corrupt = Data(#"{"schemaVersion":99,"refreshIntervalSeconds":"invalid","futureSetting":true}"#.utf8)
+        defaults.set(corrupt, forKey: key)
+        let store = SettingsStore(userDefaults: defaults, key: key)
+        store.enableNotifications = true
+        XCTAssertEqual(defaults.data(forKey: key), corrupt)
+        XCTAssertTrue(store.isReadOnlyAfterCorruption)
+
+        store.resetAfterCorruption()
+
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        XCTAssertEqual(saved["schemaVersion"] as? Int, 3)
+        XCTAssertNil(saved["futureSetting"], "an explicitly reset unreadable payload is still replaced")
+        XCTAssertEqual(defaults.data(forKey: "\(key).corruptBackup"), corrupt)
+    }
+
     /// The slider's grid must be able to reach the default value.
     func testMemorySliderGridContainsTheDefault() {
         let defaultValue = SettingsStore(userDefaults: defaults, key: key).memHighlightThresholdMB

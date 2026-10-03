@@ -201,6 +201,10 @@ data. Preserve the named backup before selecting a destructive reset. Do not
 export an empty fallback list as a backup. Reset resumes persistence with the
 currently recovered in-memory state where supported.
 
+When saving readable settings after a downgrade, TaskScope preserves unknown
+top-level settings and any newer schema version. Unreadable settings still
+require an explicit reset before the primary payload can be replaced.
+
 Legacy name-only Auto Stop rules are retained but disabled. Add and verify the
 intended absolute executable path before enabling automatic stopping.
 
@@ -221,6 +225,8 @@ menu takes focus. The Presets footer wraps long failure messages. A vendor
 Connect control and absence of Disconnect for consecutive observations; an
 unknown Error state still leaves services running and explains the failure.
 TaskScope brings its result window forward again when the operation finishes.
+Automatic disconnect has a 90-second deadline shared by its observations and
+Accessibility requests. On timeout, TaskScope leaves services running.
 
 If automatic disconnect fails or times out, the preset shows **Stop Services
 Anyway…**. This separately confirmed recovery stops and disables the known

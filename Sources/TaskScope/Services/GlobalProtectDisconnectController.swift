@@ -31,10 +31,25 @@ struct GlobalProtectConnectionObservation {
     }
 }
 
+struct GlobalProtectDisconnectDeadline: Sendable {
+    private let expiresAt: TimeInterval
+    private let now: @Sendable () -> TimeInterval
+
+    init(
+        timeLimit: TimeInterval = 90,
+        now: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    ) {
+        self.now = now
+        expiresAt = now() + max(0, timeLimit)
+    }
+
+    var remainingTime: TimeInterval { max(0, expiresAt - now()) }
+}
+
 protocol GlobalProtectDisconnectRuntime: Sendable {
-    func connectionState() async -> GlobalProtectConnectionState
-    func pressDisconnect() async -> Bool
-    func waitForNextObservation() async
+    func connectionState(deadline: GlobalProtectDisconnectDeadline) async -> GlobalProtectConnectionState
+    func pressDisconnect(deadline: GlobalProtectDisconnectDeadline) async -> Bool
+    func waitForNextObservation(deadline: GlobalProtectDisconnectDeadline) async
 }
 
 /// Never shuts down the service on a timeout, failed click, or an unknown state.
@@ -46,8 +61,10 @@ enum GlobalProtectDisconnectController {
     static func disconnect(
         using runtime: any GlobalProtectDisconnectRuntime,
         observationLimit: Int = 60,
-        startupUnavailableObservations: Int = 0
+        startupUnavailableObservations: Int = 0,
+        deadline: GlobalProtectDisconnectDeadline = GlobalProtectDisconnectDeadline()
     ) async -> GlobalProtectDisconnectResult {
+        let timedOut = GlobalProtectDisconnectResult.failed("GlobalProtect did not finish disconnecting. Complete any request in GlobalProtect and try Quit All again; its services were left running.")
         var requested = false
         var disconnectedObservations = 0
         var unavailableObservations = 0
@@ -56,7 +73,9 @@ enum GlobalProtectDisconnectController {
             guard !Task.isCancelled else {
                 return .failed("GlobalProtect shutdown was cancelled before its services were stopped.")
             }
-            let state = await runtime.connectionState()
+            guard deadline.remainingTime > 0 else { return timedOut }
+            let state = await runtime.connectionState(deadline: deadline)
+            guard deadline.remainingTime > 0 else { return timedOut }
             if state != .unavailable {
                 unavailableObservations = 0
                 hasReadState = true
@@ -68,7 +87,9 @@ enum GlobalProtectDisconnectController {
             case .connected:
                 disconnectedObservations = 0
                 if !requested {
-                    guard await runtime.pressDisconnect() else {
+                    let pressed = await runtime.pressDisconnect(deadline: deadline)
+                    guard deadline.remainingTime > 0 else { return timedOut }
+                    guard pressed else {
                         return .failed("GlobalProtect's Disconnect control is unavailable. Its services were left running.")
                     }
                     requested = true
@@ -85,8 +106,8 @@ enum GlobalProtectDisconnectController {
                     return .failed("TaskScope could not verify GlobalProtect's connection state. Its services were left running.")
                 }
             }
-            await runtime.waitForNextObservation()
+            await runtime.waitForNextObservation(deadline: deadline)
         }
-        return .failed("GlobalProtect did not finish disconnecting. Complete any request in GlobalProtect and try Quit All again; its services were left running.")
+        return timedOut
     }
 }

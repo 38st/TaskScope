@@ -209,17 +209,21 @@ be exported from Settings when their stored data is readable. See
   the required services without reinstalling; session installations keep the
   separate system daemon disabled to avoid repeated administrator prompts.
   Login/reboot behavior still needs live validation.
-  If automatic disconnect fails, **Stop Services Anyway…** offers a separately
+  Automatic disconnect has a 90-second deadline; a timeout leaves services
+  running. If disconnect fails, **Stop Services Anyway…** offers a separately
   confirmed stop with a network-recovery explanation. The result window is
   brought forward after either success or failure.
 - Create Prompt, Auto Stop, or Log Only runtime rules with event history. Auto
   Stop requires a trusted executable path; legacy name-only Auto Stop rules
-  load disabled until reviewed.
+  load disabled until reviewed. The quick rule sheet shows the executable path
+  or name-wide scope as you edit. Delivered stop requests remain in event
+  history even if their rule is edited, disabled, or deleted during the stop.
 - View sampled process CPU and RSS history with Live, Paused, and Unavailable
   states.
 - Opt into watched-process notifications.
 - Show TaskScope with a configurable global shortcut; the default is
-  Command-Shift-T.
+  Control-Option-Command-T (⌃⌥⌘T). Saved shortcuts, including Command-Shift-T,
+  are preserved. Command-Shift-T can still be recorded explicitly.
 - Start nonintrusively at login or for automation.
 
 Normal process actions never target TaskScope itself. Process targets are

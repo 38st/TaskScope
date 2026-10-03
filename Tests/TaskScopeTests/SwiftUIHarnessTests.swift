@@ -784,6 +784,57 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try sheet.inspect().find(button: "Add Preset"))
     }
 
+    func testQuickRuleExecutablePathMatchesCreateAndUpdateScope() {
+        let observedPath = "/Applications/Example.app/Contents/MacOS/Example"
+        let nameWide = AutoStopRule(processName: "Example", runtimeMinutes: 5, action: .prompt)
+        var pathBound = nameWide
+        pathBound.executablePath = "/opt/Example"
+        func path(_ name: String, _ action: AutoStopRule.Action, _ existing: AutoStopRule? = nil, observed: String? = "/Applications/Example.app/Contents/MacOS/Example") -> String? {
+            QuickAutoStopRuleSaver.executablePath(
+                processName: name, observedProcessName: "Example", observedExecutablePath: observed,
+                action: action, existingRule: existing
+            )
+        }
+
+        XCTAssertEqual(path(" example \n", .prompt), observedPath)
+        XCTAssertNil(path("Other", .prompt))
+        XCTAssertNil(path("Other", .kill))
+        XCTAssertNil(path("Example", .prompt, nameWide))
+        XCTAssertNil(path("Example", .silent, nameWide))
+        XCTAssertEqual(path("Example", .kill, nameWide), observedPath)
+        XCTAssertEqual(path("Example", .prompt, pathBound), observedPath)
+        XCTAssertEqual(path("Other", .kill, pathBound), pathBound.executablePath)
+        XCTAssertEqual(path("Example", .kill, pathBound, observed: nil), pathBound.executablePath)
+        XCTAssertNil(path("Example", .kill, nameWide, observed: nil))
+    }
+
+    func testQuickAutoStopSheetShowsLiveExecutableScopeAndMissingPathExplanation() throws {
+        let target = process(pid: 96, parentPID: 1, name: "Example")
+        let path = try XCTUnwrap(target.executablePath)
+        let form = QuickAutoStopRuleFormState(processName: target.name, runtimeMinutes: 5, action: .prompt)
+        let sheet = QuickAutoStopRuleSheet(process: target, existingRule: nil, onSave: { _, _, _ in nil }, onCancel: {}, form: form)
+        let explanation = "Auto Stop requires a trusted executable path. Use Prompt or Log Only for name-only rules."
+
+        XCTAssertNoThrow(try sheet.inspect().find(ViewType.Form.self).find(text: path))
+        form.processName = " Other "
+        XCTAssertNoThrow(try sheet.inspect().find(text: "Any process named Other"))
+        XCTAssertThrowsError(try sheet.inspect().find(ViewType.Form.self).find(text: path))
+        form.action = .kill
+        XCTAssertNoThrow(try sheet.inspect().find(text: explanation))
+        form.processName = target.name
+        XCTAssertNoThrow(try sheet.inspect().find(ViewType.Form.self).find(text: path))
+        XCTAssertThrowsError(try sheet.inspect().find(text: explanation))
+
+        let existing = AutoStopRule(processName: target.name, runtimeMinutes: 5, action: .prompt)
+        let update = QuickAutoStopRuleSheet(process: target, existingRule: existing, onSave: { _, _, _ in nil }, onCancel: {}, form: form)
+        form.action = .prompt
+        XCTAssertNoThrow(try update.inspect().find(text: "Any process named Example"))
+        form.action = .kill
+        XCTAssertNoThrow(try update.inspect().find(ViewType.Form.self).find(text: path))
+        form.action = .silent
+        XCTAssertNoThrow(try update.inspect().find(text: "Any process named Example"))
+    }
+
     func testQuickAutoStopSheetKeepsRejectedDraftAndShowsStoreError() throws {
         let target = process(pid: 96, parentPID: 1, name: "Rejected")
         var saveAttempts = 0

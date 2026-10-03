@@ -172,7 +172,23 @@ final class SettingsStore: ObservableObject {
         guard allowsPersistence, !isNormalizing else {
             return
         }
-        persistence.save(currentSettings.normalized())
+        let settings = currentSettings.normalized()
+        guard let storedData = persistence.rawData,
+              (try? JSONDecoder().decode(CodableSettings.self, from: storedData)) != nil,
+              var stored = try? JSONSerialization.jsonObject(with: storedData) as? [String: Any],
+              let encoded = try? JSONEncoder().encode(settings),
+              var values = try? JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            persistence.save(settings)
+            return
+        }
+        // A downgrade may edit known settings without discarding newer fields
+        // or claiming that the stored payload has an older schema.
+        if let version = stored["schemaVersion"] as? Int, version > settings.schemaVersion {
+            values["schemaVersion"] = version
+        }
+        stored.merge(values) { _, new in new }
+        guard let data = try? JSONSerialization.data(withJSONObject: stored) else { return }
+        persistence.userDefaults.set(data, forKey: persistence.key)
     }
 
     private struct CodableSettings: Codable, Equatable {

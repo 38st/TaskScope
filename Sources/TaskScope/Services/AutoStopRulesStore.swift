@@ -534,13 +534,13 @@ final class AutoStopRulesStore: ObservableObject {
         let result = await action.value
         inFlightActions[occurrence] = nil
 
-        // The handler suspends, so the rule may have been edited, disabled, or
-        // deleted while it ran. Drop the outcome rather than acting under a rule
-        // the user has already retired.
-        guard isStillActive(rule) else {
+        // A retired rule cannot authorize more work, but a signal already
+        // delivered must remain in the event history.
+        let isActive = isStillActive(rule)
+        if !isActive {
             handledOccurrences.remove(occurrence)
             pendingExits[occurrence] = nil
-            return
+            guard result == .stopped || result == .requestedStillRunning else { return }
         }
 
         switch result {
@@ -561,9 +561,13 @@ final class AutoStopRulesStore: ObservableObject {
             } else {
                 record(prompt, outcome: .processEnded, detail: "Process ended before the automatic stop.")
             }
-        case .requestedStillRunning where !isRetry:
-            pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true)
-            record(prompt, outcome: .stopRequested, detail: "Stop requested; waiting for the process to exit.")
+        case .requestedStillRunning where !isRetry || !isActive:
+            if isActive {
+                pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true)
+            }
+            record(prompt, outcome: .stopRequested, detail: isActive
+                ? "Stop requested; waiting for the process to exit."
+                : "Stop requested; the rule changed or was removed, so automatic stopping will not retry.")
         case .requestedStillRunning:
             // Two stop requests were accepted and the process is still running.
             // Stop retrying so a process that ignores SIGTERM is not signalled on

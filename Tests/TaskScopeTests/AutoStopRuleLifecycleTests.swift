@@ -181,7 +181,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
     /// A `.kill` rule deleted while its handler is in flight must not go on acting.
     /// `evaluate` snapshots the active rules once and then awaits per process, so
     /// the rule has to be re-checked after the suspension.
-    func testRuleDeletedWhileTheStopIsInFlightRecordsNoOutcome() async {
+    func testRuleDeletedWhileTheStopIsInFlightRecordsTheDeliveredStop() async {
         let store = makeStore(processes: [
             appProcess(pid: 41, elapsed: "10:00"),
             appProcess(pid: 42, elapsed: "10:00")
@@ -207,10 +207,88 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         store.stop()
 
         XCTAssertEqual(handled, [41], "the second process must not be signalled under a deleted rule")
-        XCTAssertTrue(
-            store.events.isEmpty,
-            "no outcome may be recorded against a rule the user already removed"
-        )
+        XCTAssertEqual(store.events.map(\.outcome), [.stopped])
+        XCTAssertEqual(store.events.first?.ruleID, stored.id)
+        XCTAssertEqual(store.events.first?.processName, "Example")
+        XCTAssertEqual(store.events.first?.pid, 41)
+    }
+
+    func testRetiredRuleRecordsDeliveredSignalsWithoutKeepingExitTracking() async {
+        for retirement in ["edit", "disable", "delete"] {
+            for result in [ProcessActionResult.stopped, .requestedStillRunning] {
+                defaults.removePersistentDomain(forName: suiteName)
+                let inventory = MutableStubInventory(processes: [appProcess(pid: 41, elapsed: "10:00")])
+                let store = makeStore(inventory: inventory)
+                store.add(AutoStopRule(processName: "Example", executablePath: examplePath, runtimeMinutes: 1, action: .kill))
+                let stored = store.rules[0]
+                var attempts = 0
+                store.start(cadence: 3_600) { _, _ in
+                    attempts += 1
+                    switch retirement {
+                    case "edit":
+                        var edited = stored
+                        edited.runtimeMinutes = 60
+                        XCTAssertTrue(store.update(edited))
+                    case "disable": XCTAssertTrue(store.setEnabled(false, for: stored))
+                    default: store.remove(stored)
+                    }
+                    return result
+                }
+
+                await store.evaluateNow()
+                await store.evaluateNow()
+                inventory.processes = []
+                await store.evaluateNow()
+                store.stop()
+
+                XCTAssertEqual(attempts, 1, retirement)
+                XCTAssertEqual(store.events.map(\.outcome), [result == .stopped ? .stopped : .stopRequested], retirement)
+                XCTAssertEqual(store.events.first?.ruleID, stored.id)
+            }
+        }
+    }
+
+    func testRetiredRuleDropsOutcomesWhenNothingWasSignalled() async {
+        for result in [ProcessActionResult.rejected, .refused, .stale] {
+            defaults.removePersistentDomain(forName: suiteName)
+            let store = makeStore()
+            store.add(AutoStopRule(processName: "Example", executablePath: examplePath, runtimeMinutes: 1, action: .kill))
+            let stored = store.rules[0]
+            var attempts = 0
+            store.start(cadence: 3_600) { _, _ in
+                attempts += 1
+                store.remove(stored)
+                return result
+            }
+
+            await store.evaluateNow()
+            store.stop()
+
+            XCTAssertEqual(attempts, 1)
+            XCTAssertTrue(store.events.isEmpty)
+        }
+    }
+
+    func testRuleRetiredDuringRetryRecordsAStopRequestWithoutTrackingExit() async {
+        let inventory = MutableStubInventory(processes: [appProcess(pid: 41, elapsed: "10:00")])
+        let store = makeStore(inventory: inventory)
+        store.add(AutoStopRule(processName: "Example", executablePath: examplePath, runtimeMinutes: 1, action: .kill))
+        let stored = store.rules[0]
+        var attempts = 0
+        store.start(cadence: 3_600) { _, _ in
+            attempts += 1
+            if attempts == 2 { store.remove(stored) }
+            return .requestedStillRunning
+        }
+        await waitUntil { attempts == 1 && !store.events.isEmpty }
+
+        await store.evaluateNow()
+        inventory.processes = []
+        await store.evaluateNow()
+        store.stop()
+
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(store.events.map(\.outcome), [.stopRequested, .stopRequested])
     }
 
     /// A stop that never happened (nothing was signalled) must stay retryable, and

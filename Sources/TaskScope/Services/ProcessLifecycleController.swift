@@ -649,17 +649,7 @@ enum ProcessLifecycleController {
 
     static func launchJobPID(from result: ShellCommandResult) -> Int32? {
         guard result.succeeded else { return nil }
-        for line in result.stdout.split(separator: "\n") {
-            let parts = line.split(separator: "=", maxSplits: 1)
-            guard parts.count == 2,
-                  parts[0].trimmingCharacters(in: .whitespacesAndNewlines) == "pid",
-                  let pid = Int32(parts[1].trimmingCharacters(in: .whitespacesAndNewlines)),
-                  pid > 0 else {
-                continue
-            }
-            return pid
-        }
-        return nil
+        return GlobalProtectCompatibilityChecker.topLevelPID(result.stdout)
     }
 
     /// Bounded by attempts rather than wall-clock time so an injected no-op

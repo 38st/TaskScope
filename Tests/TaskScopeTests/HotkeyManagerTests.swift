@@ -4,6 +4,40 @@ import XCTest
 
 @MainActor
 final class HotkeyManagerTests: XCTestCase {
+    func testUnsetHotkeyUsesControlOptionCommandT() {
+        let suite = "TaskScope.HotkeyManagerTests.default"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        for saved in [nil, ["enabled": false] as [String: Any]?] {
+            defaults.set(saved, forKey: "hotkey")
+            let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: FakeHotkeyBackend())
+            XCTAssertEqual(manager.keyCode, UInt32(kVK_ANSI_T))
+            XCTAssertEqual(manager.modifiers, UInt32(controlKey | optionKey | cmdKey))
+            XCTAssertEqual(manager.displayString, "⌃⌥⌘T")
+            XCTAssertTrue(HotkeyManager.isSupported(keyCode: manager.keyCode, modifiers: manager.modifiers))
+        }
+    }
+
+    func testSavedCommandShiftTIsPreservedAndCanStillBeRecorded() {
+        let suite = "TaskScope.HotkeyManagerTests.saved"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(["enabled": true, "keyCode": UInt32(kVK_ANSI_T), "modifiers": UInt32(cmdKey | shiftKey)], forKey: "hotkey")
+        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: FakeHotkeyBackend())
+        XCTAssertEqual(manager.modifiers, UInt32(cmdKey | shiftKey))
+        XCTAssertEqual(manager.displayString, "⇧⌘T")
+        XCTAssertTrue(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(controlKey | optionKey | cmdKey)))
+        XCTAssertTrue(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(cmdKey | shiftKey)))
+        manager.unregister()
+
+        let reloaded = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: FakeHotkeyBackend())
+        XCTAssertEqual(reloaded.modifiers, UInt32(cmdKey | shiftKey))
+        XCTAssertEqual(reloaded.keyCode, UInt32(kVK_ANSI_T))
+    }
+
     func testSupportedKeysHaveTruthfulNames() {
         XCTAssertEqual(HotkeyManager.keyName(for: UInt32(kVK_ANSI_T)), "T")
         XCTAssertEqual(HotkeyManager.keyName(for: UInt32(kVK_ANSI_7)), "7")
@@ -65,6 +99,7 @@ final class HotkeyManagerTests: XCTestCase {
             "⌘⇧Z (Redo) is reserved by macOS. Choose another combination."
         )
         XCTAssertNil(HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(cmdKey | shiftKey)))
+        XCTAssertNil(HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(controlKey | optionKey | cmdKey)))
         XCTAssertNil(HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_C), modifiers: UInt32(cmdKey | optionKey)))
         XCTAssertNil(HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_C), modifiers: UInt32(controlKey)))
     }
@@ -99,7 +134,7 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertTrue(manager.registrationStatus.message.contains("Command or Control"))
         XCTAssertFalse(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_Q), modifiers: UInt32(cmdKey)))
         XCTAssertTrue(manager.registrationStatus.message.contains("reserved by macOS"))
-        XCTAssertEqual(manager.modifiers, UInt32(cmdKey | shiftKey), "a rejected update leaves the configuration alone")
+        XCTAssertEqual(manager.modifiers, UInt32(controlKey | optionKey | cmdKey), "a rejected update leaves the configuration alone")
     }
 
     func testUnchangedShortcutIsNotReRegisteredAndAChangeUnregistersTheOldOneFirst() {
@@ -113,12 +148,12 @@ final class HotkeyManagerTests: XCTestCase {
         manager.register()
         manager.register()
         XCTAssertEqual(manager.registrationStatus, .registered)
-        XCTAssertEqual(backend.events, ["register:T:768"], "an unchanged, registered shortcut must not be registered again")
+        XCTAssertEqual(backend.events, ["register:T:6400"], "an unchanged, registered shortcut must not be registered again")
 
         XCTAssertTrue(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | controlKey)))
         XCTAssertEqual(
             backend.events,
-            ["register:T:768", "unregister:1", "register:K:4352"],
+            ["register:T:6400", "unregister:1", "register:K:4352"],
             "the old combination is unregistered before the new one is registered"
         )
         XCTAssertTrue(manager.isRegistered)
@@ -142,7 +177,7 @@ final class HotkeyManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             backend.events,
-            ["register:T:768", "unregister:1", "register:K:4352", "register:T:768"]
+            ["register:T:6400", "unregister:1", "register:K:4352", "register:T:6400"]
         )
         XCTAssertEqual(manager.keyCode, UInt32(kVK_ANSI_T))
         XCTAssertTrue(manager.isRegistered)

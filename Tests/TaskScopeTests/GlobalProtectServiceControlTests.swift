@@ -252,7 +252,7 @@ private actor ServiceHarness {
             return disabledProbe ?? result("disabled services = {\n\"\(Self.label)\" => \(state.disabled ? "disabled" : "enabled")\n}")
         }
         if command.hasPrefix("/bin/launchctl print ") {
-            return state.loaded ? result("pid = 42")
+            return state.loaded ? result(launchctlPrintOutput(pid: 42))
                 : result("", error: "Could not find service \"\(Self.label)\" in domain for system", code: 113)
         }
         if command.hasPrefix("/usr/bin/osascript") {

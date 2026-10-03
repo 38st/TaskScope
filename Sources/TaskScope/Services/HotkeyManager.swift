@@ -101,7 +101,7 @@ final class HotkeyManager: ObservableObject {
         let saved = defaults.dictionary(forKey: defaultsKey)
         hotkeyEnabled = saved?["enabled"] as? Bool ?? true
         keyCode = (saved?["keyCode"] as? UInt32) ?? UInt32(kVK_ANSI_T)
-        modifiers = (saved?["modifiers"] as? UInt32) ?? UInt32(cmdKey | shiftKey)
+        modifiers = (saved?["modifiers"] as? UInt32) ?? UInt32(controlKey | optionKey | cmdKey)
     }
 
     deinit {

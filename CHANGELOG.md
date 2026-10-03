@@ -45,6 +45,20 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
+- Changed the default global shortcut to Control-Option-Command-T (⌃⌥⌘T).
+  Existing saved shortcuts, including Command-Shift-T, remain unchanged and
+  can still be recorded explicitly.
+- Preserve delivered automatic-stop outcomes when a rule is edited, disabled,
+  or deleted in flight, without retaining retries for the retired rule.
+- Preserve unknown top-level settings and newer schema versions on save after
+  a downgrade; unreadable-payload recovery remains unchanged.
+- Bound GlobalProtect disconnect observations and Accessibility requests by a
+  shared 90-second deadline. Timeout leaves services running.
+- Show the quick auto-stop rule's executable path or name-wide scope live,
+  including an explanation when Auto Stop lacks a required path.
+- Read launch-job PIDs only from the top level of complete launchctl output;
+  nested child PIDs cannot establish service readiness.
+
 - Avoid repeated administrator prompts on GlobalProtect session-agent
   installations. Open and toggle-off retain the unused system daemon's disable
   override while restoring the required user jobs. Once the first full stop is

@@ -653,7 +653,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
     func testUnloadLeavesAgentThatRunsThePreservedMainProcessLoaded() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
-            commandResults: [result(stdout: "state = running\n\tpid = 42", exitCode: 0)]
+            commandResults: [result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0)]
         )
 
         let batch = await ProcessLifecycleController.unloadUserLaunchAgents(
@@ -672,7 +672,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
             commandResults: [
-                result(stdout: "state = running\n\tpid = 43", exitCode: 0),
+                result(stdout: launchctlPrintOutput(pid: 43), exitCode: 0),
                 result(exitCode: 0),
                 result(stderr: "Could not find service", exitCode: 113)
             ]
@@ -692,7 +692,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
             launchAgentLabels: ["/agents/example.plist": "example.agent"],
-            commandResults: [result(stdout: "pid = 42", exitCode: 0)]
+            commandResults: [result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0)]
         )
 
         let batch = await ProcessLifecycleController.bootstrapUserLaunchAgents(
@@ -712,7 +712,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             existingPaths: ["/agents/example.plist"],
             commandResults: [
                 result(exitCode: 0),
-                result(stdout: "pid = 42", exitCode: 0),
+                result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0),
                 result(exitCode: 0),
                 result(stderr: "Could not find service", exitCode: 113)
             ]
@@ -738,7 +738,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
 
     func testStopWaitsForLaunchdToFinishRemovingAnAcknowledgedJob() async {
         for keepOff in [false, true] {
-            let loaded = result(stdout: "pid = 42", exitCode: 0)
+            let loaded = result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0)
             let responses = (keepOff ? [result(exitCode: 0)] : []) + [
                 loaded, result(exitCode: 0), loaded, loaded,
                 result(stderr: "Could not find service", exitCode: 113)
@@ -760,7 +760,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
     func testStopWaitIsBoundedWhenAcknowledgedJobNeverUnloads() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"], commandResults: [],
-            respond: { _ in ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0) }
+            respond: { _ in ShellCommandResult(command: "", stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0) }
         )
         let batch = await ProcessLifecycleController.disableUserLaunchAgents(
             for: presetWithAgent(plistPath: "/agents/example.plist"), runtime: harness.runtime
@@ -816,7 +816,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             let harness = LifecycleRuntimeHarness(
                 existingPaths: [job.plistPath], launchAgentLabels: [job.plistPath: job.label],
                 commandResults: [],
-                respond: { _ in ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0) },
+                respond: { _ in ShellCommandResult(command: "", stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0) },
                 inventory: [service]
             )
             let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
@@ -836,7 +836,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             commandResults: [
                 result(stderr: "Could not find service", exitCode: 113),
                 result(exitCode: 0), result(exitCode: 0), result(exitCode: 0),
-                result(stdout: "pid = 42", exitCode: 0), result(stdout: "pid = 42", exitCode: 0)
+                result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0), result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0)
             ], inventory: [service]
         )
         let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
@@ -860,7 +860,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             let harness = LifecycleRuntimeHarness(
                 existingPaths: [job.plistPath], launchAgentLabels: [job.plistPath: job.label],
                 commandResults: [],
-                respond: { _ in ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0) },
+                respond: { _ in ShellCommandResult(command: "", stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0) },
                 inventory: [service], executablePathsAtSignal: invalid == "missing-path" ? [:] : nil
             )
             let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
@@ -876,7 +876,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
             commandResults: [],
             respond: { _ in
-                ShellCommandResult(command: "", stdout: "state = running\n\tpid = 42", stderr: "", exitCode: 0)
+                ShellCommandResult(command: "", stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0)
             },
             inventory: [
                 process(pid: 99, command: "/Applications/UnrelatedListener")
@@ -903,7 +903,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
             commandResults: [
-                result(stdout: "state = running\n\tpid = 42", exitCode: 0)
+                result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0)
             ],
             inventory: [
                 process(pid: 42, command: "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS"),
@@ -930,7 +930,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             existingPaths: ["/Library/LaunchDaemons/com.paloaltonetworks.gp.pangpsd.plist"],
             commandResults: [],
             respond: { _ in
-                ShellCommandResult(command: "", stdout: "pid = 42", stderr: "", exitCode: 0)
+                ShellCommandResult(command: "", stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0)
             },
             inventory: [
                 process(pid: 99, command: "/tmp/PanGPS")
@@ -956,7 +956,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             commandResults: [
                 result(stderr: "Could not find service", exitCode: 113),
                 result(exitCode: 0),
-                result(stdout: "state = running\n\tpid = 42", exitCode: 0)
+                result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0)
             ],
             inventory: [
                 process(pid: 42, command: "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS")
@@ -1014,7 +1014,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
     func testLaunchJobPIDRequiresExplicitPositivePIDField() {
         XCTAssertEqual(
             ProcessLifecycleController.launchJobPID(
-                from: result(stdout: "state = running\n\tpid = 42", exitCode: 0)
+                from: result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0)
             ),
             42
         )
@@ -1023,6 +1023,17 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
                 from: result(stdout: "state = running", exitCode: 0)
             )
         )
+    }
+
+    func testLaunchJobPIDIgnoresNestedFieldsAndRejectsIncompleteOutput() {
+        let nested = "gui/501/example.agent = {\n\tchild = {\n\t\tpid = 99\n\t}\n}"
+        XCTAssertNil(ProcessLifecycleController.launchJobPID(from: result(stdout: nested, exitCode: 0)))
+        let both = "gui/501/example.agent = {\n\tchild = {\n\t\tpid = 99\n\t}\n\tpid = 42\n}"
+        XCTAssertEqual(ProcessLifecycleController.launchJobPID(from: result(stdout: both, exitCode: 0)), 42)
+        for output in ["pid = 42", "gui/501/example.agent = {\n\tpid = 42", launchctlPrintOutput(pid: 0)] {
+            XCTAssertNil(ProcessLifecycleController.launchJobPID(from: result(stdout: output, exitCode: 0)))
+        }
+        XCTAssertNil(ProcessLifecycleController.launchJobPID(from: result(stdout: launchctlPrintOutput(pid: 42), exitCode: 1)))
     }
 
     private func presetWithAgent(plistPath: String) -> WatchedAppPreset {
@@ -1084,7 +1095,7 @@ private final class DisabledJobLaunchd: @unchecked Sendable {
         lock.withLock {
             if command.contains(" print ") {
                 return loaded
-                    ? ShellCommandResult(command: command, stdout: "pid = 42", stderr: "", exitCode: 0)
+                    ? ShellCommandResult(command: command, stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0)
                     : ShellCommandResult(command: command, stdout: "", stderr: "Could not find service", exitCode: 113)
             }
             if command.contains(" enable ") {

@@ -114,6 +114,67 @@ final class GlobalProtectDisconnectTests: XCTestCase {
             guard case .failed = result else { return XCTFail("Unverified disconnect reported success") }
         }
     }
+
+    func testWallClockDeadlineBoundsSlowObservationsBeforeTheCountLimit() async {
+        let clock = DisconnectTestClock()
+        let runtime = FakeDisconnectRuntime(states: [.busy], clock: clock, readSeconds: 31)
+        let result = await GlobalProtectDisconnectController.disconnect(
+            using: runtime, deadline: GlobalProtectDisconnectDeadline(now: { clock.now() })
+        )
+        assertTimedOut(result)
+        let counts = await runtime.counts()
+        XCTAssertEqual(counts.reads, 3)
+        XCTAssertEqual(counts.presses, 0)
+    }
+
+    func testDeadlineRejectsTheFinalIdleObservationIfItArrivesTooLate() async {
+        let clock = DisconnectTestClock()
+        let runtime = FakeDisconnectRuntime(states: [.disconnected], clock: clock, readSeconds: 18)
+        let result = await GlobalProtectDisconnectController.disconnect(
+            using: runtime, deadline: GlobalProtectDisconnectDeadline(now: { clock.now() })
+        )
+        assertTimedOut(result)
+        let counts = await runtime.counts()
+        XCTAssertEqual(counts.reads, 5)
+        XCTAssertEqual(counts.presses, 0)
+    }
+
+    func testDeadlineIncludesDisconnectPressAndObservationWaits() async {
+        for duringPress in [true, false] {
+            let clock = DisconnectTestClock()
+            let runtime = FakeDisconnectRuntime(
+                states: [.connected, .disconnected], clock: clock,
+                pressSeconds: duringPress ? 90 : 0, waitSeconds: duringPress ? 0 : 90
+            )
+            let result = await GlobalProtectDisconnectController.disconnect(
+                using: runtime, deadline: GlobalProtectDisconnectDeadline(now: { clock.now() })
+            )
+            assertTimedOut(result)
+            let counts = await runtime.counts()
+            XCTAssertEqual(counts.reads, 1)
+            XCTAssertEqual(counts.presses, 1)
+        }
+    }
+
+    func testExpiredDeadlineDoesNotReadOrPressTheVendorUI() async {
+        let clock = DisconnectTestClock()
+        let deadline = GlobalProtectDisconnectDeadline(timeLimit: 2, now: { clock.now() })
+        clock.advance(2)
+        let runtime = FakeDisconnectRuntime(states: [.connected])
+        let result = await GlobalProtectDisconnectController.disconnect(using: runtime, deadline: deadline)
+        assertTimedOut(result)
+        let counts = await runtime.counts()
+        XCTAssertEqual(counts.reads, 0)
+        XCTAssertEqual(counts.presses, 0)
+    }
+
+    private func assertTimedOut(_ result: GlobalProtectDisconnectResult, file: StaticString = #filePath, line: UInt = #line) {
+        guard case .failed(let message) = result else {
+            return XCTFail("A deadline must never authorize service shutdown", file: file, line: line)
+        }
+        XCTAssertTrue(message.contains("did not finish disconnecting"), file: file, line: line)
+        XCTAssertTrue(message.contains("services were left running"), file: file, line: line)
+    }
 }
 
 private actor FakeDisconnectRuntime: GlobalProtectDisconnectRuntime {
@@ -121,23 +182,59 @@ private actor FakeDisconnectRuntime: GlobalProtectDisconnectRuntime {
     private let pressSucceeds: Bool
     private var reads = 0
     private var presses = 0
+    private let clock: DisconnectTestClock?
+    private let readSeconds: TimeInterval
+    private let pressSeconds: TimeInterval
+    private let waitSeconds: TimeInterval
 
-    init(states: [GlobalProtectConnectionState], pressSucceeds: Bool = true) {
+    init(
+        states: [GlobalProtectConnectionState],
+        pressSucceeds: Bool = true,
+        clock: DisconnectTestClock? = nil,
+        readSeconds: TimeInterval = 0,
+        pressSeconds: TimeInterval = 0,
+        waitSeconds: TimeInterval = 0
+    ) {
         self.states = states
         self.pressSucceeds = pressSucceeds
+        self.clock = clock
+        self.readSeconds = readSeconds
+        self.pressSeconds = pressSeconds
+        self.waitSeconds = waitSeconds
     }
 
-    func connectionState() async -> GlobalProtectConnectionState {
+    func connectionState(deadline: GlobalProtectDisconnectDeadline) async -> GlobalProtectConnectionState {
         reads += 1
+        clock?.advance(readSeconds)
         if states.count > 1 { return states.removeFirst() }
         return states[0]
     }
 
-    func pressDisconnect() async -> Bool {
+    func pressDisconnect(deadline: GlobalProtectDisconnectDeadline) async -> Bool {
         presses += 1
+        clock?.advance(pressSeconds)
         return pressSucceeds
     }
 
-    func waitForNextObservation() async {}
+    func waitForNextObservation(deadline: GlobalProtectDisconnectDeadline) async {
+        clock?.advance(waitSeconds)
+    }
     func counts() -> (reads: Int, presses: Int) { (reads, presses) }
+}
+
+private final class DisconnectTestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var seconds: TimeInterval = 0
+
+    func now() -> TimeInterval {
+        lock.lock()
+        defer { lock.unlock() }
+        return seconds
+    }
+
+    func advance(_ interval: TimeInterval) {
+        lock.lock()
+        defer { lock.unlock() }
+        seconds += interval
+    }
 }
