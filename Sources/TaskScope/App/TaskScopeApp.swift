@@ -449,6 +449,7 @@ struct TaskScopeApp: App {
             }
         }
         .onChange(of: watchedApps.presets) { _, _ in
+            TaskScopeShortcuts.refreshParameters(for: appDelegate.launchContext)
             // The refresh re-baselines on its own when the watched-name set changed,
             // so a newly watched app that was already running is not announced as
             // having just started.
@@ -505,6 +506,7 @@ struct TaskScopeApp: App {
             NotificationService.shared.prime(initialRunningNames: running)
         }
 
+        TaskScopeShortcuts.refreshParameters(for: appDelegate.launchContext)
     }
 
     private func configurePolling() {

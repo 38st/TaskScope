@@ -100,7 +100,7 @@ final class AutoStopRulesStore: ObservableObject {
         self.pollingController = pollingController ?? ProcessPollingController()
         self.eventLimit = boundedEventLimit
         self.now = now
-        let rulesLoad = rulesPersistence.load()
+        let rulesLoad = rulesPersistence.loadRecoveringElements()
         let eventsLoad = eventsPersistence.load()
         let loadedRules = (
             value: rulesLoad.value,
@@ -121,14 +121,15 @@ final class AutoStopRulesStore: ObservableObject {
             }
         )
         let validatedRules = AutoStopRuleValidation.validateStored(loadedRules.value ?? [])
+        let rejectedCount = rulesLoad.rejectedCount + validatedRules.rejectedCount
         var rulesMessage = loadedRules.message
         var permitsRulesPersistence = loadedRules.message == nil
-        if loadedRules.message == nil, validatedRules.rejectedCount > 0,
+        if loadedRules.message == nil, rejectedCount > 0,
            let backup = rulesPersistence.preserveCurrentPayload(
                suffix: "rejectedMigrationBackup"
            ) {
             permitsRulesPersistence = false
-            rulesMessage = "Rejected \(validatedRules.rejectedCount) invalid or duplicate stored auto-stop rule\(validatedRules.rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); reset after review to commit only the recovered safe rules."
+            rulesMessage = "Rejected \(rejectedCount) invalid or duplicate stored auto-stop rule\(rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); reset after review to commit only the recovered safe rules."
         }
         // A decode failure must never lead to the unreadable payload being replaced
         // by the empty array we fell back to, so persistence stays disabled for that

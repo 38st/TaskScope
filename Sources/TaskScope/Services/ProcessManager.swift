@@ -366,25 +366,27 @@ final class ProcessManager: ObservableObject {
                 }
             }
 
-            let systemEnable = preset.hasCanonicalGlobalProtectIdentity
-                ? await lifecycle.enableSystemLaunchDaemons(for: preset) : .notNeeded
-            diagnosticJobs += systemEnable.jobs
-            guard systemEnable.succeeded else {
-                lifecycleReport = LifecycleReport(title: "\(preset.displayName) Service Results", jobs: systemEnable.jobs)
-                message = "Could not restore GlobalProtect: \(systemEnable.failureSummary ?? "system service could not be enabled")."
+            let ensuredDaemon = await lifecycle.ensureSystemLaunchDaemons(for: preset)
+            diagnosticJobs += ensuredDaemon.jobs
+            guard ensuredDaemon.succeeded else {
+                lifecycleReport = LifecycleReport(
+                    title: "\(preset.displayName) Service Results",
+                    jobs: ensuredDaemon.jobs
+                )
+                message = "Could not open \(preset.displayName): \(ensuredDaemon.failureSummary ?? "required service failed")."
                 diagnosticReason = .systemServiceFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
-            let ensuredDaemon = await lifecycle.ensureSystemLaunchDaemons(for: preset)
-            let daemonResult = LifecycleBatchResult(jobs: systemEnable.jobs + ensuredDaemon.jobs)
-            diagnosticJobs += ensuredDaemon.jobs
-            guard daemonResult.succeeded else {
-                lifecycleReport = LifecycleReport(
-                    title: "\(preset.displayName) Service Results",
-                    jobs: daemonResult.jobs
-                )
-                message = "Could not open \(preset.displayName): \(daemonResult.failureSummary ?? "required service failed")."
+            // Bootstrap clears the override in the same administrator request.
+            // Only a daemon that was already loaded can still need enabling.
+            let systemEnable = preset.hasCanonicalGlobalProtectIdentity
+                ? await lifecycle.enableSystemLaunchDaemons(for: preset) : .notNeeded
+            diagnosticJobs += systemEnable.jobs
+            let daemonResult = LifecycleBatchResult(jobs: ensuredDaemon.jobs + systemEnable.jobs)
+            guard systemEnable.succeeded else {
+                lifecycleReport = LifecycleReport(title: "\(preset.displayName) Service Results", jobs: daemonResult.jobs)
+                message = "Could not restore GlobalProtect: \(systemEnable.failureSummary ?? "system service could not be enabled")."
                 diagnosticReason = .systemServiceFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return

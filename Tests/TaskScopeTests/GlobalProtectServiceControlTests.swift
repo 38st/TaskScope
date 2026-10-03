@@ -13,16 +13,48 @@ final class GlobalProtectServiceControlTests: XCTestCase {
         XCTAssertTrue(state.disabled)
         XCTAssertFalse(state.loaded)
 
-        let enabled = await ProcessLifecycleController.enableSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
-        XCTAssertTrue(enabled.succeeded)
         let restored = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
         XCTAssertTrue(restored.succeeded)
+        let enabled = await ProcessLifecycleController.enableSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
+        XCTAssertTrue(enabled.succeeded)
         let final = await harness.state
         XCTAssertFalse(final.disabled)
         XCTAssertTrue(final.loaded)
         let commands = await harness.commands
-        XCTAssertEqual(commands.filter { $0.contains("osascript") }.count, 3)
+        XCTAssertEqual(commands.filter { $0.contains("osascript") }.count, 2)
         XCTAssertFalse(commands.contains { $0.contains("kickstart") || $0.contains("/bin/rm") || $0.contains("/bin/mv") || $0.contains("kill ") })
+    }
+
+    func testCancelledBootstrapPreservesDisableOverrideWithOnePrompt() async {
+        let harness = ServiceHarness(disabled: true, loaded: false, adminFailure: .cancelled)
+
+        let restored = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
+
+        XCTAssertFalse(restored.succeeded)
+        let state = await harness.state
+        XCTAssertTrue(state.disabled)
+        XCTAssertFalse(state.loaded)
+        let commands = await harness.commands
+        let adminCommands = commands.filter { $0.contains("osascript") }
+        XCTAssertEqual(adminCommands.count, 1)
+        XCTAssertTrue(adminCommands.first?.contains("launchctl enable") == true)
+        XCTAssertTrue(adminCommands.first?.contains("launchctl bootstrap") == true)
+    }
+
+    func testLoadedDaemonClearsOverrideWithoutBootstrapping() async {
+        let harness = ServiceHarness(disabled: true, loaded: true)
+
+        let restored = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
+        let enabled = await ProcessLifecycleController.enableSystemLaunchDaemons(for: .globalProtect, runtime: harness.runtime)
+
+        XCTAssertTrue(restored.succeeded)
+        XCTAssertTrue(enabled.succeeded)
+        let state = await harness.state
+        XCTAssertFalse(state.disabled)
+        XCTAssertTrue(state.loaded)
+        let commands = await harness.commands
+        XCTAssertEqual(commands.filter { $0.contains("osascript") }.count, 1)
+        XCTAssertFalse(commands.contains { $0.contains("bootstrap") })
     }
 
     func testBackgroundEnforcementNeverPromptsOrMutatesSystemState() async {

@@ -41,6 +41,23 @@ enum PersistenceRecovery {
     }
 }
 
+struct PartiallyDecodedArray<Element: Decodable>: Decodable {
+    var elements: [Element] = []
+    var rejectedCount = 0
+
+    init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        while !container.isAtEnd {
+            let elementDecoder = try container.superDecoder()
+            do {
+                elements.append(try Element(from: elementDecoder))
+            } catch {
+                rejectedCount += 1
+            }
+        }
+    }
+}
+
 struct RecoveringCodableStorage<Value: Codable> {
     struct LoadOutcome {
         var value: Value?
@@ -49,18 +66,21 @@ struct RecoveringCodableStorage<Value: Codable> {
         /// wrote it or an earlier launch did. False with a non-nil `backupKey`
         /// means every slot was occupied by other payloads.
         var isBackupPreserved: Bool
+        var rejectedCount = 0
     }
 
     let userDefaults: UserDefaults
     let key: String
 
-    func load() -> LoadOutcome {
+    func load(
+        decode: (Data) throws -> Value = { try JSONDecoder().decode(Value.self, from: $0) }
+    ) -> LoadOutcome {
         guard let data = userDefaults.data(forKey: key) else {
             return LoadOutcome(value: nil, backupKey: nil, isBackupPreserved: false)
         }
         do {
             return LoadOutcome(
-                value: try JSONDecoder().decode(Value.self, from: data),
+                value: try decode(data),
                 backupKey: nil,
                 isBackupPreserved: false
             )
@@ -73,6 +93,17 @@ struct RecoveringCodableStorage<Value: Codable> {
                 isBackupPreserved: preservedKey != nil
             )
         }
+    }
+
+    func loadRecoveringElements<Element: Codable>() -> LoadOutcome where Value == [Element] {
+        var rejectedCount = 0
+        var outcome = load { data in
+            let decoded = try JSONDecoder().decode(PartiallyDecodedArray<Element>.self, from: data)
+            rejectedCount = decoded.rejectedCount
+            return decoded.elements
+        }
+        outcome.rejectedCount = rejectedCount
+        return outcome
     }
 
     var rawData: Data? {

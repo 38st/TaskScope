@@ -40,7 +40,7 @@ enum AutoStopRuleValidation {
             return .failure(Failure(message: "Executable path must be absolute."))
         }
         normalized.executablePath = trimmedPath.flatMap {
-            $0.isEmpty ? nil : canonicalPath($0)
+            $0.isEmpty ? nil : URL(fileURLWithPath: $0).standardizedFileURL.path
         }
         guard !normalized.processName.isEmpty else {
             return .failure(Failure(message: "Process name is required."))

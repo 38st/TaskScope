@@ -34,7 +34,7 @@ final class P8SilentStopReportsSuccessTests: XCTestCase {
             .completed,
             "process list was unreadable and nothing was signalled, but the stop reports success: \(result.message)"
         )
-        XCTAssertNotEqual(result.message, "No watched processes found.")
+        XCTAssertNotEqual(result.message, "No watched app or user helpers found.")
     }
 
     // MARK: - P8 proof: stale snapshot from a successful refresh that predates the failure

@@ -104,8 +104,9 @@ enum PresetStopScope {
                 ? "User helpers quit and launch agents unloaded."
                 : "User helpers quit.")
         case .all:
-            if !before.hasAny && !after.hasAny {
-                return .completed("No watched processes found.")
+            if !before.isMainRunning && before.helpersRunning.isEmpty,
+               !after.isMainRunning && after.helpersRunning.isEmpty {
+                return .completed("No watched app or user helpers found.")
             }
             if after.isMainRunning {
                 return .failed("\(name) may still run.", reason: .stillRunning)

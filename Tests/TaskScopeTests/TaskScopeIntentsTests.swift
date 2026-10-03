@@ -43,6 +43,36 @@ final class TaskScopeIntentsTests: XCTestCase {
         XCTAssertTrue(catalog.entities().isEmpty)
     }
 
+    @MainActor
+    func testShortcutRefreshPublishesBootstrappedAddedAndRenamedPresets() {
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        let catalog = WatchedPresetCatalog(suiteName: suiteName, key: key)
+        var publishedNames: [[String]] = []
+        let update = { publishedNames.append(catalog.entities().map(\.displayName)) }
+
+        TaskScopeShortcuts.refreshParameters(for: .interactive, update: update)
+        var added = preset(name: "Added")
+        XCTAssertTrue(store.add(added))
+        TaskScopeShortcuts.refreshParameters(for: .interactive, update: update)
+        added.displayName = "Renamed"
+        XCTAssertTrue(store.update(added))
+        TaskScopeShortcuts.refreshParameters(for: .interactive, update: update)
+
+        XCTAssertEqual(publishedNames, [
+            ["GlobalProtect"], ["GlobalProtect", "Added"], ["GlobalProtect", "Renamed"]
+        ])
+    }
+
+    func testShortcutRefreshSkipsStartupVerification() {
+        var updates = 0
+        TaskScopeShortcuts.refreshParameters(for: .startupVerification) { updates += 1 }
+        XCTAssertEqual(updates, 0)
+        for context in [TaskScopeLaunchContext.interactive, .loginItem, .automation, .urlAutomation] {
+            TaskScopeShortcuts.refreshParameters(for: context) { updates += 1 }
+        }
+        XCTAssertEqual(updates, 4)
+    }
+
     func testQueryResolvesStableIdentifiersAndSearchesNames() async throws {
         let alpha = preset(name: "Alpha")
         let beta = preset(name: "Beta Client")

@@ -849,10 +849,10 @@ final class ProcessManagerTests: XCTestCase {
         helper.executablePath = helper.command
         let protected = process(pid: 44, uid: 0, name: "ExampleDaemon")
         let cases: [(before: [AppProcess], after: [AppProcess], changed: Bool, messages: [String])] = [
-            ([], [], false, ["No Example app found.", "No user helpers found.", "No watched processes found."]),
+            ([], [], false, ["No Example app found.", "No user helpers found.", "No watched app or user helpers found."]),
             ([main, helper], [], false, ["Example quit.", "User helpers quit.", "Example and helpers quit."]),
             ([main, helper], [], true, ["Example quit and launch agents unloaded.", "User helpers quit and launch agents unloaded.", "Example closed and launch agents unloaded."]),
-            ([protected], [protected], false, ["No Example app found.", "No user helpers found.", "Example and helpers quit."]),
+            ([protected], [protected], false, ["No Example app found.", "No user helpers found.", "No watched app or user helpers found."]),
             ([main, helper], [main, helper], false, ["Example may still run.", "User helpers may still run.", "Example may still run."]),
             ([main, helper], [helper], false, ["Example quit.", "User helpers may still run.", "User helpers may still run."])
         ]
@@ -881,6 +881,22 @@ final class ProcessManagerTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testCloseWithOnlyProtectedGlobalProtectServiceDoesNotClaimItQuit() async {
+        let lifecycle = FakeLifecycleService()
+        let daemon = process(pid: 42, uid: 0, name: "PanGPS")
+        let manager = makeManager(
+            inventory: FakeProcessInventory(results: [.success([daemon])]), lifecycle: lifecycle
+        )
+        manager.watchedAppsProvider = { [.globalProtect] }
+
+        let result = await manager.quitAllKillable(.globalProtect)
+
+        XCTAssertEqual(result.status, .completed)
+        XCTAssertEqual(result.message, "No watched app or user helpers found.")
+        XCTAssertEqual(manager.snapshots.first?.protectedRunning, ["PanGPS"])
+        XCTAssertFalse(lifecycle.calls.contains { $0.contains("PanGPS") || $0.contains("daemon") })
     }
 
     func testPresetStopsFailClosedAtInitialAndFinalInventoryReads() async {
@@ -1169,7 +1185,7 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(result.message.contains("privileged VPN service is still running"))
     }
 
-    func testGlobalProtectRestoreEnablesSystemBeforeUserAgents() async {
+    func testGlobalProtectRestoreEnsuresSystemBeforeEnablingOverridesAndUserAgents() async {
         let lifecycle = FakeLifecycleService()
         let running = process(pid: 42, uid: 501, name: "GlobalProtect")
         let daemon = process(pid: 43, uid: 0, name: "PanGPS")
@@ -1181,7 +1197,7 @@ final class ProcessManagerTests: XCTestCase {
         let opened = await manager.openApp(.globalProtect)
         XCTAssertEqual(opened.status, .completed)
         XCTAssertFalse(keptOff)
-        XCTAssertEqual(lifecycle.calls, ["exists", "daemon.enable", "daemon", "agents.enable", "agents.load"])
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "daemon.enable", "agents.enable", "agents.load"])
     }
 
     func testGlobalProtectOpenClearsOverridesEvenWhenSavedIntentWasLost() async {
@@ -1193,7 +1209,7 @@ final class ProcessManagerTests: XCTestCase {
         manager.isPresetKeptOffProvider = { _ in false }
         let opened = await manager.openApp(.globalProtect)
         XCTAssertEqual(opened.status, .completed)
-        XCTAssertEqual(lifecycle.calls, ["exists", "daemon.enable", "daemon", "agents.enable", "agents.load"])
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "daemon.enable", "agents.enable", "agents.load"])
     }
 
     func testOpenRecoversOrphanedGlobalProtectUIWithoutUnloadingVPNJob() async {
@@ -1210,7 +1226,7 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(result.status, .completed)
         XCTAssertEqual(lifecycle.calls, [
             "exists", "agents.unload", "terminate:GlobalProtect", "settle",
-            "daemon.enable", "daemon", "agents.enable", "agents.load"
+            "daemon", "daemon.enable", "agents.enable", "agents.load"
         ])
         XCTAssertEqual(lifecycle.unloadedPresets.first?.lifecycleUserLaunchAgentJobs.map(\.label), [
             "com.paloaltonetworks.gp.pangpa"
@@ -1249,6 +1265,7 @@ final class ProcessManagerTests: XCTestCase {
         lifecycle.systemEnableResult = LifecycleBatchResult(jobs: [
             LifecycleJobResult(label: "com.paloaltonetworks.gp.pangpsd", state: .failed, detail: "Administrator cancelled")
         ])
+        lifecycle.daemonResult = lifecycle.systemEnableResult
         let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
         var keptOff = true
         manager.isPresetKeptOffProvider = { _ in keptOff }
@@ -1258,7 +1275,7 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(opened.status, .failed)
         XCTAssertEqual(allowed.status, .failed)
         XCTAssertTrue(keptOff)
-        XCTAssertEqual(lifecycle.calls, ["exists", "daemon.enable", "daemon.enable"])
+        XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "daemon.enable"])
     }
 
     func testKeepOffPersistsIntentDisablesAgentsAndLeavesProtectedServiceAlone() async {

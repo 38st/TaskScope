@@ -372,6 +372,56 @@ final class WatchedAppsStoreTests: XCTestCase {
         XCTAssertEqual(committed.map(\.displayName), ["Valid"])
     }
 
+    func testUndecodablePresetsAreRejectedWithoutLosingValidPresetsOrIntentEntities() throws {
+        let valid = validPreset(name: "Valid")
+        let other = validPreset(name: "Other")
+        let validJSON = String(decoding: try JSONEncoder().encode(valid), as: UTF8.self)
+        let otherJSON = String(decoding: try JSONEncoder().encode(other), as: UTF8.self)
+        let original = Data("""
+        [null, \(validJSON), 42, {"displayName":[]}, [], \(otherJSON), \(validJSON)]
+        """.utf8)
+        defaults.set(original, forKey: key)
+
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        let catalog = WatchedPresetCatalog(suiteName: suiteName, key: key)
+
+        XCTAssertEqual(store.presets, [valid, other])
+        XCTAssertEqual(catalog.entities().map(\.id), [valid.id, other.id])
+        XCTAssertTrue(store.persistenceIssue?.contains("Rejected 5") == true)
+        XCTAssertTrue(store.isReadOnlyAfterCorruption)
+        XCTAssertTrue(store.canExportPresets)
+        XCTAssertEqual(defaults.data(forKey: "\(key).rejectedMigrationBackup"), original)
+        XCTAssertNil(defaults.data(forKey: "\(key).corruptBackup"))
+        XCTAssertFalse(store.remove(valid))
+        XCTAssertFalse(store.add(validPreset(name: "New")))
+        XCTAssertEqual(defaults.data(forKey: key), original)
+        XCTAssertEqual(WatchedAppsStore(userDefaults: defaults, key: key).presets, [valid, other])
+        XCTAssertEqual(try WatchedAppsStore.decodePresetArchive(store.encodedPresetArchive()), [valid, other])
+
+        store.resetAfterCorruption()
+
+        XCTAssertFalse(store.isReadOnlyAfterCorruption)
+        XCTAssertNil(store.persistenceIssue)
+        XCTAssertEqual(try JSONDecoder().decode([WatchedAppPreset].self, from: XCTUnwrap(defaults.data(forKey: key))), [valid, other])
+        XCTAssertEqual(defaults.data(forKey: "\(key).rejectedMigrationBackup"), original)
+    }
+
+    func testNonArrayPresetsPayloadUsesCorruptRecovery() {
+        for json in ["{}", "null", "42", "\"presets\""] {
+            let original = Data(json.utf8)
+            defaults.set(original, forKey: key)
+            let store = WatchedAppsStore(userDefaults: defaults, key: key)
+
+            XCTAssertTrue(store.presets.isEmpty)
+            XCTAssertTrue(store.isReadOnlyAfterCorruption)
+            XCTAssertFalse(store.canExportPresets)
+            XCTAssertTrue(store.persistenceIssue?.contains("corruptBackup") == true)
+            XCTAssertEqual(defaults.data(forKey: key), original)
+            XCTAssertNil(defaults.data(forKey: "\(key).rejectedMigrationBackup"))
+            XCTAssertTrue(WatchedPresetCatalog(suiteName: suiteName, key: key).entities().isEmpty)
+        }
+    }
+
     func testBuiltInGlobalProtectLifecycleIdentityIsImmutable() {
         let store = WatchedAppsStore(userDefaults: defaults, key: key)
         var modified = WatchedAppPreset.globalProtect

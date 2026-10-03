@@ -94,17 +94,18 @@ final class WatchedAppsStore: ObservableObject {
             return
         }
 
-        let loaded = persistence.load()
+        let loaded = persistence.loadRecoveringElements()
         if let decoded = loaded.value {
             let validated = Self.validatedPresets(decoded)
+            let rejectedCount = loaded.rejectedCount + validated.rejectedCount
             presets = validated.presets
-            if validated.rejectedCount > 0 {
+            if rejectedCount > 0 {
                 let backup = persistence.preserveCurrentPayload(
                     suffix: "rejectedMigrationBackup"
                 ) ?? (key: "\(key).rejectedMigrationBackup", isPreserved: false)
                 allowsPersistence = false
                 recoveredDecodedPayload = true
-                persistenceIssue = "Rejected \(validated.rejectedCount) unsafe or invalid stored preset\(validated.rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); review or export the recovered presets, then reset to commit them."
+                persistenceIssue = "Rejected \(rejectedCount) unsafe or invalid stored preset\(rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); review or export the recovered presets, then reset to commit them."
             } else {
                 allowsPersistence = true
                 recoveredDecodedPayload = false

@@ -289,7 +289,8 @@ final class AutoStopRulesStoreTests: XCTestCase {
             runtimeMinutes: 1,
             action: .kill
         )))
-        XCTAssertEqual(store.rules[0].executablePath, AutoStopRuleValidation.canonicalPath(real.path))
+        XCTAssertEqual(store.rules[0].executablePath, link.standardizedFileURL.path)
+        XCTAssertEqual(makeStore().rules, store.rules)
 
         let kernelPath = AutoStopRuleValidation.canonicalPath(real.path)
         let running = appProcess(
@@ -307,6 +308,90 @@ final class AutoStopRulesStoreTests: XCTestCase {
         XCTAssertTrue(AutoStopRuleValidation.pathsMatch(link.path, real.path))
         XCTAssertTrue(AutoStopRuleValidation.pathsMatch("/tmp/\(UUID().uuidString)", "/private/tmp/never-exists")
             == false)
+
+        let upgraded = directory.appendingPathComponent("v2/RealTool")
+        try FileManager.default.createDirectory(at: upgraded.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("#!/bin/sh\n".utf8).write(to: upgraded)
+        try FileManager.default.removeItem(at: link)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: upgraded)
+        try FileManager.default.removeItem(at: real)
+        let upgradedPath = AutoStopRuleValidation.canonicalPath(upgraded.path)
+        let reloaded = makeStore()
+        reloaded.evaluate(runningProcesses: [appProcess(
+            pid: 42, command: upgradedPath, elapsed: "10:00", executablePath: upgradedPath
+        )]) { _, process in matched.append(process.pid) }
+
+        XCTAssertEqual(reloaded.rules[0].executablePath, link.standardizedFileURL.path)
+        XCTAssertEqual(matched, [41, 42])
+    }
+
+    func testPreviouslyResolvedStoredRuleStillMatchesItsExecutable() throws {
+        let rule = AutoStopRule(
+            processName: "Example", executablePath: "/opt/homebrew/Cellar/example/1/bin/Example",
+            runtimeMinutes: 1, action: .kill
+        )
+        userDefaults.set(try JSONEncoder().encode([rule]), forKey: key)
+        let store = makeStore()
+        var matched: [Int32] = []
+
+        store.evaluate(runningProcesses: [appProcess(
+            pid: 41, command: try XCTUnwrap(rule.executablePath), elapsed: "10:00"
+        )]) { _, process in matched.append(process.pid) }
+
+        XCTAssertEqual(store.rules, [rule])
+        XCTAssertEqual(matched, [41])
+    }
+
+    func testUndecodableRulesAreRejectedWhileValidRulesRemainEnforced() throws {
+        let valid = AutoStopRule(
+            processName: "Example", executablePath: "/Applications/Example.app/Example",
+            runtimeMinutes: 1, action: .kill
+        )
+        let other = AutoStopRule(processName: "Other", runtimeMinutes: 1, action: .prompt)
+        let validJSON = String(decoding: try JSONEncoder().encode(valid), as: UTF8.self)
+        let otherJSON = String(decoding: try JSONEncoder().encode(other), as: UTF8.self)
+        let original = Data("""
+        [null, \(validJSON), {"processName":"Future","runtimeMinutes":1,"action":"futureAction"},
+         {"processName":42}, \(otherJSON), \(validJSON)]
+        """.utf8)
+        userDefaults.set(original, forKey: key)
+        let store = makeStore()
+
+        XCTAssertEqual(store.rules, [valid, other])
+        XCTAssertTrue(store.rulesRecoveryMessage?.contains("Rejected 4") == true)
+        XCTAssertTrue(store.isRulesReadOnlyAfterRecovery)
+        XCTAssertEqual(userDefaults.data(forKey: "\(key).rejectedMigrationBackup"), original)
+        XCTAssertNil(userDefaults.data(forKey: "\(key).corruptBackup"))
+        XCTAssertFalse(store.remove(valid))
+        XCTAssertFalse(store.add(AutoStopRule(processName: "New", runtimeMinutes: 1, action: .prompt)))
+        var matched: [Int32] = []
+        store.evaluate(runningProcesses: [appProcess(pid: 41, elapsed: "10:00")]) { _, process in
+            matched.append(process.pid)
+        }
+        XCTAssertEqual(matched, [41])
+        XCTAssertEqual(userDefaults.data(forKey: key), original)
+        XCTAssertEqual(makeStore().rules, [valid, other])
+
+        store.resetRulesAfterCorruption()
+
+        XCTAssertFalse(store.isRulesReadOnlyAfterRecovery)
+        XCTAssertNil(store.rulesRecoveryMessage)
+        XCTAssertEqual(try JSONDecoder().decode([AutoStopRule].self, from: XCTUnwrap(userDefaults.data(forKey: key))), [valid, other])
+        XCTAssertEqual(userDefaults.data(forKey: "\(key).rejectedMigrationBackup"), original)
+    }
+
+    func testNonArrayRulesPayloadUsesCorruptRecovery() {
+        for json in ["{}", "null", "42", "\"rules\""] {
+            let original = Data(json.utf8)
+            userDefaults.set(original, forKey: key)
+            let store = makeStore()
+
+            XCTAssertTrue(store.rules.isEmpty)
+            XCTAssertTrue(store.isRulesReadOnlyAfterRecovery)
+            XCTAssertTrue(store.rulesRecoveryMessage?.contains("corruptBackup") == true)
+            XCTAssertEqual(userDefaults.data(forKey: key), original)
+            XCTAssertNil(userDefaults.data(forKey: "\(key).rejectedMigrationBackup"))
+        }
     }
 
     /// An outcome written by another build must survive a round trip verbatim

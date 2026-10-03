@@ -36,12 +36,37 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertFalse(HotkeyManager.isSupported(keyCode: key, modifiers: UInt32(optionKey)))
         XCTAssertFalse(HotkeyManager.isSupported(keyCode: key, modifiers: UInt32(shiftKey | optionKey)))
         XCTAssertTrue(HotkeyManager.isSupported(keyCode: key, modifiers: UInt32(controlKey)))
-        XCTAssertTrue(HotkeyManager.isSupported(keyCode: key, modifiers: UInt32(cmdKey)))
+        XCTAssertFalse(HotkeyManager.isSupported(keyCode: key, modifiers: UInt32(cmdKey)))
         XCTAssertTrue(HotkeyManager.isSupported(keyCode: key, modifiers: UInt32(controlKey | shiftKey)))
         XCTAssertTrue(
             HotkeyManager.validationFailure(keyCode: key, modifiers: UInt32(shiftKey))?
                 .contains("Command or Control") == true
         )
+    }
+
+    func testStandardAppShortcutsAreReservedWithoutRejectingTheDefault() {
+        let keys = [
+            kVK_ANSI_A, kVK_ANSI_B, kVK_ANSI_C, kVK_ANSI_D, kVK_ANSI_E,
+            kVK_ANSI_F, kVK_ANSI_G, kVK_ANSI_H, kVK_ANSI_I, kVK_ANSI_J,
+            kVK_ANSI_K, kVK_ANSI_L, kVK_ANSI_M, kVK_ANSI_N, kVK_ANSI_O,
+            kVK_ANSI_P, kVK_ANSI_Q, kVK_ANSI_R, kVK_ANSI_S, kVK_ANSI_T,
+            kVK_ANSI_U, kVK_ANSI_V, kVK_ANSI_W, kVK_ANSI_X, kVK_ANSI_Y,
+            kVK_ANSI_Z, kVK_ANSI_Comma
+        ]
+        for key in keys {
+            XCTAssertTrue(
+                HotkeyManager.validationFailure(keyCode: UInt32(key), modifiers: UInt32(cmdKey))?
+                    .contains("is reserved by macOS. Choose another combination.") == true,
+                "Key code \(key) must not hijack an app shortcut"
+            )
+        }
+        XCTAssertEqual(
+            HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_Z), modifiers: UInt32(cmdKey | shiftKey)),
+            "⌘⇧Z (Redo) is reserved by macOS. Choose another combination."
+        )
+        XCTAssertNil(HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(cmdKey | shiftKey)))
+        XCTAssertNil(HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_C), modifiers: UInt32(cmdKey | optionKey)))
+        XCTAssertNil(HotkeyManager.validationFailure(keyCode: UInt32(kVK_ANSI_C), modifiers: UInt32(controlKey)))
     }
 
     func testSystemReservedCombinationsAreRefusedWithAnExplanation() {
@@ -109,7 +134,7 @@ final class HotkeyManagerTests: XCTestCase {
         manager.register()
         backend.refusedKeyCodes = [UInt32(kVK_ANSI_K)]
 
-        XCTAssertFalse(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey)))
+        XCTAssertFalse(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_K), modifiers: UInt32(cmdKey | controlKey)))
 
         XCTAssertEqual(
             manager.registrationStatus,
@@ -117,7 +142,7 @@ final class HotkeyManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             backend.events,
-            ["register:T:768", "unregister:1", "register:K:256", "register:T:768"]
+            ["register:T:768", "unregister:1", "register:K:4352", "register:T:768"]
         )
         XCTAssertEqual(manager.keyCode, UInt32(kVK_ANSI_T))
         XCTAssertTrue(manager.isRegistered)

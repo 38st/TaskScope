@@ -173,24 +173,24 @@ final class HotkeyManager: ObservableObject {
 
     /// Why a combination is refused as a global hotkey, or nil when it is
     /// acceptable. Shift or Option alone would intercept ordinary typing in
-    /// every app, and a handful of combinations are owned by macOS.
+    /// every app, and standard app and system shortcuts must remain available.
     static func validationFailure(keyCode: UInt32, modifiers: UInt32) -> String? {
+        let supportedModifiers = UInt32(cmdKey | shiftKey | optionKey | controlKey)
+        let flags = modifiers & supportedModifiers
+        if let reserved = reservedShortcutDescription(keyCode: keyCode, modifiers: flags) {
+            return "\(reserved) is reserved by macOS. Choose another combination."
+        }
         guard keyName(for: keyCode) != nil else {
             return "Choose a supported key (letters, digits, function keys, arrows, Space, Return, Tab, or Delete)."
         }
-        let supportedModifiers = UInt32(cmdKey | shiftKey | optionKey | controlKey)
-        let flags = modifiers & supportedModifiers
         guard flags & UInt32(cmdKey | controlKey) != 0 else {
             return "A global hotkey needs Command or Control. Shift or Option alone would intercept ordinary typing in every app."
-        }
-        if let reserved = reservedShortcutDescription(keyCode: keyCode, modifiers: flags) {
-            return "\(reserved) is reserved by macOS. Choose another combination."
         }
         return nil
     }
 
-    /// Combinations macOS handles itself; registering them either fails or
-    /// hijacks a system feature.
+    /// Standard app and system combinations; registering them either fails or
+    /// hijacks a shortcut in every app.
     static func reservedShortcutDescription(keyCode: UInt32, modifiers: UInt32) -> String? {
         let command = UInt32(cmdKey)
         let shift = UInt32(shiftKey)
@@ -198,6 +198,20 @@ final class HotkeyManager: ObservableObject {
         switch (Int(keyCode), modifiers) {
         case (kVK_ANSI_Q, command):
             return "⌘Q (Quit)"
+        case (kVK_ANSI_A, command), (kVK_ANSI_B, command), (kVK_ANSI_C, command),
+             (kVK_ANSI_D, command), (kVK_ANSI_E, command), (kVK_ANSI_F, command),
+             (kVK_ANSI_G, command), (kVK_ANSI_H, command), (kVK_ANSI_I, command),
+             (kVK_ANSI_J, command), (kVK_ANSI_K, command), (kVK_ANSI_L, command),
+             (kVK_ANSI_M, command), (kVK_ANSI_N, command), (kVK_ANSI_O, command),
+             (kVK_ANSI_P, command), (kVK_ANSI_R, command), (kVK_ANSI_S, command),
+             (kVK_ANSI_T, command), (kVK_ANSI_U, command), (kVK_ANSI_V, command),
+             (kVK_ANSI_W, command), (kVK_ANSI_X, command), (kVK_ANSI_Y, command),
+             (kVK_ANSI_Z, command):
+            return "⌘\(keyName(for: keyCode) ?? "") (standard app shortcut)"
+        case (kVK_ANSI_Z, command | shift):
+            return "⌘⇧Z (Redo)"
+        case (kVK_ANSI_Comma, command):
+            return "⌘, (Settings)"
         case (kVK_ANSI_Q, command | shift):
             return "⌘⇧Q (Log Out)"
         case (kVK_Tab, command), (kVK_Tab, command | shift):

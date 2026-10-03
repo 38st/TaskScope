@@ -43,8 +43,8 @@ struct WatchedPresetCatalog: Sendable {
         let userDefaults = suiteName.flatMap(UserDefaults.init(suiteName:)) ?? .standard
         let presets: [WatchedAppPreset]
         if let data = userDefaults.data(forKey: key),
-           let decoded = try? JSONDecoder().decode([WatchedAppPreset].self, from: data) {
-            presets = WatchedAppsStore.validatedPresets(decoded).presets
+           let decoded = try? JSONDecoder().decode(PartiallyDecodedArray<WatchedAppPreset>.self, from: data) {
+            presets = WatchedAppsStore.validatedPresets(decoded.elements).presets
         } else if userDefaults.data(forKey: key) == nil {
             presets = [.globalProtect]
         } else {
@@ -189,6 +189,14 @@ struct RefreshTaskScopeIntent: AppIntent {
 
 @available(macOS 13.0, *)
 struct TaskScopeShortcuts: AppShortcutsProvider {
+    static func refreshParameters(
+        for launchContext: TaskScopeLaunchContext,
+        update: () -> Void = { TaskScopeShortcuts.updateAppShortcutParameters() }
+    ) {
+        guard launchContext.performsRuntimeBootstrap else { return }
+        update()
+    }
+
     static var appShortcuts: [AppShortcut] {
         AppShortcut(
             intent: RefreshTaskScopeIntent(),

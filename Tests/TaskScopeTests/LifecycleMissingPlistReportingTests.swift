@@ -86,7 +86,7 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
             .completed,
             "Nothing was running and nothing failed, yet the stop reports: \(result.message)"
         )
-        XCTAssertEqual(result.message, "No watched processes found.")
+        XCTAssertEqual(result.message, "No watched app or user helpers found.")
     }
 
     // MARK: - P7 proof 2: processes really were stopped, stop still reports .failed
