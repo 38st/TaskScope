@@ -130,6 +130,20 @@ enum TaskScopeIntentDialog {
     }
 }
 
+@MainActor
+enum TaskScopeIntentExecution {
+    static func perform(
+        _ command: TaskScopeCommand,
+        bus: AppCommandBus,
+        confirmation: () async throws -> Void = {}
+    ) async throws -> TaskScopeCommandResult {
+        bus.prepareForIntentExecution()
+        try await confirmation()
+        try Task.checkCancellation()
+        return await bus.submit(command)
+    }
+}
+
 @available(macOS 13.0, *)
 struct StopWatchedAppIntent: AppIntent {
     static let title: LocalizedStringResource = "Stop Watched App"
@@ -141,12 +155,29 @@ struct StopWatchedAppIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = await AppCommandBus.shared.submit(.stopPresetEntity(app.commandTarget))
+        let result = try await executeStop(bus: .shared) { message in
+            let dialog = IntentDialog(stringLiteral: message)
+            if #available(macOS 15.0, *) {
+                try await requestConfirmation(dialog: dialog)
+            } else if try await !$app.requestConfirmation(for: app, dialog: dialog) {
+                throw CancellationError()
+            }
+        }
         let message = try TaskScopeIntentDialog.successMessage(
             for: result,
             action: "stop \(app.displayName)"
         )
         return .result(dialog: IntentDialog(stringLiteral: message))
+    }
+
+    @MainActor
+    func executeStop(
+        bus: AppCommandBus,
+        confirmation: (String) async throws -> Void
+    ) async throws -> TaskScopeCommandResult {
+        try await TaskScopeIntentExecution.perform(.stopPresetEntity(app.commandTarget), bus: bus) {
+            try await confirmation("Stop \(app.displayName) and its eligible watched processes? This may interrupt active work or connections.")
+        }
     }
 }
 
@@ -161,7 +192,7 @@ struct OpenWatchedAppIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = await AppCommandBus.shared.submit(.openPresetEntity(app.commandTarget))
+        let result = try await TaskScopeIntentExecution.perform(.openPresetEntity(app.commandTarget), bus: .shared)
         let message = try TaskScopeIntentDialog.successMessage(
             for: result,
             action: "open \(app.displayName)"
@@ -178,7 +209,7 @@ struct RefreshTaskScopeIntent: AppIntent {
     static var openAppWhenRun: Bool { false }
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
-        let result = await AppCommandBus.shared.submit(.refresh)
+        let result = try await TaskScopeIntentExecution.perform(.refresh, bus: .shared)
         let message = try TaskScopeIntentDialog.successMessage(
             for: result,
             action: "refresh TaskScope"

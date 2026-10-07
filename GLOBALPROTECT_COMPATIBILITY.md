@@ -26,6 +26,8 @@ Connection Failed, an enabled Connect control, and no Disconnect control in
 the same vendor window. The UI adapter currently recognizes the
 English status/control labels; unsupported layouts or states fail without
 stopping services. URL Close and Shortcuts Stop retain their existing scope.
+Shortcuts Stop requests confirmation naming the watched app before executing,
+including when invoked through Siri, Spotlight, or App Shortcuts.
 After a failed attempt, **Stop Services Anyway…** offers a separately confirmed
 exception that skips the idle-state prerequisite, discloses stale-DNS risk, and
 uses the same fixed service controls. The [October 1 recovery check](Evidence/GlobalProtect/2026-10-01-disconnect-recovery.md)

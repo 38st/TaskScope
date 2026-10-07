@@ -123,7 +123,19 @@ final class AppCommandBus {
     private var pending: [PendingCommand] = []
     private var activeCommandID: UUID?
 
+    private var receivedIntent = false
+    var onIntentExecution: (() -> Void)? {
+        didSet {
+            if receivedIntent { onIntentExecution?() }
+        }
+    }
+
     init() {}
+
+    func prepareForIntentExecution() {
+        receivedIntent = true
+        onIntentExecution?()
+    }
 
     func install(
         handler: @escaping @MainActor @Sendable (TaskScopeCommand) async -> TaskScopeCommandResult

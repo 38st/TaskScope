@@ -216,8 +216,8 @@ added; ordinary process stop and Auto Stop retain their existing boundaries.
 ### URL, Shortcut, and login automation
 
 Any local app, webpage handler, or document can attempt to open a custom URL.
-Shortcuts, in contrast, are actions explicitly configured and invoked by the
-user under macOS App Intents controls.
+App Intents can be invoked through user-configured Shortcuts or directly through
+Siri, Spotlight, and App Shortcuts without prior configuration.
 
 Required invariants:
 
@@ -227,9 +227,10 @@ Required invariants:
 - discard cancelled queued commands before dispatch and carry cancellation into
   a command waiting for the process-operation gate; cancelling one submission
   must not cancel its neighbors or imply that completed mutations were undone;
-- route user-configured Shortcut actions through the same identity validation
-  and truthful result reporting as the app; a Shortcuts stop runs without the
-  in-app confirmation dialog, so configuring the shortcut is the confirmation;
+- route App Intent actions through the same identity validation and truthful
+  result reporting as the app; Stop Watched App must request system confirmation
+  naming the app before submitting a stop command, including direct App Shortcuts;
+- keep cold intent launches in the background, including while awaiting confirmation;
 - do not treat local/development signing as proof of production artifact
   identity;
 - make Launch at Login optional and recover visibly from macOS approval states.

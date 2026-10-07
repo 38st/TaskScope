@@ -222,8 +222,11 @@ be exported from Settings when their stored data is readable. See
   states.
 - Opt into watched-process notifications.
 - Show TaskScope with a configurable global shortcut; the default is
-  Control-Option-Command-T (⌃⌥⌘T). Saved shortcuts, including Command-Shift-T,
-  are preserved. Command-Shift-T can still be recorded explicitly.
+  Control-Option-Command-T (⌃⌥⌘T). Supported saved shortcuts, including
+  Command-Shift-T, are preserved. Saved shortcuts now reserved by macOS migrate
+  to the default, with a notice in Settings > Hotkey. System shortcuts for Lock
+  Screen, Full Screen, Emoji & Symbols, Spaces/Mission Control, and input sources
+  cannot be recorded.
 - Start nonintrusively at login or for automation.
 
 Normal process actions never target TaskScope itself. Process targets are
@@ -261,10 +264,12 @@ can discover:
 - **Stop Watched App**
 
 Open and Stop use a watched-app entity selected by the user from TaskScope's
-stored presets. They use the same lifecycle result reporting as the app, but a
-Shortcuts **Stop Watched App** action runs without the in-app confirmation
-dialog: configuring the shortcut is the confirmation. An ad-hoc signature is
-insufficient for App Intents execution.
+stored presets. They use the same lifecycle result reporting as the app.
+**Stop Watched App** requests confirmation naming the app before stopping its
+eligible watched processes, including when invoked through Siri, Spotlight, or
+App Shortcuts without prior configuration. Cold intent launches remain in the
+menu bar without opening a window or leaving a Dock icon. An ad-hoc signature
+is insufficient for App Intents execution.
 
 ## Permissions and trust boundaries
 

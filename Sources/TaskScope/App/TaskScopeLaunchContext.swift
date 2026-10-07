@@ -44,7 +44,7 @@ enum TaskScopeLaunchContext: Equatable {
         return finalizeInteractiveLaunch ? .interactive : .pending
     }
 
-    static func receivingURL(
+    static func receivingAutomation(
         current: TaskScopeLaunchContext,
         phase: TaskScopeLaunchPhase
     ) -> TaskScopeLaunchContext {
@@ -70,20 +70,16 @@ enum TaskScopeLaunchPhase: Equatable, Sendable {
     case running
 }
 
-/// How an interactive launch presents its windows once the cold-open grace
-/// period has elapsed. Neither outcome changes the activation policy: an
-/// interactive launch stays a regular app and is never demoted to an
-/// accessory just because it was not yet active.
-enum TaskScopeInteractiveLaunchPresentation: Equatable, Sendable {
+/// Background launches remain accessories; an inactive interactive launch
+/// keeps its Dock presence and waits for activation before showing windows.
+enum TaskScopeLaunchPresentation: Equatable, Sendable {
+    case background
     case presentNow
     case presentOnNextActivation
 
-    static func resolve(isActive: Bool) -> TaskScopeInteractiveLaunchPresentation {
-        isActive ? .presentNow : .presentOnNextActivation
-    }
-
-    var demotesToAccessory: Bool {
-        false
+    static func resolve(context: TaskScopeLaunchContext, isActive: Bool) -> TaskScopeLaunchPresentation {
+        guard !context.suppressesAutomaticWindowPresentation else { return .background }
+        return isActive ? .presentNow : .presentOnNextActivation
     }
 }
 

@@ -78,6 +78,7 @@ final class HotkeyManager: ObservableObject {
     @Published private(set) var keyCode: UInt32
     @Published private(set) var modifiers: UInt32
     @Published private(set) var registrationStatus: RegistrationStatus = .disabled
+    @Published private(set) var migrationNotice: String?
 
     var onShow: (() -> Void)?
 
@@ -102,6 +103,15 @@ final class HotkeyManager: ObservableObject {
         hotkeyEnabled = saved?["enabled"] as? Bool ?? true
         keyCode = (saved?["keyCode"] as? UInt32) ?? UInt32(kVK_ANSI_T)
         modifiers = (saved?["modifiers"] as? UInt32) ?? UInt32(controlKey | optionKey | cmdKey)
+        if let reserved = Self.reservedShortcutDescription(
+            keyCode: keyCode,
+            modifiers: modifiers & UInt32(cmdKey | shiftKey | optionKey | controlKey)
+        ) {
+            keyCode = UInt32(kVK_ANSI_T)
+            modifiers = UInt32(controlKey | optionKey | cmdKey)
+            migrationNotice = "Your saved shortcut \(reserved) is now reserved by macOS. TaskScope changed it to ⌃⌥⌘T."
+            save()
+        }
     }
 
     deinit {
@@ -139,6 +149,7 @@ final class HotkeyManager: ObservableObject {
 
         self.keyCode = keyCode
         self.modifiers = modifiers
+        migrationNotice = nil
         save()
         return true
     }
@@ -195,7 +206,19 @@ final class HotkeyManager: ObservableObject {
         let command = UInt32(cmdKey)
         let shift = UInt32(shiftKey)
         let option = UInt32(optionKey)
+        let control = UInt32(controlKey)
         switch (Int(keyCode), modifiers) {
+        case (kVK_ANSI_Q, control | command):
+            return "⌃⌘Q (Lock Screen)"
+        case (kVK_ANSI_F, control | command):
+            return "⌃⌘F (Full Screen)"
+        case (kVK_Space, control | command):
+            return "⌃⌘Space (Emoji & Symbols)"
+        case (kVK_LeftArrow, control), (kVK_RightArrow, control),
+             (kVK_UpArrow, control), (kVK_DownArrow, control):
+            return "⌃\(keyName(for: keyCode) ?? "") (Spaces/Mission Control)"
+        case (kVK_Space, control):
+            return "⌃Space (input source)"
         case (kVK_ANSI_Q, command):
             return "⌘Q (Quit)"
         case (kVK_ANSI_A, command), (kVK_ANSI_B, command), (kVK_ANSI_C, command),

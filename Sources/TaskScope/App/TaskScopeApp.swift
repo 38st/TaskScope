@@ -21,12 +21,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         windowPresentationAllowed = false
         previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
         super.init()
+        AppCommandBus.shared.onIntentExecution = { [weak self] in
+            self?.prepareForIncomingAutomationCommand()
+        }
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         resolveLaunchContext(finalizeInteractiveLaunch: false)
         URLSchemeHandler.shared.register { [weak self] _ in
-            self?.prepareForIncomingURLCommand()
+            self?.prepareForIncomingAutomationCommand()
         }
         if launchContext.suppressesAutomaticWindowPresentation {
             NSApp.setActivationPolicy(.accessory)
@@ -85,8 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         promoteInteractiveLaunch()
     }
 
-    private func prepareForIncomingURLCommand() {
-        let resolved = TaskScopeLaunchContext.receivingURL(
+    private func prepareForIncomingAutomationCommand() {
+        let resolved = TaskScopeLaunchContext.receivingAutomation(
             current: launchContext,
             phase: launchPhase
         )
@@ -112,9 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
             self.launchPhase = .running
             self.interactiveLaunchTask = nil
-            if NSApp.isActive {
+            switch TaskScopeLaunchPresentation.resolve(context: self.launchContext, isActive: NSApp.isActive) {
+            case .background:
+                self.finalizeBackgroundLaunch()
+            case .presentNow:
                 self.promoteInteractiveLaunch()
-            } else {
+            case .presentOnNextActivation:
                 self.finalizeInactiveInteractiveLaunch()
             }
         }
@@ -169,8 +175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// to an accessory here hid a Dock-launched app whose activation was
     /// merely slow.
     private func finalizeInactiveInteractiveLaunch() {
-        let presentation = TaskScopeInteractiveLaunchPresentation.resolve(isActive: false)
-        precondition(!presentation.demotesToAccessory)
         // will-finish ran while the context was still pending and made the app
         // an accessory; an interactive launch keeps its Dock presence.
         NSApp.setActivationPolicy(.regular)

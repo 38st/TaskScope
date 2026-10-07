@@ -31,6 +31,12 @@ struct HotkeySettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if let notice = hotkey.migrationNotice {
+                    Text(notice)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
                 Text(hotkey.registrationStatus.message)
                     .font(.caption)
                     .foregroundStyle(

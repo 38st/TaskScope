@@ -64,6 +64,14 @@ struct ActivityMonitorPreparedTableState: @unchecked Sendable {
     var processIDWasShown = false
     var searchWasChanged = false
 
+    mutating func updateSearch(processName: String?, setValue: (String) -> Bool) {
+        guard let processName,
+              (searchWasChanged ? searchValueSet : searchValue) != processName,
+              setValue(processName) else { return }
+        searchValueSet = processName
+        searchWasChanged = true
+    }
+
     var hasChanges: Bool {
         processScopeChanged || processIDWasShown || searchWasChanged
     }
@@ -439,18 +447,16 @@ final class ActivityMonitorAccessibilityWorker: @unchecked Sendable {
             state.processIDWasShown = true
         }
 
-        if !state.searchWasChanged,
-           let processName,
-           let searchField = state.searchField,
-           state.searchValue != processName,
-           AXUIElementSetAttributeValue(
-               searchField,
-               kAXValueAttribute as CFString,
-               processName as CFString
-           ) == .success {
+        let searchField = state.searchField
+        state.updateSearch(processName: processName) { name in
+            guard let searchField,
+                  AXUIElementSetAttributeValue(
+                      searchField,
+                      kAXValueAttribute as CFString,
+                      name as CFString
+                  ) == .success else { return false }
             _ = AXUIElementPerformAction(searchField, kAXConfirmAction as CFString)
-            state.searchValueSet = processName
-            state.searchWasChanged = true
+            return true
         }
 
         return state

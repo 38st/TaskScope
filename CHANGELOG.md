@@ -46,8 +46,8 @@ All notable changes to TaskScope are documented in this file. The project uses
 ### Changed
 
 - Changed the default global shortcut to Control-Option-Command-T (⌃⌥⌘T).
-  Existing saved shortcuts, including Command-Shift-T, remain unchanged and
-  can still be recorded explicitly.
+  Supported saved shortcuts, including Command-Shift-T, remain unchanged and
+  can still be recorded explicitly; reserved shortcuts migrate as described below.
 - Preserve delivered automatic-stop outcomes when a rule is edited, disabled,
   or deleted in flight, without retaining retries for the retired rule.
 - Preserve unknown top-level settings and newer schema versions on save after
@@ -127,6 +127,11 @@ All notable changes to TaskScope are documented in this file. The project uses
   per-user agent layouts without accepting custom privileged fields.
 
 ### Fixed
+
+- Retarget consecutive Activity Monitor handoffs while preserving the original
+  search for restoration. Require confirmation for Stop Watched App intents and
+  keep cold intent launches in the background. Migrate reserved saved hotkeys to
+  ⌃⌥⌘T with a Settings notice and reject additional macOS system shortcuts.
 
 - Short-lived shell commands are reaped after exit-observer registration as
   well as on exit events. This closes a registration race that could leave a

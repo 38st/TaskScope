@@ -9,6 +9,76 @@ final class TaskScopeIntentsTests: XCTestCase {
         XCTAssertFalse(StopWatchedAppIntent.openAppWhenRun)
     }
 
+    @MainActor
+    func testStopRequiresConfirmationBeforeSubmittingAndDeclineDoesNotStop() async throws {
+        let bus = AppCommandBus()
+        var events: [String] = []
+        var commands: [TaskScopeCommand] = []
+        bus.onIntentExecution = { events.append("intent") }
+        bus.install { command in
+            commands.append(command)
+            events.append("stop")
+            return .init(status: .completed, message: "Stopped Example.")
+        }
+        let intent = StopWatchedAppIntent()
+        intent.app = WatchedPresetEntity(id: UUID(), displayName: "Example")
+        let result = try await intent.executeStop(bus: bus) { message in
+            XCTAssertTrue(message.contains("Example"))
+            XCTAssertTrue(message.contains("eligible watched processes"))
+            XCTAssertTrue(commands.isEmpty)
+            events.append("confirm")
+        }
+        XCTAssertTrue(result.succeeded)
+        XCTAssertEqual(events, ["intent", "confirm", "stop"])
+        XCTAssertEqual(commands, [.stopPresetEntity(intent.app.commandTarget)])
+
+        do {
+            _ = try await intent.executeStop(bus: bus) { _ in throw CancellationError() }
+            XCTFail("Declined confirmation must throw")
+        } catch is CancellationError {
+            XCTAssertEqual(commands.count, 1)
+        }
+    }
+
+    @MainActor
+    func testColdIntentLaunchSuppressesPresentationBeforeConfirmation() async throws {
+        let bus = AppCommandBus()
+        var context = TaskScopeLaunchContext.interactive
+        var phase = TaskScopeLaunchPhase.starting
+        bus.onIntentExecution = {
+            context = TaskScopeLaunchContext.receivingAutomation(current: context, phase: phase)
+        }
+        bus.install { _ in .init(status: .completed, message: "done") }
+        _ = try await TaskScopeIntentExecution.perform(.refresh, bus: bus) {
+            XCTAssertEqual(context, .urlAutomation)
+            XCTAssertEqual(TaskScopeLaunchPresentation.resolve(context: context, isActive: false), .background)
+            XCTAssertEqual(TaskScopeLaunchPresentation.resolve(context: context, isActive: true), .background)
+        }
+        // Intent execution in an already-running interactive app leaves it interactive.
+        context = .interactive
+        phase = .running
+        _ = try await TaskScopeIntentExecution.perform(.refresh, bus: bus)
+        XCTAssertEqual(context, .interactive)
+    }
+
+    @MainActor
+    func testIntentSignalIsRetainedUntilLaunchObserverIsInstalled() async throws {
+        let bus = AppCommandBus()
+        bus.install { _ in .init(status: .completed, message: "done") }
+        _ = try await TaskScopeIntentExecution.perform(.refresh, bus: bus)
+        var context = TaskScopeLaunchContext.pending
+        bus.onIntentExecution = {
+            context = TaskScopeLaunchContext.receivingAutomation(current: context, phase: .starting)
+        }
+        XCTAssertEqual(context, .urlAutomation)
+        context = TaskScopeLaunchContext.resolve(
+            current: context,
+            signal: TaskScopeLaunchSignal(arguments: ["TaskScope"], launchedAsLoginItem: false, receivedOpenURL: false),
+            finalizeInteractiveLaunch: true
+        )
+        XCTAssertEqual(context, .urlAutomation)
+    }
+
     func testEntityCommandTargetPreservesStableIdentifier() {
         let id = UUID()
         let entity = WatchedPresetEntity(id: id, displayName: "Example")

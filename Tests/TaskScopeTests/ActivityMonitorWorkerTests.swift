@@ -42,6 +42,42 @@ final class ActivityMonitorWorkerTests: XCTestCase {
         XCTAssertEqual(table.restoreCount, 1)
     }
 
+    func testConsecutiveSuccessfulHandoffsRetargetSearchAndRestoreOriginal() async {
+        let table = WorkerTableFixture()
+        let worker = ActivityMonitorAccessibilityWorker(
+            selection: { _, pid, _, state in table.select(pid: pid, existing: state) },
+            restoration: { table.restore($0) }
+        )
+        _ = await worker.selectOrPrepare(applicationPID: 42, targetPID: 1, processName: nil)
+        let first = await worker.selectOrPrepare(applicationPID: 42, targetPID: 1, processName: nil)
+        XCTAssertEqual(first.attempt, .selected)
+        _ = await worker.selectOrPrepare(applicationPID: 42, targetPID: 2, processName: nil)
+        let second = await worker.selectOrPrepare(applicationPID: 42, targetPID: 2, processName: nil)
+        XCTAssertEqual(second.attempt, .selected)
+        XCTAssertEqual(second.preparedState?.searchValue, "original search")
+        await worker.restore(generation: first.generation)
+        XCTAssertEqual(table.search, "temporary 2")
+        await worker.restore(generation: second.generation)
+        XCTAssertEqual(table.search, "original search")
+    }
+
+    func testSearchRetargetsWithoutLosingOriginalAndRetriesFailedWrites() {
+        var state = ActivityMonitorPreparedTableState(searchValue: "original search")
+        var writes: [String] = []
+        state.updateSearch(processName: "first") { writes.append($0); return true }
+        state.updateSearch(processName: "first") { writes.append($0); return true }
+        state.updateSearch(processName: "second") { writes.append($0); return false }
+        XCTAssertEqual(state.searchValueSet, "first")
+        state.updateSearch(processName: "second") { writes.append($0); return true }
+        XCTAssertEqual(state.searchValueSet, "second")
+        XCTAssertEqual(state.searchValue, "original search")
+        state.updateSearch(processName: "original search") { writes.append($0); return true }
+        state.updateSearch(processName: nil) { writes.append($0); return true }
+        XCTAssertEqual(writes, ["first", "second", "second", "original search"])
+        XCTAssertEqual(state.searchValueSet, "original search")
+        XCTAssertTrue(state.searchWasChanged)
+    }
+
     func testSynchronousShutdownRestoresStateFromAnInFlightAttempt() async {
         let table = WorkerTableFixture()
         let started = expectation(description: "worker selection started")
@@ -74,10 +110,14 @@ private final class WorkerTableFixture: @unchecked Sendable {
 
     func select(pid: Int32, existing: ActivityMonitorPreparedTableState?) -> ActivityMonitorAccessibilityWorker.Outcome {
         lock.withLock {
+            if value == "temporary \(pid)" {
+                return .init(attempt: .selected, preparedState: existing)
+            }
             var state = existing ?? ActivityMonitorPreparedTableState(searchValue: value)
-            state.searchWasChanged = true
-            state.searchValueSet = "temporary \(pid)"
-            value = state.searchValueSet
+            state.updateSearch(processName: "temporary \(pid)") {
+                value = $0
+                return true
+            }
             return .init(attempt: .notReady, preparedState: state)
         }
     }

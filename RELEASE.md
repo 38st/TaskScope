@@ -78,12 +78,15 @@ Record evidence for every locally testable item:
 - Prompt, Auto Stop, and Log Only rules;
 - corrupt settings, presets, rules/events, and saved-selection recovery/reset;
 - notification not-determined, allowed, denied, revoked, and recovery states;
-- Accessibility denial/grant and exact Activity Monitor PID handoff;
+- Accessibility denial/grant and exact Activity Monitor PID handoff, including
+  consecutive handoffs to different processes before table-state restoration;
 - Launch at Login registration, required approval, disable, and recovery;
-- hotkey conflict and previous-shortcut restoration;
+- hotkey conflict, previous-shortcut restoration, and reserved saved-shortcut
+  migration to ⌃⌥⌘T with a Settings notice;
 - cold and warm `taskscope://refresh`, plus rejection of every other URL route;
-- Shortcuts cold launch without an unintended window, using a real eligible
-  signature;
+- Shortcuts cold launch without an unintended window or Dock icon, using a real
+  eligible signature; Stop confirmation and cancellation from Shortcuts, Siri,
+  Spotlight, and App Shortcuts;
 - light/dark appearance, keyboard operation, VoiceOver labels, and destructive
   confirmations.
 

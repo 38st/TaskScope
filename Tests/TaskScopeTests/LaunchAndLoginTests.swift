@@ -145,41 +145,44 @@ final class LaunchContextTests: XCTestCase {
     /// activation; it is never demoted to an accessory app.
     func testInactiveInteractiveLaunchPresentsOnNextActivationWithoutDemotion() {
         XCTAssertEqual(
-            TaskScopeInteractiveLaunchPresentation.resolve(isActive: false),
+            TaskScopeLaunchPresentation.resolve(context: .interactive, isActive: false),
             .presentOnNextActivation
         )
         XCTAssertEqual(
-            TaskScopeInteractiveLaunchPresentation.resolve(isActive: true),
+            TaskScopeLaunchPresentation.resolve(context: .interactive, isActive: true),
             .presentNow
         )
-        XCTAssertFalse(TaskScopeInteractiveLaunchPresentation.presentOnNextActivation.demotesToAccessory)
-        XCTAssertFalse(TaskScopeInteractiveLaunchPresentation.presentNow.demotesToAccessory)
+        for context in [TaskScopeLaunchContext.pending, .urlAutomation, .automation, .loginItem, .startupVerification] {
+            for active in [false, true] {
+                XCTAssertEqual(TaskScopeLaunchPresentation.resolve(context: context, isActive: active), .background)
+            }
+        }
     }
 
     func testIncomingURLOnlyConvertsStartupLaunchToBackground() {
         XCTAssertEqual(
-            TaskScopeLaunchContext.receivingURL(
+            TaskScopeLaunchContext.receivingAutomation(
                 current: .interactive,
                 phase: .starting
             ),
             .urlAutomation
         )
         XCTAssertEqual(
-            TaskScopeLaunchContext.receivingURL(
+            TaskScopeLaunchContext.receivingAutomation(
                 current: .interactive,
                 phase: .running
             ),
             .interactive
         )
         XCTAssertEqual(
-            TaskScopeLaunchContext.receivingURL(
+            TaskScopeLaunchContext.receivingAutomation(
                 current: .loginItem,
                 phase: .running
             ),
             .loginItem
         )
         XCTAssertEqual(
-            TaskScopeLaunchContext.receivingURL(
+            TaskScopeLaunchContext.receivingAutomation(
                 current: .startupVerification,
                 phase: .starting
             ),

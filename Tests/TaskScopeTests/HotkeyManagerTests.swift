@@ -38,6 +38,66 @@ final class HotkeyManagerTests: XCTestCase {
         XCTAssertEqual(reloaded.keyCode, UInt32(kVK_ANSI_T))
     }
 
+    func testReservedSavedShortcutMigratesToDefaultWithNotice() {
+        let suite = "TaskScope.HotkeyManagerTests.migration"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for enabled in [true, false] {
+            defaults.set(["enabled": enabled, "keyCode": UInt32(kVK_ANSI_K), "modifiers": UInt32(cmdKey)], forKey: "hotkey")
+            let backend = FakeHotkeyBackend()
+            let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: backend)
+            defer { manager.unregister() }
+            manager.register()
+            XCTAssertEqual(manager.displayString, "⌃⌥⌘T")
+            XCTAssertEqual(manager.hotkeyEnabled, enabled)
+            XCTAssertEqual(manager.registrationStatus, enabled ? .registered : .disabled)
+            XCTAssertEqual(backend.events, enabled ? ["register:T:6400"] : [])
+            XCTAssertTrue(manager.migrationNotice?.contains("⌘K") == true)
+            XCTAssertTrue(manager.migrationNotice?.contains("changed it to ⌃⌥⌘T") == true)
+            let reloaded = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: FakeHotkeyBackend())
+            XCTAssertEqual(reloaded.displayString, "⌃⌥⌘T")
+            XCTAssertEqual(reloaded.hotkeyEnabled, enabled)
+            XCTAssertTrue(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(cmdKey | shiftKey)))
+            XCTAssertNil(manager.migrationNotice)
+        }
+    }
+
+    func testMigrationNoticeDoesNotHideDefaultRegistrationFailure() {
+        let suite = "TaskScope.HotkeyManagerTests.migrationConflict"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(["enabled": true, "keyCode": UInt32(kVK_ANSI_K), "modifiers": UInt32(cmdKey)], forKey: "hotkey")
+        let backend = FakeHotkeyBackend()
+        backend.refusedKeyCodes = [UInt32(kVK_ANSI_T)]
+        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: backend)
+        manager.register()
+        XCTAssertNotNil(manager.migrationNotice)
+        XCTAssertEqual(manager.registrationStatus, .conflict(OSStatus(eventHotKeyExistsErr), previousShortcutRemainsActive: false))
+        XCTAssertFalse(manager.isRegistered)
+    }
+
+    func testControlSystemShortcutsAreReserved() {
+        let control = UInt32(controlKey)
+        let command = UInt32(cmdKey)
+        let shortcuts: [(Int, UInt32, String)] = [
+            (kVK_ANSI_Q, control | command, "Lock Screen"),
+            (kVK_ANSI_F, control | command, "Full Screen"),
+            (kVK_Space, control | command, "Emoji & Symbols"),
+            (kVK_LeftArrow, control, "Spaces/Mission Control"),
+            (kVK_RightArrow, control, "Spaces/Mission Control"),
+            (kVK_UpArrow, control, "Spaces/Mission Control"),
+            (kVK_DownArrow, control, "Spaces/Mission Control"),
+            (kVK_Space, control, "input source")
+        ]
+        for (key, modifiers, description) in shortcuts {
+            XCTAssertFalse(HotkeyManager.isSupported(keyCode: UInt32(key), modifiers: modifiers))
+            XCTAssertTrue(HotkeyManager.validationFailure(keyCode: UInt32(key), modifiers: modifiers)?.contains(description) == true)
+        }
+        XCTAssertTrue(HotkeyManager.isSupported(keyCode: UInt32(kVK_ANSI_T), modifiers: control | command | UInt32(optionKey)))
+    }
+
     func testSupportedKeysHaveTruthfulNames() {
         XCTAssertEqual(HotkeyManager.keyName(for: UInt32(kVK_ANSI_T)), "T")
         XCTAssertEqual(HotkeyManager.keyName(for: UInt32(kVK_ANSI_7)), "7")
