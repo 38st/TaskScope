@@ -64,6 +64,13 @@ The vendor also documents a related
 when pre-logon is disabled. This reference does not establish that every vendor
 build shares the same bug or behavior.
 
+Main/helper status, Open readiness, and direct preset stops require current-user
+ownership. Another logged-in user's GlobalProtect UI or PanGPA helper does not
+trigger Keep Off enforcement. Protected-service classification is unchanged;
+root-owned PanGPS readiness still depends on the launch-job identity described
+above. These ownership boundaries are covered by fake inventories, not a live
+Fast User Switching test.
+
 ## Evidence collected
 
 | Kind / date | macOS / architecture | GlobalProtect / TaskScope | Result | Limits |

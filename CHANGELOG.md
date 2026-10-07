@@ -140,6 +140,9 @@ All notable changes to TaskScope are documented in this file. The project uses
   search for restoration. Require confirmation for Stop Watched App intents and
   keep cold intent launches in the background. Migrate reserved saved hotkeys to
   ⌃⌥⌘T with a Settings notice and reject additional macOS system shortcuts.
+- Scope watched main/helper detection and preset stops to the current user.
+  Pin process start times to UTC, preserve non-ASCII process names, and stop
+  Open readiness polling promptly when cancelled.
 
 - Short-lived shell commands are reaped after exit-observer registration as
   well as on exit events. This closes a registration race that could leave a

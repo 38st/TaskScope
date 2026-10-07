@@ -36,4 +36,18 @@ final class ProcessDetailReaderTests: XCTestCase {
 
         XCTAssertEqual(detail.command, "")
     }
+
+    func testStartTimeIsReadInUTCAndShownInTheViewersTimeZone() {
+        let detail = ProcessDetail(pid: 1, parentPID: 0, user: "me", startTime: "Wed Oct 7 17:04:47 2026", command: "")
+        let shown = detail.displayStartTime(
+            timeZone: TimeZone(identifier: "America/New_York")!,
+            locale: Locale(identifier: "en_US")
+        )
+
+        XCTAssertTrue(shown.contains("Oct 7, 2026"), shown)
+        XCTAssertTrue(shown.contains("1:04:47"), shown)
+
+        let unparsed = ProcessDetail(pid: 1, parentPID: 0, user: "me", startTime: "unexpected", command: "")
+        XCTAssertEqual(unparsed.displayStartTime(), "unexpected UTC")
+    }
 }

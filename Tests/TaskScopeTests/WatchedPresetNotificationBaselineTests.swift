@@ -133,6 +133,7 @@ final class WatchedPresetNotificationBaselineTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: getuid(),
             cpu: 1,
             memoryMB: 1,
             command: "/Applications/\(name).app/Contents/MacOS/\(name)",

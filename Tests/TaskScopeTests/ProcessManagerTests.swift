@@ -1754,7 +1754,7 @@ final class ProcessManagerTests: XCTestCase {
     private func process(
         pid: Int32,
         startTime: String = "Sat Jul 26 11:20:17 2026",
-        uid: uid_t? = nil,
+        uid: uid_t? = getuid(),
         cpu: Double = 0,
         memory: Double = 0,
         name: String

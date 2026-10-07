@@ -37,17 +37,19 @@ enum ShellCommandRunner {
         return "\"\(escaped)\""
     }
 
-    /// Every child runs in the C locale. `ps` prints locale-formatted decimals
-    /// and start times otherwise (`0,5`, `So. 30 Aug.`), which the parser must
-    /// never see. LANG and every LC_* variable are removed so nothing can
-    /// override LC_ALL.
+    /// Keep dates and decimals in the C locale while preserving UTF-8 names.
+    /// Remove inherited locale overrides and pin UTC so `ps lstart` identities
+    /// do not change when the system time zone changes.
     static func childEnvironment(
         from environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: String] {
         var sanitized = environment.filter { key, _ in
             key != "LANG" && !key.hasPrefix("LC_")
         }
-        sanitized["LC_ALL"] = "C"
+        sanitized["LC_CTYPE"] = "UTF-8"
+        sanitized["LC_TIME"] = "C"
+        sanitized["LC_NUMERIC"] = "C"
+        sanitized["TZ"] = "UTC0"
         return sanitized
     }
 

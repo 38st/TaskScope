@@ -10,21 +10,36 @@ final class ShellCommandRunnerTests: XCTestCase {
         )
     }
 
-    /// `ps` formats decimals and start times by locale. Every child runs in the
-    /// C locale, with LANG and LC_* removed so nothing can override LC_ALL.
-    func testChildRunsInTheCLocaleRegardlessOfTheParentEnvironment() async {
+    func testChildPreservesUTF8WithCDateAndNumberFormatting() {
         let sanitized = ShellCommandRunner.childEnvironment(
-            from: ["LANG": "de_DE.UTF-8", "LC_NUMERIC": "de_DE.UTF-8", "LC_ALL": "de_DE.UTF-8", "PATH": "/usr/bin"]
+            from: ["LANG": "de_DE.UTF-8", "LC_NUMERIC": "de_DE.UTF-8", "LC_TIME": "de_DE.UTF-8",
+                   "LC_CTYPE": "C", "LC_ALL": "C", "PATH": "/usr/bin"]
         )
-        XCTAssertEqual(sanitized, ["LC_ALL": "C", "PATH": "/usr/bin"])
+        XCTAssertEqual(sanitized, [
+            "LC_CTYPE": "UTF-8", "LC_TIME": "C", "LC_NUMERIC": "C", "TZ": "UTC0", "PATH": "/usr/bin"
+        ])
+    }
 
+    func testChildPrintsPSDecimalsUsingConfiguredLocale() async {
         let result = await ShellCommandRunner.run(
-            "/usr/bin/printf '%s|%s|%s' \"$LC_ALL\" \"${LANG-unset}\" \"${LC_NUMERIC-unset}\"; LC_ALL= /bin/ps -o pcpu= -p $$ | /usr/bin/tr -d ' '"
+            #"set -o pipefail; /usr/bin/printf '%s|%s|%s|%s|%s|' "${LC_ALL-unset}" "${LANG-unset}" "$LC_CTYPE" "$LC_TIME" "$LC_NUMERIC"; /bin/ps -o pcpu= -p $$ | /usr/bin/tr -d ' '"#
         )
 
         XCTAssertEqual(result.exitCode, 0)
-        XCTAssertTrue(result.stdout.hasPrefix("C|unset|unset"), result.stdout)
+        XCTAssertTrue(result.stdout.hasPrefix("unset|unset|UTF-8|C|C|"), result.stdout)
         XCTAssertFalse(result.stdout.contains(","), "ps must print C-locale decimals: \(result.stdout)")
+        XCTAssertNotNil(Double(result.stdout.components(separatedBy: "|").last ?? ""))
+    }
+
+    func testChildPinsUTCRegardlessOfInheritedTimeZone() async {
+        for timeZone in ["America/New_York", "Europe/Berlin", "UTC0"] {
+            XCTAssertEqual(ShellCommandRunner.childEnvironment(from: ["TZ": timeZone])["TZ"], "UTC0")
+        }
+        XCTAssertEqual(ShellCommandRunner.childEnvironment(from: [:])["TZ"], "UTC0")
+
+        let result = await ShellCommandRunner.run(#"/usr/bin/printf '%s' "$TZ""#)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.stdout, "UTC0")
     }
 
     /// One invalid byte in a process name must not erase the whole output.

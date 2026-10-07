@@ -38,8 +38,8 @@ enum ProcessListReader {
     //
     // Column layout (12 whitespace-separated tokens; `lstart` is 5):
     //   pid ppid uid pcpu rss lstart(5) etime comm
-    // Every command runs with LC_ALL=C (see ShellCommandRunner), so decimals use
-    // "." and `lstart` keeps the C-locale shape.
+    // ShellCommandRunner pins numeric/time formatting to C and the time zone to
+    // UTC, while allowing UTF-8 process names.
     static let processListCommand = "/bin/ps -awwwxo pid=,ppid=,uid=,pcpu=,rss=,lstart=,etime=,comm="
     static let identityValidationCommand = "/bin/ps -awwwxo pid=,lstart="
 
@@ -181,7 +181,7 @@ enum ProcessListReader {
         )
     }
 
-    /// Accepts "0.5" and, defensively, "0,5": the command runs under LC_ALL=C,
+    /// Accepts "0.5" and, defensively, "0,5": the command runs under LC_NUMERIC=C,
     /// but a comma decimal must still parse rather than drop the row.
     private static func decimal(_ token: Substring) -> Double? {
         Double(token) ?? Double(token.replacingOccurrences(of: ",", with: "."))

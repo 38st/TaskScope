@@ -122,6 +122,7 @@ final class P8SilentStopReportsSuccessTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: getuid(),
             cpu: 0,
             memoryMB: 0,
             command: name == "Example"

@@ -16,10 +16,34 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
             process(pid: 12, name: "Example", path: "/Applications/Example.app/Contents/MacOS/Example")
         ]
 
-        let snapshot = WatchedSnapshotBuilder(excludedPID: 99)
+        let snapshot = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
             .snapshot(for: preset, in: inventory)
 
         XCTAssertEqual(snapshot.runningNames, ["Example", "Example Helper"])
+    }
+
+    func testMainAndHelpersRequireCurrentUserOwnership() {
+        let builder = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
+        let mainPath = "/Applications/GlobalProtect.app/Contents/MacOS/GlobalProtect"
+        let helperPath = "/Applications/GlobalProtect.app/Contents/MacOS/PanGPA"
+        for uid: uid_t? in [502, 0, nil] {
+            let others = [
+                process(pid: 10, name: "GlobalProtect", path: mainPath, uid: uid),
+                process(pid: 11, name: "PanGPA", path: helperPath, uid: uid)
+            ]
+            let snapshot = builder.snapshot(for: .globalProtect, in: others)
+            XCTAssertTrue(snapshot.runningNames.isEmpty)
+            XCTAssertTrue(snapshot.mainProcessPIDs.isEmpty)
+            XCTAssertFalse(snapshot.hasKeepOffTargets)
+
+            let own = builder.snapshot(for: .globalProtect, in: others + [
+                process(pid: 12, name: "GlobalProtect", path: mainPath),
+                process(pid: 13, name: "PanGPA", path: helperPath)
+            ])
+            XCTAssertEqual(own.runningNames, ["GlobalProtect", "PanGPA"])
+            XCTAssertEqual(own.mainProcessPIDs, [12])
+            XCTAssertTrue(own.hasKeepOffTargets)
+        }
     }
 
     func testKernelExecutableNamesRecoverTruncatedProcessNames() {
@@ -43,7 +67,7 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
         )
         helper.command = "/Applications/Ex"
 
-        let snapshot = WatchedSnapshotBuilder(excludedPID: 99)
+        let snapshot = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
             .snapshot(for: preset, in: [main, helper])
 
         XCTAssertEqual(snapshot.runningNames, ["Example", "Example Helper"])
@@ -59,7 +83,7 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
         )
         let service = process(pid: 20, name: "Example Service", path: "/Library/Example Service", uid: 0)
 
-        let snapshot = WatchedSnapshotBuilder(excludedPID: 99)
+        let snapshot = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
             .snapshot(for: preset, in: [service])
 
         XCTAssertEqual(snapshot.runningNames, ["Example Service"])
@@ -87,7 +111,7 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
             uid: 0
         )
 
-        let userOnly = WatchedSnapshotBuilder(excludedPID: 99)
+        let userOnly = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
             .snapshot(for: preset, in: [userAgent, unknownUID])
         XCTAssertTrue(userOnly.runningNames.isEmpty)
         XCTAssertTrue(userOnly.protectedRunning.isEmpty)
@@ -97,7 +121,7 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
         XCTAssertEqual(userOnly.detail, "PanGPS (user)")
         XCTAssertEqual([userOnly].aggregateStatus, .protectedOnly)
 
-        let both = WatchedSnapshotBuilder(excludedPID: 99)
+        let both = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
             .snapshot(for: preset, in: [userAgent, daemon])
         XCTAssertEqual(both.runningNames, ["PanGPS"])
         XCTAssertEqual(both.protectedRunning, ["PanGPS"])
@@ -139,7 +163,7 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
             uid: 501
         )
 
-        let snapshot = WatchedSnapshotBuilder(excludedPID: 99)
+        let snapshot = WatchedSnapshotBuilder(excludedPID: 99, currentUID: 501)
             .snapshot(for: preset, in: [main, helper])
 
         XCTAssertEqual(snapshot.mainProcessPIDs, [30])
@@ -160,13 +184,13 @@ final class WatchedSnapshotBuilderTests: XCTestCase {
             path: "/Applications/TaskScope.app/Contents/MacOS/TaskScope"
         )
 
-        let snapshot = WatchedSnapshotBuilder(excludedPID: 42)
+        let snapshot = WatchedSnapshotBuilder(excludedPID: 42, currentUID: 501)
             .snapshot(for: preset, in: [current])
 
         XCTAssertTrue(snapshot.runningNames.isEmpty)
     }
 
-    private func process(pid: Int32, name: String, path: String, uid: uid_t? = nil) -> AppProcess {
+    private func process(pid: Int32, name: String, path: String, uid: uid_t? = 501) -> AppProcess {
         AppProcess(
             pid: pid,
             parentPID: 1,

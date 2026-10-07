@@ -26,6 +26,7 @@ struct WatchedSnapshotBuilder: Sendable {
             inventory.lazy
                 .filter { process in
                     guard process.pid != excludedPID,
+                          process.uid == currentUID,
                           let executablePath = process.executablePath,
                           executablePath.hasPrefix(mainExecutableDirectory) else {
                         return false
@@ -45,6 +46,7 @@ struct WatchedSnapshotBuilder: Sendable {
             inventory.lazy
                 .filter {
                     $0.pid != excludedPID
+                        && $0.uid == currentUID
                         && $0.executablePath?.hasPrefix(bundleContentsDirectory) == true
                 }
                 .compactMap { process -> String? in

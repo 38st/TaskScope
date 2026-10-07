@@ -70,7 +70,9 @@ Required invariants:
 - operate only on visible processes and signal only where macOS permits;
 - capture a process identity, including start evidence and the kernel-resolved
   executable path when available, before confirmation;
-- re-read and compare identity immediately before sending a signal;
+- re-read and compare identity immediately before sending a signal; start-time
+  evidence uses UTC to survive time-zone changes. Executable paths remain part
+  of equality because start-time evidence has only second precision;
 - distinguish “not present,” “identity changed,” and “could not verify”;
 - never turn an unreadable inventory into a success or stale-target claim;
 - never signal TaskScope itself, launchd (pid 1), the kernel task, or a process
@@ -81,8 +83,8 @@ Required invariants:
 - require a separate, explicit Force Stop confirmation for `SIGKILL`; preset
   Quit, Close, and Keep Off escalate to `SIGKILL` only after a disclosed
   graceful window (3 seconds) with the identity still present;
-- require an executable directory for every scoped termination; there is no
-  name-only termination entry point;
+- require current-user ownership and an executable directory for every scoped
+  termination; there is no name-only termination entry point;
 - bind queued prompts and batch reports to immutable captured targets.
 - require enabled automatic-stop authority to include a trusted executable path
   and match that path again in the final inventory immediately before signal.
@@ -99,6 +101,8 @@ them.
 
 Required invariants:
 
+- scope main/helper detection to the current user, preserving protected-service
+  classification across users;
 - importing parses and validates data but performs no lifecycle action;
 - bound imported file size, recognize an explicit archive schema version, and
   show every lifecycle field plus rejection reason before import is committed;

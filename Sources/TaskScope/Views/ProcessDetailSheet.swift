@@ -22,7 +22,7 @@ struct ProcessDetailSheet: View {
                 LabeledContent("PID", value: "\(detail.pid)")
                 LabeledContent("Parent PID", value: "\(detail.parentPID)")
                 LabeledContent("User", value: detail.user)
-                LabeledContent("Started", value: detail.startTime)
+                LabeledContent("Started", value: detail.displayStartTime())
                 LabeledContent("Command", value: detail.command)
                 LabeledContent("CPU %", value: String(format: "%.1f", process.cpu))
                 LabeledContent("Memory (MB)", value: String(format: "%.1f", process.memoryMB))

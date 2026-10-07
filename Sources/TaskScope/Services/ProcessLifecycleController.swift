@@ -97,12 +97,14 @@ enum ProcessLifecycleController {
         named name: String,
         expectedExecutableDirectory: String?,
         excludingPID: Int32,
+        currentUID: uid_t = getuid(),
         in inventory: [AppProcess]
     ) -> [AppProcess] {
         ProcessTerminationController.terminationTargets(
             named: name,
             expectedExecutableDirectory: expectedExecutableDirectory,
             excludingPID: excludingPID,
+            currentUID: currentUID,
             in: inventory
         )
     }

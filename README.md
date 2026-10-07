@@ -206,6 +206,7 @@ be exported from Settings when their stored data is readable. See
   A lifecycle dry run lists later Open/Close operations without performing
   them. Custom presets cannot configure privileged system launch daemons.
 - Open or close watched apps through one lifecycle path with per-job reporting.
+  Main/helper detection and preset stops require current-user ownership.
   Quit, Close, and Keep Off give a process 3 seconds to exit gracefully before
   force stopping it, and the confirmation dialog says so.
 - Keep GlobalProtect off by persistently disabling its known user agents and,
@@ -235,7 +236,9 @@ be exported from Settings when their stored data is readable. See
 - Start nonintrusively at login or for automation.
 
 Normal process actions never target TaskScope itself. Process targets are
-revalidated against their captured identity immediately before a signal.
+revalidated against their captured identity immediately before a signal. Process
+start times use UTC, and process names preserve UTF-8 characters. Cancelled Open
+readiness waits stop polling.
 
 ## URL automation safety contract
 

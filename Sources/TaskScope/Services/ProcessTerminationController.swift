@@ -13,7 +13,7 @@ enum ProcessTerminationController {
         await runtime.sleep(300_000_000)
     }
 
-    /// Signals every process named `name` that runs from inside
+    /// Signals current-user processes named `name` that run from inside
     /// `expectedExecutableDirectory`. The directory is mandatory: a name alone
     /// is never sufficient to signal a process.
     static func terminate(
@@ -31,6 +31,7 @@ enum ProcessTerminationController {
             named: name,
             expectedExecutableDirectory: expectedExecutableDirectory,
             excludingPID: currentPID,
+            currentUID: runtime.userID,
             in: initialInventory
         )
         let termTargets = targets.filter {
@@ -61,6 +62,7 @@ enum ProcessTerminationController {
             named: name,
             expectedExecutableDirectory: expectedExecutableDirectory,
             excludingPID: currentPID,
+            currentUID: runtime.userID,
             in: refreshedInventory
         ).filter {
             originalIdentities.contains($0.identity)
@@ -110,6 +112,7 @@ enum ProcessTerminationController {
             named: name,
             expectedExecutableDirectory: expectedExecutableDirectory,
             excludingPID: ProcessInfo.processInfo.processIdentifier,
+            currentUID: runtime.userID,
             in: inventory
         ).isEmpty
     }
@@ -122,6 +125,7 @@ enum ProcessTerminationController {
     ) async -> Bool {
         let deadline = Date().addingTimeInterval(timeoutSeconds)
         while Date() < deadline {
+            guard !Task.isCancelled else { return false }
             if await isRunning(
                 named: name,
                 expectedExecutableDirectory: expectedExecutableDirectory,
@@ -129,8 +133,10 @@ enum ProcessTerminationController {
             ) {
                 return true
             }
+            guard !Task.isCancelled else { return false }
             await runtime.sleep(300_000_000)
         }
+        guard !Task.isCancelled else { return false }
         return await isRunning(
             named: name,
             expectedExecutableDirectory: expectedExecutableDirectory,
@@ -149,10 +155,11 @@ enum ProcessTerminationController {
         named name: String,
         expectedExecutableDirectory: String?,
         excludingPID: Int32,
+        currentUID: uid_t,
         in inventory: [AppProcess]
     ) -> [AppProcess] {
         inventory.filter { process in
-            guard process.pid != excludingPID else { return false }
+            guard process.pid != excludingPID, process.uid == currentUID else { return false }
             guard let expectedExecutableDirectory else {
                 return process.name == name
             }

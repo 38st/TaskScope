@@ -59,6 +59,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
                 named: "Example",
                 expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
                 excludingPID: 12,
+                currentUID: 501,
                 in: inventory
             ).map(\.pid),
             [10]
@@ -77,10 +78,84 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
                 named: "Example",
                 expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
                 excludingPID: 99,
+                currentUID: 501,
                 in: [target]
             ).map(\.pid),
             [10]
         )
+    }
+
+    func testTerminationAndRunningDetectionRequireRuntimeUserOwnership() async {
+        let directory = "/Applications/Example.app/Contents/MacOS/"
+        let others = [
+            process(pid: 10, command: directory + "Example", uid: 502),
+            process(pid: 11, command: directory + "Example", uid: 0),
+            process(pid: 12, command: directory + "Example", uid: nil)
+        ]
+        let harness = LifecycleRuntimeHarness(existingPaths: [], commandResults: [], inventory: others)
+        for scope: String? in [directory, nil] {
+            let running = await ProcessTerminationController.isRunning(
+                named: "Example", expectedExecutableDirectory: scope, runtime: harness.runtime
+            )
+            XCTAssertFalse(running)
+            let appeared = await ProcessTerminationController.waitUntilRunning(
+                named: "Example", timeoutSeconds: 0,
+                expectedExecutableDirectory: scope, runtime: harness.runtime
+            )
+            XCTAssertFalse(appeared)
+        }
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example", forceIfStillRunning: true,
+            expectedExecutableDirectory: directory, currentPID: 99, runtime: harness.runtime
+        )
+        XCTAssertEqual(outcome, .noMatchingProcesses)
+        XCTAssertTrue(harness.signals.isEmpty)
+        XCTAssertTrue(harness.sleepDurations.isEmpty)
+
+        let mixed = LifecycleRuntimeHarness(
+            existingPaths: [], commandResults: [],
+            inventory: others + [process(pid: 13, command: directory + "Example")]
+        )
+        let mixedOutcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example", forceIfStillRunning: true,
+            expectedExecutableDirectory: directory, currentPID: 99, runtime: mixed.runtime
+        )
+        XCTAssertEqual(mixedOutcome, .signalled)
+        XCTAssertEqual(mixed.signals.map { $0.0 }, [SIGTERM, SIGKILL])
+        XCTAssertEqual(mixed.signals.map { $0.1 }, [13, 13])
+    }
+
+    func testWaitUntilRunningStopsPollingAfterCancellationDuringSleep() async {
+        let harness = LifecycleRuntimeHarness(existingPaths: [], commandResults: [])
+        let task = Task {
+            var runtime = harness.runtime
+            runtime.sleep = { _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+            return await ProcessTerminationController.waitUntilRunning(
+                named: "Example", timeoutSeconds: 5,
+                expectedExecutableDirectory: nil, runtime: runtime
+            )
+        }
+        let result = await task.value
+        XCTAssertFalse(result)
+        XCTAssertEqual(harness.inventoryLoads, 1)
+    }
+
+    func testWaitUntilRunningSkipsInventoryWhenAlreadyCancelled() async {
+        let harness = LifecycleRuntimeHarness(existingPaths: [], commandResults: [])
+        for timeout: TimeInterval in [0, 5] {
+            let task = Task {
+                withUnsafeCurrentTask { $0?.cancel() }
+                return await ProcessTerminationController.waitUntilRunning(
+                    named: "Example", timeoutSeconds: timeout,
+                    expectedExecutableDirectory: nil, runtime: harness.runtime
+                )
+            }
+            let result = await task.value
+            XCTAssertFalse(result)
+        }
+        XCTAssertEqual(harness.inventoryLoads, 0)
     }
 
     func testPresetOpenVerificationRequiresExecutablePathFromLivePSSchema() async {
@@ -415,6 +490,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
                 named: "ExampleHelper",
                 expectedExecutableDirectory: "/Applications/Example.app/Contents/",
                 excludingPID: 99,
+                currentUID: 501,
                 in: inventory
             ).map(\.pid),
             [10]
@@ -1140,10 +1216,11 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
     }
 
-    private func process(pid: Int32, command: String) -> AppProcess {
+    private func process(pid: Int32, command: String, uid: uid_t? = 501) -> AppProcess {
         AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: uid,
             cpu: 0,
             memoryMB: 0,
             command: command,
@@ -1205,6 +1282,7 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
     private var inventoryResults: [Result<[AppProcess], ProcessInventoryError>]
     private let executablePathsAtSignal: [Int32: String]
     private var signalResults: [Bool]
+    private var recordedInventoryLoads = 0
     private var recordedCommands: [String] = []
     private var recordedTimeouts: [TimeInterval] = []
     private var recordedSleepDurations: [UInt64] = []
@@ -1263,6 +1341,7 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
             },
             loadProcessInventory: { [self] in
                 lock.withLock {
+                    recordedInventoryLoads += 1
                     guard inventoryResults.count > 1 else {
                         return inventoryResults.first
                             ?? .failure(.commandFailed("No fake inventory result configured."))
@@ -1296,6 +1375,10 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
                 }
             }
         )
+    }
+
+    var inventoryLoads: Int {
+        lock.withLock { recordedInventoryLoads }
     }
 
     var commands: [String] {

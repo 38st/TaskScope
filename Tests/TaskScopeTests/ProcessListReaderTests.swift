@@ -62,6 +62,17 @@ final class ProcessListReaderTests: XCTestCase {
         XCTAssertNil(process?.diskReadBytes)
     }
 
+    func testParseProcessLinePreservesNonASCIIName() throws {
+        let process = try XCTUnwrap(ProcessListReader.parseProcessLine(
+            "123 1 501 12.5 2048 Sat Jul 26 11:20:17 2026 01:02:03 /tmp/Café Größe"[...]
+        ))
+
+        XCTAssertEqual(process.command, "/tmp/Café Größe")
+        XCTAssertEqual(process.name, "Café Größe")
+        XCTAssertEqual(process.cpu, 12.5)
+        XCTAssertEqual(process.startTime, "Sat Jul 26 11:20:17 2026")
+    }
+
     /// Exactly eleven tokens is a row whose `comm` is empty (or whitespace, which
     /// `ps` prints as nothing); it is kept with an empty command.
     func testElevenTokenRowIsAnEmptyCommandName() throws {
@@ -94,7 +105,7 @@ final class ProcessListReaderTests: XCTestCase {
         )
     }
 
-    /// `ps` prints `0,5` under de_DE. The command runs with LC_ALL=C, but the
+    /// `ps` prints `0,5` under de_DE. The command runs with LC_NUMERIC=C, but the
     /// parser accepts a comma decimal rather than dropping the row.
     func testCommaDecimalParses() throws {
         let process = try XCTUnwrap(ProcessListReader.parseProcessLine(

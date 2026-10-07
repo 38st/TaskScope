@@ -150,4 +150,20 @@ struct ProcessDetail: Equatable, Sendable {
     var user: String
     var startTime: String
     var command: String
+
+    /// `ps lstart` runs in UTC (see ShellCommandRunner) so identities survive
+    /// time-zone changes; show it in the viewer's time zone.
+    func displayStartTime(timeZone: TimeZone = .current, locale: Locale = .current) -> String {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.timeZone = TimeZone(identifier: "UTC")
+        parser.dateFormat = "EEE MMM d HH:mm:ss yyyy"
+        guard let date = parser.date(from: startTime) else { return "\(startTime) UTC" }
+        let formatter = DateFormatter()
+        formatter.locale = locale
+        formatter.timeZone = timeZone
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .medium
+        return formatter.string(from: date)
+    }
 }

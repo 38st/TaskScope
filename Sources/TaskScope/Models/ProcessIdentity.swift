@@ -1,6 +1,7 @@
-/// Identifies one process lifetime. Equality uses only what the kernel keeps
-/// stable for that lifetime: the PID, its start time, and the resolved
-/// executable path. `command` is argv-backed, and processes such as postgres
+/// Identifies a process using its PID, UTC start time, and resolved executable
+/// path. Paths can change during a lifetime, but remain part of equality to
+/// reject executable changes and strengthen second-resolution start evidence.
+/// `command` is argv-backed, and processes such as postgres
 /// backends or sshd sessions rewrite it while running, so it is carried for
 /// display only and never decides whether two observations are the same process.
 struct ProcessIdentity: Hashable, Codable, Sendable {

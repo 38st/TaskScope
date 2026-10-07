@@ -24,6 +24,12 @@ source release as a production binary. GitHub's generated source archives are
 the only release artifacts within this scope unless the credential-gated
 pipeline and full binary gate below complete with real Apple credentials.
 
+Unreleased process fixes scope watched main/helpers and preset signals to the
+current user, pin start-time evidence to UTC, preserve UTF-8 names, and stop
+cancelled Open readiness polling. Executable-path identity checks remain in
+place. Regression tests use injected inventories for ownership and cancellation;
+this does not establish live Fast User Switching or GlobalProtect compatibility.
+
 ## Release inputs
 
 Before starting:
