@@ -72,6 +72,39 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         XCTAssertEqual(store.events.map(\.outcome), [.dismissed])
     }
 
+    func testDismissedPromptStillActsAfterChangingToAutoStopOrLogOnly() async {
+        for action in [AutoStopRule.Action.kill, .silent] {
+            defaults.removePersistentDomain(forName: suiteName)
+            let store = makeStore()
+            var rule = AutoStopRule(processName: "Example", executablePath: examplePath, runtimeMinutes: 1, action: .prompt)
+            XCTAssertTrue(store.add(rule))
+            var attempts = 0
+            store.start { _, _ in
+                attempts += 1
+                return .stopped
+            }
+            store.stop()
+            await store.evaluateNow()
+            XCTAssertNotNil(store.currentPrompt)
+            store.dismissCurrentPrompt()
+
+            rule.action = action
+            XCTAssertTrue(store.update(rule))
+            await store.evaluateNow()
+            await store.evaluateNow()
+
+            XCTAssertEqual(attempts, action == .kill ? 1 : 0)
+            XCTAssertEqual(store.events.map(\.outcome), [action == .kill ? .stopped : .logged, .dismissed])
+            XCTAssertTrue(store.pendingPrompts.isEmpty)
+
+            // The synchronous compatibility evaluator follows the same policy.
+            XCTAssertTrue(store.update(rule))
+            var callbacks = 0
+            store.evaluate(runningProcesses: [appProcess(pid: 41, elapsed: "10:00")]) { _, _ in callbacks += 1 }
+            XCTAssertEqual(callbacks, 1)
+        }
+    }
+
     /// A process that takes longer than the settle delay to exit used to be
     /// re-SIGTERMed on every tick and logged as "did not complete" each time.
     /// An accepted stop is now tracked until the identity disappears.

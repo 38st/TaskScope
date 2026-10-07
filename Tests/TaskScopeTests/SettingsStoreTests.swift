@@ -77,6 +77,31 @@ final class SettingsStoreTests: XCTestCase {
         }
     }
 
+    func testUnrelatedSavesPreserveNewerValuesOfKnownSettings() throws {
+        let payload = Data(#"{"schemaVersion":99,"sortKeyRaw":"gpu","selectedSectionRaw":"future","processListLimit":500}"#.utf8)
+        defaults.set(payload, forKey: key)
+        let store = SettingsStore(userDefaults: defaults, key: key)
+        XCTAssertEqual(store.sortKey, .cpu)
+        XCTAssertEqual(store.selectedSection, .processes)
+        XCTAssertEqual(store.processListLimit, 200)
+
+        store.searchText = "node"
+        store.flushPendingWrites()
+        store.enableNotifications = true
+        var saved = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        XCTAssertEqual(saved["sortKeyRaw"] as? String, "gpu")
+        XCTAssertEqual(saved["selectedSectionRaw"] as? String, "future")
+        XCTAssertEqual(saved["processListLimit"] as? Int, 500)
+        XCTAssertEqual(saved["searchText"] as? String, "node")
+        XCTAssertEqual(saved["enableNotifications"] as? Bool, true)
+
+        store.processListLimit = 100
+        saved = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(defaults.data(forKey: key))) as? [String: Any])
+        XCTAssertEqual(saved["processListLimit"] as? Int, 100)
+        XCTAssertEqual(saved["sortKeyRaw"] as? String, "gpu")
+        XCTAssertEqual(saved["selectedSectionRaw"] as? String, "future")
+    }
+
     func testUnreadableJSONObjectStillRequiresResetAndPreservesItsBackup() throws {
         let corrupt = Data(#"{"schemaVersion":99,"refreshIntervalSeconds":"invalid","futureSetting":true}"#.utf8)
         defaults.set(corrupt, forKey: key)

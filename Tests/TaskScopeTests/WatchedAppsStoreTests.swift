@@ -467,6 +467,85 @@ final class WatchedAppsStoreTests: XCTestCase {
         }
     }
 
+    func testMainProcessIsRemovedFromHelpersOnLoadImportAndEdit() throws {
+        var preset = validPreset(name: "Example")
+        preset.helperProcessNames = ["ExampleProcess", "exampleprocess", "Helper"]
+        defaults.set(try JSONEncoder().encode([preset]), forKey: key)
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertEqual(store.presets[0].helperProcessNames, ["Helper"])
+        XCTAssertTrue(store.update(preset))
+        XCTAssertEqual(store.presets[0].helperProcessNames, ["Helper"])
+        XCTAssertTrue(store.remove(preset))
+        XCTAssertEqual(store.importPresets([preset]).importedCount, 1)
+        XCTAssertEqual(store.presets[0].helperProcessNames, ["Helper"])
+        XCTAssertEqual(WatchedAppsStore(userDefaults: defaults, key: key).presets[0].helperProcessNames, ["Helper"])
+    }
+
+    func testPresetPathsUseOnDiskCaseAndMainExecutableAdoptsBundleSpelling() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let bundle = directory.appendingPathComponent("Example.app")
+        let contents = bundle.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents.appendingPathComponent("MacOS"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let info: [String: Any] = ["CFBundleExecutable": "ExampleProcess", "CFBundleIdentifier": "test.example", "CFBundlePackageType": "APPL"]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: contents.appendingPathComponent("Info.plist"))
+        try Data().write(to: contents.appendingPathComponent("MacOS/ExampleProcess"))
+        let alias = directory.appendingPathComponent("example.app")
+        // Also exercise realpath on case-sensitive test volumes.
+        if !FileManager.default.fileExists(atPath: alias.path) {
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: bundle)
+        }
+        var preset = validPreset(name: "Example")
+        preset.appPath = alias.path
+        let store = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertTrue(store.add(preset))
+        XCTAssertEqual(store.presets.last?.appPath, AutoStopRuleValidation.canonicalPath(bundle.path))
+        preset.mainProcessName = "exampleprocess"
+        XCTAssertTrue(store.update(preset))
+        XCTAssertEqual(store.presets.last?.mainProcessName, "ExampleProcess")
+
+        // A stored preset with the wrong case loads corrected, never read-only.
+        defaults.set(try JSONEncoder().encode([preset]), forKey: key)
+        let reloaded = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertFalse(reloaded.isReadOnlyAfterCorruption)
+        XCTAssertEqual(reloaded.presets.first?.mainProcessName, "ExampleProcess")
+    }
+
+    func testCommasAreRejectedInListFieldsOnLoadImportAndEdit() throws {
+        let valid = validPreset(name: "Example")
+        // Single-value fields are never split by the form, so commas stay valid there.
+        var singleValues = validPreset(name: "Example, Inc")
+        singleValues.appPath = "/Applications/Example, Inc.app"
+        let singleValueStore = WatchedAppsStore(userDefaults: defaults, key: key)
+        XCTAssertTrue(singleValueStore.add(singleValues), singleValueStore.validationError ?? "")
+        XCTAssertTrue(singleValueStore.remove(singleValues))
+
+        let mutations: [(inout WatchedAppPreset) -> Void] = [
+            { $0.helperProcessNames = ["Foo, Bar Helper"] },
+            { $0.protectedProcessNames = ["Foo, Bar"] },
+            { $0.userLaunchAgentJobs = [UserLaunchAgentJob(label: "foo", plistPath: "/tmp/Foo, Bar.plist")] },
+            { $0.userLaunchAgentJobs = [UserLaunchAgentJob(label: "foo, bar", plistPath: "/tmp/foo.plist")] }
+        ]
+        for mutate in mutations {
+            defaults.set(try JSONEncoder().encode([valid]), forKey: key)
+            let store = WatchedAppsStore(userDefaults: defaults, key: key)
+            var invalid = valid
+            mutate(&invalid)
+            XCTAssertFalse(store.update(invalid))
+            XCTAssertTrue(store.validationError?.contains("commas") == true)
+            XCTAssertTrue(store.remove(valid))
+            XCTAssertEqual(store.importPresets([invalid]).rejectedCount, 1)
+            XCTAssertFalse(store.add(invalid))
+            let payload = try JSONEncoder().encode([invalid])
+            defaults.set(payload, forKey: key)
+            let reloaded = WatchedAppsStore(userDefaults: defaults, key: key)
+            XCTAssertTrue(reloaded.presets.isEmpty)
+            XCTAssertTrue(reloaded.isReadOnlyAfterCorruption)
+            XCTAssertEqual(defaults.data(forKey: key), payload)
+        }
+    }
+
     private func validPreset(name: String) -> WatchedAppPreset {
         WatchedAppPreset(
             displayName: name,

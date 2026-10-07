@@ -192,6 +192,7 @@ final class AutoStopRulesStore: ObservableObject {
 
     @discardableResult
     func add(_ rule: AutoStopRule) -> Bool {
+        guard !rejectUnknownRule(rule) else { return false }
         guard !rejectRulesIfReadOnly() else { return false }
         let normalized = validated(rule)
         guard let normalized else { return false }
@@ -208,6 +209,7 @@ final class AutoStopRulesStore: ObservableObject {
 
     @discardableResult
     func update(_ rule: AutoStopRule) -> Bool {
+        guard !rejectUnknownRule(rule) else { return false }
         guard !rejectRulesIfReadOnly() else { return false }
         guard let index = rules.firstIndex(where: { $0.id == rule.id }),
               let normalized = validated(rule) else {
@@ -241,6 +243,7 @@ final class AutoStopRulesStore: ObservableObject {
 
     @discardableResult
     func duplicate(_ rule: AutoStopRule) -> Bool {
+        guard !rejectUnknownRule(rule) else { return false }
         guard !rejectRulesIfReadOnly() else { return false }
         var copy = rule
         copy.id = UUID()
@@ -251,6 +254,9 @@ final class AutoStopRulesStore: ObservableObject {
     @discardableResult
     func remove(at offsets: IndexSet) -> Bool {
         guard !rejectRulesIfReadOnly() else { return false }
+        guard !offsets.contains(where: { rules.indices.contains($0) && rejectUnknownRule(rules[$0]) }) else {
+            return false
+        }
         let removedIDs = Set(offsets.compactMap { rules.indices.contains($0) ? rules[$0].id : nil })
         rules.remove(atOffsets: offsets)
         forgetOccurrences(forRuleIDs: removedIDs)
@@ -260,6 +266,7 @@ final class AutoStopRulesStore: ObservableObject {
 
     @discardableResult
     func remove(_ rule: AutoStopRule) -> Bool {
+        guard !rejectUnknownRule(rule) else { return false }
         guard !rejectRulesIfReadOnly() else { return false }
         guard rules.contains(where: { $0.id == rule.id }) else { return false }
         rules.removeAll { $0.id == rule.id }
@@ -441,7 +448,7 @@ final class AutoStopRulesStore: ObservableObject {
                 let occurrence = AutoStopOccurrence(ruleID: rule.id, processIdentity: process.identity)
                 guard runtime >= TimeInterval(rule.runtimeMinutes) * 60,
                       !handledOccurrences.contains(occurrence),
-                      !dismissedOccurrences.contains(occurrence) else {
+                      (rule.action != .prompt || !dismissedOccurrences.contains(occurrence)) else {
                     continue
                 }
                 handledOccurrences.insert(occurrence)
@@ -466,7 +473,7 @@ final class AutoStopRulesStore: ObservableObject {
                 guard !Task.isCancelled else { return }
                 let occurrence = AutoStopOccurrence(ruleID: rule.id, processIdentity: process.identity)
                 guard runtime >= TimeInterval(rule.runtimeMinutes) * 60,
-                      !dismissedOccurrences.contains(occurrence) else {
+                      (rule.action != .prompt || !dismissedOccurrences.contains(occurrence)) else {
                     continue
                 }
                 let prompt = AutoStopPrompt(id: occurrence, rule: rule, process: process)
@@ -681,6 +688,14 @@ final class AutoStopRulesStore: ObservableObject {
         }
     }
 
+    private func rejectUnknownRule(_ rule: AutoStopRule) -> Bool {
+        guard rule.hasUnknownFields || rules.contains(where: { $0.id == rule.id && $0.hasUnknownFields }) else {
+            return false
+        }
+        validationError = "This rule contains fields from a newer build and is disabled and read-only. Use a build that understands it."
+        return true
+    }
+
     private func rejectRulesIfReadOnly() -> Bool {
         guard !allowsRulesPersistence else { return false }
         validationError = "Auto-stop rule data is in recovery mode; reset the rules before making changes."
@@ -730,13 +745,13 @@ final class AutoStopRulesStore: ObservableObject {
 
     private func saveRules() {
         guard allowsRulesPersistence else { return }
-        rulesPersistence.save(rules)
+        rulesPersistence.savePreservingUnknownFields(rules)
     }
 
     @discardableResult
     private func saveEvents() -> Bool {
         guard allowsEventsPersistence else { return false }
-        return eventsPersistence.save(events)
+        return eventsPersistence.savePreservingUnknownFields(events)
     }
 
 }

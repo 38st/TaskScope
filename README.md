@@ -201,12 +201,16 @@ be exported from Settings when their stored data is readable. See
   Stop (`SIGKILL`).
 - Save selections using durable kernel executable-path matching, with legacy
   command/name fallback and preview recall results. A path-backed selection
-  never downgrades to the legacy fallback.
+  never downgrades to the legacy fallback. Multiple saved copies of one executable
+  recall all running copies up to the saved count; extra copies require review.
 - Create, edit, reorder, import, and export watched-app presets with optional
   user launch-agent jobs. Exports use a versioned archive; import accepts the
   legacy array format and shows a non-mutating field review before committing.
   A lifecycle dry run lists later Open/Close operations without performing
-  them. Custom presets cannot configure privileged system launch daemons.
+  them. Custom presets cannot configure privileged system launch daemons. Helper
+  and protected names and launch agent labels and paths cannot contain commas.
+  Custom app paths use their on-disk spelling, a main process name adopts the
+  bundle executable's spelling, and the main process is excluded from helper names.
 - Open or close watched apps through one lifecycle path with per-job reporting.
   Main/helper detection and preset stops require current-user ownership.
   Quit, Close, and Keep Off give a process 3 seconds to exit gracefully before
@@ -325,6 +329,13 @@ The maintained trust-boundary analysis is in [THREAT_MODEL.md](THREAT_MODEL.md).
 TaskScope runs locally and contains no analytics or telemetry upload service.
 It reads local process information and invokes local macOS tools. It does not
 transmit process details to a TaskScope service.
+
+Stored rules, presets, selections, and retained events preserve unknown JSON
+fields across saves. Rules with unknown fields are disabled and read-only in
+this build, because a newer field may narrow when they act. Settings keep newer
+values that this build normalizes for display until that setting changes.
+Dismissed prompts stay dismissed across rule toggles, but switching the action
+to Auto Stop or Log Only allows that process occurrence to act again.
 
 Preferences can contain process names, PIDs, executable paths, preset paths and
 job labels, rule configuration, saved selections, search text, and up to 200

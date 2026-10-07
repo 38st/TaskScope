@@ -285,8 +285,16 @@ or protected from the current user.
 Required invariants:
 
 - decode versioned data defensively;
+- preserve unknown stored JSON fields and non-string event outcomes on retained
+  entries, including automatic preset normalization and event trimming;
+- disable and lock rules with unknown fields rather than enforce a rule whose
+  newer restrictions are not understood;
+- keep normalized settings fallbacks in memory without replacing newer stored
+  values during unrelated saves;
 - preserve the first unreadable payload instead of overwriting it with defaults;
 - block persistence that would silently destroy unreadable primary data;
+- refuse deletion of the built-in GlobalProtect preset when settings recovery
+  makes the persistent Keep Off state unknown;
 - preserve optional launch-job requirements through normalization and migration
   so valid built-in presets round-trip without entering corruption recovery;
 - require an explicit destructive reset to resume writes;

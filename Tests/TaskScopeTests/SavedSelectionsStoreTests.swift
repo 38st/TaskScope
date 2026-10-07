@@ -103,6 +103,24 @@ final class SavedSelectionsStoreTests: XCTestCase {
         XCTAssertTrue(result.ambiguous.isEmpty)
     }
 
+    func testRecallGroupsCopiesByPathAndOnlyMarksExcessRunningCopiesAmbiguous() {
+        let store = makeStore()
+        let path = "/test/bin/node"
+        let originals = [10, 11].map { process(pid: Int32($0), command: "node", executablePath: path) }
+        XCTAssertTrue(store.save(name: "Workers", processes: originals))
+        let running = [20, 21, 22].map { process(pid: Int32($0), command: "node", executablePath: path) }
+        let impostor = process(pid: 30, command: "node", executablePath: "/other/bin/node")
+
+        for count in 0...3 {
+            let candidates = Array(running.prefix(count))
+            let result = store.resolve(store.selections[0], in: candidates + [impostor])
+            XCTAssertEqual(result.matched, count <= 2 ? candidates : [])
+            XCTAssertEqual(result.unmatched.count, max(0, 2 - count))
+            XCTAssertEqual(result.ambiguous.count, count > 2 ? 2 : 0)
+            XCTAssertTrue(result.legacyNameMatches.isEmpty)
+        }
+    }
+
     func testNameFallbackOnlyMatchesWhenUnique() {
         seedLegacySelection(name: "Example", entries: [(pid: 10, command: "Example")])
         let store = makeStore()

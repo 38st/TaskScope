@@ -7,6 +7,7 @@ struct AutoStopRule: Codable, Identifiable, Equatable {
     var runtimeMinutes: Int
     var action: Action
     var isEnabled: Bool = true
+    private(set) var hasUnknownFields = false
 
     enum Action: String, Codable, CaseIterable, Identifiable {
         case prompt
@@ -24,7 +25,7 @@ struct AutoStopRule: Codable, Identifiable, Equatable {
         }
     }
 
-    private enum CodingKeys: String, CodingKey {
+    private enum CodingKeys: String, CodingKey, CaseIterable {
         case id, processName, executablePath, runtimeMinutes, action, isEnabled
     }
 
@@ -52,6 +53,9 @@ struct AutoStopRule: Codable, Identifiable, Equatable {
         runtimeMinutes = try container.decode(Int.self, forKey: .runtimeMinutes)
         action = try container.decode(Action.self, forKey: .action)
         isEnabled = try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? true
+        let allKeys = try decoder.container(keyedBy: AnyRuleCodingKey.self).allKeys
+        hasUnknownFields = !Set(allKeys.map(\.stringValue)).isSubset(of: Set(CodingKeys.allCases.map(\.rawValue)))
+        if hasUnknownFields { isEnabled = false }
     }
 }
 
@@ -169,4 +173,11 @@ struct AutoStopEvent: Codable, Identifiable, Equatable {
             ?? .unknown("missing")
         detail = try container.decodeIfPresent(String.self, forKey: .detail) ?? ""
     }
+}
+
+private struct AnyRuleCodingKey: CodingKey {
+    var stringValue: String
+    var intValue: Int? { nil }
+    init?(stringValue: String) { self.stringValue = stringValue }
+    init?(intValue: Int) { return nil }
 }

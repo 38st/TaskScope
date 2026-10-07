@@ -243,25 +243,35 @@ final class SavedSelectionsStore: ObservableObject {
         var legacyNameMatches: Set<ProcessIdentity> = []
         var claimedIdentities: Set<ProcessIdentity> = []
 
+        var resolvedPaths: Set<String> = []
         for saved in selection.processes {
-            let candidates: [AppProcess]
             if let savedPath = saved.executablePath {
-                // A selection captured with a kernel executable path must never
-                // degrade to the spoofable display command or basename.
-                candidates = processes.filter {
-                    guard let processPath = $0.executablePath else { return false }
-                    return standardizedPath(processPath) == standardizedPath(savedPath)
+                let path = standardizedPath(savedPath)
+                guard resolvedPaths.insert(path).inserted else { continue }
+                let group = selection.processes.filter {
+                    $0.executablePath.map(standardizedPath) == path
                 }
-            } else {
-                // Legacy payloads predate executable-path capture. Keep their
-                // documented command/name fallback, with ambiguity surfaced.
-                let exactCommand = processes.filter { $0.command == saved.command }
-                candidates = exactCommand.isEmpty
-                    ? processes.filter {
-                        $0.name.caseInsensitiveCompare(saved.executableName) == .orderedSame
-                    }
-                    : exactCommand
+                // The saved count bounds this path's group; PIDs may have changed.
+                let candidates = processes.filter {
+                    $0.executablePath.map(standardizedPath) == path
+                        && !claimedIdentities.contains($0.identity)
+                }
+                if candidates.count > group.count {
+                    ambiguous.append(contentsOf: group)
+                } else {
+                    matched.append(contentsOf: candidates)
+                    claimedIdentities.formUnion(candidates.map(\.identity))
+                    unmatched.append(contentsOf: group.dropFirst(candidates.count))
+                }
+                continue
             }
+            // Legacy payloads retain their command/name fallback and marker.
+            let exactCommand = processes.filter { $0.command == saved.command }
+            let candidates = exactCommand.isEmpty
+                ? processes.filter {
+                    $0.name.caseInsensitiveCompare(saved.executableName) == .orderedSame
+                }
+                : exactCommand
 
             let unclaimed = candidates.filter { !claimedIdentities.contains($0.identity) }
             if unclaimed.count == 1, let match = unclaimed.first {
@@ -315,7 +325,7 @@ final class SavedSelectionsStore: ObservableObject {
 
     private func saveToDefaults() {
         guard allowsPersistence else { return }
-        persistence.save(selections)
+        persistence.savePreservingUnknownFields(selections)
     }
 
 }

@@ -292,7 +292,12 @@ install:
 2. Turn off Launch at Login and quit TaskScope.
 3. Install the previously verified app bundle through the same transactional
    installer or restore a known-good backup.
-4. Do not downgrade preferences across an incompatible schema unless migration
+4. Retained rules, presets, selections, and events preserve unknown stored JSON
+   fields. Unknown rule fields disable and lock the rule in this build; newer
+   settings values survive unrelated edits. This is preservation, not support
+   for newer behavior. Deleted entries and events beyond the history limit are
+   still removed. Preset archives retain their existing schema-version gate.
+   Do not downgrade preferences across an incompatible schema unless migration
    tests prove it safe.
 5. Reverify signature, version/build, startup, URL refresh, Shortcuts, and
    permissions.

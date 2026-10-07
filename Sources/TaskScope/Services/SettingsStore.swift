@@ -42,6 +42,7 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var recoveryMessage: String?
 
     private let persistence: RecoveringCodableStorage<CodableSettings>
+    private var lastSavedSettings: CodableSettings
     private var isNormalizing = false
     private var allowsPersistence: Bool
     private let searchPersistenceDelay: TimeInterval
@@ -75,6 +76,7 @@ final class SettingsStore: ObservableObject {
             allowsPersistence = false
         }
 
+        lastSavedSettings = decoded
         refreshIntervalSeconds = decoded.refreshIntervalSeconds
         processListLimit = decoded.processListLimit
         cpuHighlightThreshold = decoded.cpuHighlightThreshold
@@ -173,6 +175,7 @@ final class SettingsStore: ObservableObject {
             return
         }
         let settings = currentSettings.normalized()
+        defer { lastSavedSettings = settings }
         guard let storedData = persistence.rawData,
               (try? JSONDecoder().decode(CodableSettings.self, from: storedData)) != nil,
               var stored = try? JSONSerialization.jsonObject(with: storedData) as? [String: Any],
@@ -186,7 +189,13 @@ final class SettingsStore: ObservableObject {
         if let version = stored["schemaVersion"] as? Int, version > settings.schemaVersion {
             values["schemaVersion"] = version
         }
-        stored.merge(values) { _, new in new }
+        let previous = (try? JSONEncoder().encode(lastSavedSettings))
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        for (key, value) in values {
+            if key == "schemaVersion" || stored[key] == nil || (previous[key] as? NSObject)?.isEqual(value) != true {
+                stored[key] = value
+            }
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: stored) else { return }
         persistence.userDefaults.set(data, forKey: persistence.key)
     }

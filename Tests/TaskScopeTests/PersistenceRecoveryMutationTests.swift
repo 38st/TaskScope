@@ -29,6 +29,7 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
         )
         let invalid = AutoStopRule(
             processName: "Unsafe",
+            executablePath: "/Applications/Unsafe.app/Contents/MacOS/Unsafe",
             runtimeMinutes: 0,
             action: .kill
         )
@@ -50,10 +51,10 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
         )
 
         var callbackNames: [String] = []
-        store.evaluate(runningProcesses: [process(name: "Unsafe")]) { rule, _ in
+        store.evaluate(runningProcesses: [process(name: "Unsafe"), process(name: "Safe")]) { rule, _ in
             callbackNames.append(rule.processName)
         }
-        XCTAssertTrue(callbackNames.isEmpty, "a rejected zero-minute kill rule must never become live authority")
+        XCTAssertEqual(callbackNames, ["Safe"], "only the valid rule may act; the zero-minute path-bound kill rule must be rejected")
 
         let recovered = try XCTUnwrap(store.rules.first)
         var updated = recovered
@@ -83,6 +84,7 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
         let rulesKey = "rules"
         let unsafe = AutoStopRule(
             processName: "Unsafe",
+            executablePath: "/Applications/Unsafe.app/Contents/MacOS/Unsafe",
             runtimeMinutes: .max,
             action: .kill
         )
@@ -94,11 +96,17 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
         XCTAssertTrue(store.rules.isEmpty)
         XCTAssertTrue(store.isRulesReadOnlyAfterRecovery)
         XCTAssertEqual(defaults.data(forKey: "\(rulesKey).rejectedMigrationBackup"), original)
-        var didAct = false
-        store.evaluate(runningProcesses: [process(name: "Unsafe")]) { _, _ in
-            didAct = true
+        // Once recovery is accepted, the same target must be actionable under
+        // a valid path-bound rule. A missing path must not mask bad runtimes.
+        store.resetRulesAfterCorruption()
+        var valid = unsafe
+        valid.runtimeMinutes = 1
+        XCTAssertTrue(store.add(valid))
+        var actedRules: [AutoStopRule] = []
+        store.evaluate(runningProcesses: [process(name: "Unsafe")]) { rule, _ in
+            actedRules.append(rule)
         }
-        XCTAssertFalse(didAct)
+        XCTAssertEqual(actedRules, [valid])
     }
 
     func testRuleAndEventRecoveryGatesAreIndependentAndResetCommitsSessionHistory() async throws {
@@ -215,6 +223,7 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
             cpu: 0,
             memoryMB: 0,
             command: "/Applications/\(name).app/Contents/MacOS/\(name)",
+            executablePath: "/Applications/\(name).app/Contents/MacOS/\(name)",
             elapsedTime: "10:00",
             startTime: "start-42",
             netInKB: nil,

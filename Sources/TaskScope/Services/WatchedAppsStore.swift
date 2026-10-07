@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 @MainActor
@@ -110,7 +111,7 @@ final class WatchedAppsStore: ObservableObject {
                 allowsPersistence = true
                 recoveredDecodedPayload = false
                 if validated.presets != decoded {
-                    persistence.save(validated.presets)
+                    persistence.savePreservingUnknownFields(validated.presets)
                 }
             }
         } else {
@@ -384,10 +385,19 @@ final class WatchedAppsStore: ObservableObject {
         var value = preset
         value.displayName = value.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         value.mainProcessName = value.mainProcessName.trimmingCharacters(in: .whitespacesAndNewlines)
-        value.helperProcessNames = normalizedNames(value.helperProcessNames)
+        value.helperProcessNames = normalizedNames(value.helperProcessNames).filter {
+            $0.caseInsensitiveCompare(value.mainProcessName) != .orderedSame
+        }
         value.protectedProcessNames = normalizedNames(value.protectedProcessNames)
         value.appPath = value.appPath.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // The preset form edits these as comma-separated lists, so a comma
+        // inside one item would split it into two on the next edit.
+        let listItems = value.helperProcessNames + value.protectedProcessNames
+            + value.userLaunchAgentJobs.flatMap { [$0.label, $0.plistPath] }
+        guard !listItems.contains(where: { $0.contains(",") }) else {
+            return (nil, "Helper and protected process names and launch agent labels and paths cannot contain commas.")
+        }
         guard !value.displayName.isEmpty, !value.mainProcessName.isEmpty else {
             return (nil, "Display name and main process name are required.")
         }
@@ -396,6 +406,19 @@ final class WatchedAppsStore: ObservableObject {
             return (nil, "App path must be an absolute .app bundle path.")
         }
         value.appPath = URL(fileURLWithPath: value.appPath).standardizedFileURL.path
+        if value.id != WatchedAppPreset.globalProtectID {
+            if let resolved = realpath(value.appPath, nil) {
+                value.appPath = String(cString: resolved)
+                free(resolved)
+            }
+            // Process names match case-sensitively, so a main name that differs
+            // from the bundle executable only by case could never match. Adopt
+            // the executable's spelling rather than rejecting a stored preset.
+            if let executable = Bundle(path: value.appPath)?.object(forInfoDictionaryKey: "CFBundleExecutable") as? String,
+               executable.caseInsensitiveCompare(value.mainProcessName) == .orderedSame {
+                value.mainProcessName = executable
+            }
+        }
         value.userLaunchAgentJobs = value.userLaunchAgentJobs.map { original in
             var job = original
             job.label = job.label.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -501,7 +524,7 @@ final class WatchedAppsStore: ObservableObject {
 
     private func persistIfAllowed() {
         guard allowsPersistence else { return }
-        persistence.save(presets)
+        persistence.savePreservingUnknownFields(presets)
     }
 
 }

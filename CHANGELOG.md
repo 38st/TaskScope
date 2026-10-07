@@ -49,6 +49,14 @@ All notable changes to TaskScope are documented in this file. The project uses
   packaging tests from release exports, and check the distribution rejection
   reason. Validate shell syntax one script at a time and require release build
   numbers to exceed every `v*` tag, rejecting unreadable or invalid history.
+- Fixed persistence and auto-stop audit findings: dismissed prompts no longer
+  suppress Auto Stop or Log Only after action edits; helper lists exclude the
+  main app; custom paths use on-disk case, a main process name adopts the
+  bundle executable's spelling, and commas are rejected in list fields. Stored
+  unknown JSON fields and newer settings values survive unrelated saves;
+  unknown rule fields disable and lock enforcement. Settings recovery blocks
+  GlobalProtect preset deletion, and repeated-program saved selections recall
+  by group count. Added regressions and strengthened recovery validation tests.
 
 - Fixed GlobalProtect lifecycle audit findings: background Keep Off preserves
   loaded session VPN services; session layouts preserve loaded system daemons

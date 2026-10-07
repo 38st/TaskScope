@@ -474,6 +474,10 @@ struct SettingsView: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(rule.processName).fontWeight(.medium)
+                                if rule.hasUnknownFields {
+                                    Text("Requires a newer build — disabled and read-only")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
                                 Text("After \(rule.runtimeMinutes) min — \(rule.action.label)")
                                     .font(.caption).foregroundStyle(.secondary)
                                 if let path = rule.executablePath {
@@ -496,6 +500,7 @@ struct SettingsView: View {
                             Divider()
                             Button("Delete", role: .destructive) { autoStopRules.remove(rule) }
                         }
+                        .disabled(rule.hasUnknownFields)
                     }
                     .onDelete { autoStopRules.remove(at: $0) }
                 }
@@ -601,16 +606,22 @@ struct SettingsView: View {
     /// could clear it. The message names the way out.
     static func presetDeletionRefusal(
         for preset: WatchedAppPreset,
-        keepGlobalProtectOff: Bool
+        keepGlobalProtectOff: Bool,
+        isSettingsReadOnlyAfterCorruption: Bool = false
     ) -> String? {
-        guard preset.id == WatchedAppPreset.globalProtectID, keepGlobalProtectOff else { return nil }
+        guard preset.id == WatchedAppPreset.globalProtectID else { return nil }
+        if isSettingsReadOnlyAfterCorruption {
+            return "Settings are unreadable, so Keep GlobalProtect Off may still be active. Recover settings and clear Keep Off before deleting the built-in preset."
+        }
+        guard keepGlobalProtectOff else { return nil }
         return "Turn off Keep GlobalProtect Off (or choose Open) before deleting the built-in preset. Its user launch agents are disabled by a persistent launchd override that deleting the preset would not clear."
     }
 
     private func deletePreset(_ preset: WatchedAppPreset) {
         if let refusal = Self.presetDeletionRefusal(
             for: preset,
-            keepGlobalProtectOff: settings.keepGlobalProtectOff
+            keepGlobalProtectOff: settings.keepGlobalProtectOff,
+            isSettingsReadOnlyAfterCorruption: settings.isReadOnlyAfterCorruption
         ) {
             presetDeletionError = refusal
             return

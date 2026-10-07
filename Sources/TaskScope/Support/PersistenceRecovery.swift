@@ -69,6 +69,7 @@ struct RecoveringCodableStorage<Value: Codable> {
         var rejectedCount = 0
     }
 
+    private let snapshot = StoredJSONSnapshot()
     let userDefaults: UserDefaults
     let key: String
 
@@ -80,7 +81,7 @@ struct RecoveringCodableStorage<Value: Codable> {
         }
         do {
             return LoadOutcome(
-                value: try decode(data),
+                value: try decodeAndRemember(data, decode: decode),
                 backupKey: nil,
                 isBackupPreserved: false
             )
@@ -103,7 +104,36 @@ struct RecoveringCodableStorage<Value: Codable> {
             return decoded.elements
         }
         outcome.rejectedCount = rejectedCount
+        if rejectedCount > 0, let array = snapshot.raw as? [Any] {
+            snapshot.raw = array.filter { element in
+                guard let data = try? JSONSerialization.data(withJSONObject: element, options: .fragmentsAllowed) else {
+                    return false
+                }
+                return (try? JSONDecoder().decode(Element.self, from: data)) != nil
+            }
+        }
         return outcome
+    }
+
+    private func decodeAndRemember(_ data: Data, decode: (Data) throws -> Value) throws -> Value {
+        let value = try decode(data)
+        snapshot.raw = try JSONSerialization.jsonObject(with: data)
+        snapshot.baseline = try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+        return value
+    }
+
+    /// Apply only changes this build made to the decoded value. Unknown fields
+    /// and values that decoded to a fallback keep their original JSON shape.
+    @discardableResult
+    func savePreservingUnknownFields(_ value: Value) -> Bool {
+        guard let encoded = try? JSONEncoder().encode(value),
+              let current = try? JSONSerialization.jsonObject(with: encoded) else { return false }
+        let merged = StoredJSONSnapshot.merge(raw: snapshot.raw, baseline: snapshot.baseline, current: current)
+        guard let data = try? JSONSerialization.data(withJSONObject: merged) else { return false }
+        userDefaults.set(data, forKey: key)
+        snapshot.raw = merged
+        snapshot.baseline = current
+        return true
     }
 
     var rawData: Data? {
@@ -122,5 +152,51 @@ struct RecoveringCodableStorage<Value: Codable> {
         let baseKey = "\(key).\(suffix)"
         let preservedKey = PersistenceRecovery.preserveBackup(data, in: userDefaults, baseKey: baseKey)
         return (preservedKey ?? baseKey, preservedKey != nil)
+    }
+}
+
+/// The baseline and raw arrays have the same order, including entries whose
+/// legacy decoder supplied an ID. Later saves match those entries by that ID.
+private final class StoredJSONSnapshot {
+    var raw: Any?
+    var baseline: Any?
+
+    static func merge(raw: Any?, baseline: Any?, current: Any) -> Any {
+        guard let raw, let baseline else { return current }
+        if let old = baseline as? NSObject, old.isEqual(current) { return raw }
+        if let old = baseline as? [String: Any],
+           let new = current as? [String: Any],
+           var result = raw as? [String: Any] {
+            for key in Set(old.keys).union(new.keys) {
+                if let value = new[key] {
+                    result[key] = merge(raw: result[key], baseline: old[key], current: value)
+                } else {
+                    result.removeValue(forKey: key)
+                }
+            }
+            return result
+        }
+        if let old = baseline as? [Any], let new = current as? [Any], let stored = raw as? [Any] {
+            var used: Set<Int> = []
+            return new.map { value in
+                guard let identity = identity(value),
+                      let index = old.indices.first(where: {
+                          !used.contains($0) && self.identity(old[$0]) == identity
+                      }), stored.indices.contains(index) else { return value }
+                used.insert(index)
+                return merge(raw: stored[index], baseline: old[index], current: value)
+            }
+        }
+        return current
+    }
+
+    private static func identity(_ value: Any) -> String? {
+        guard let object = value as? [String: Any] else { return nil }
+        if let id = object["id"] as? String { return "id:" + id }
+        if let label = object["label"] as? String { return "label:" + label }
+        if let pid = object["pid"] as? Int, let command = object["command"] as? String {
+            return "process:\(pid):\(command)"
+        }
+        return nil
     }
 }

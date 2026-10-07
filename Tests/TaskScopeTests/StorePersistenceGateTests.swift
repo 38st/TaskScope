@@ -1,14 +1,10 @@
 import XCTest
 @testable import TaskScope
 
-/// P11 — `AutoStopRulesStore` and `SavedSelectionsStore` back up an unreadable payload but
-/// have no `allowsPersistence` equivalent, so the very next write lands on the *primary* key
-/// and the corrupt-but-recoverable bytes are gone. For the auto-stop event log the write is
-/// fully automatic: `TaskScopeApp` starts the engine at launch and `record(...)` calls
-/// `saveEvents()` on the first rule outcome.
+/// Recovery gates preserve unreadable primary payloads until explicit reset.
 @MainActor
-final class P11UnguardedWritebackTests: XCTestCase {
-    private let suiteName = "TaskScope.P11UnguardedWritebackTests"
+final class StorePersistenceGateTests: XCTestCase {
+    private let suiteName = "TaskScope.StorePersistenceGateTests"
     private let rulesKey = "auto-stop-rules-p11-tests"
     private let eventsKey = "auto-stop-events-p11-tests"
     private let selectionsKey = "saved-selections-p11-tests"
@@ -83,16 +79,11 @@ final class P11UnguardedWritebackTests: XCTestCase {
         XCTAssertEqual(
             defaults.data(forKey: eventsKey),
             corruptEvents,
-            """
-            The engine overwrote \(eventsKey) with its own one-element array without any user \
-            action. WatchedAppsStore refuses to write after a decode failure (allowsPersistence); \
-            AutoStopRulesStore.saveEvents() has no such gate.
-            """
+            "Automatic evaluation must preserve the unreadable primary event payload until reset."
         )
     }
 
-    /// The rules key has the same hole; it just needs one UI action instead of a timer tick.
-    /// Compare WatchedAppsStoreTests.testCorruptPayloadIsBackedUpAndCannotBeOverwrittenByMutation.
+    /// User edits must obey the same recovery gate as automatic event writes.
     func testUnreadableRulePayloadSurvivesAddingANewRule() {
         let corruptRules = Data([0xFF, 0x01])
         defaults.set(corruptRules, forKey: rulesKey)
@@ -104,12 +95,11 @@ final class P11UnguardedWritebackTests: XCTestCase {
         XCTAssertEqual(
             defaults.data(forKey: rulesKey),
             corruptRules,
-            "saveRules() wrote over the unreadable payload at its primary key."
+            "Rule mutations must preserve the unreadable primary payload until reset."
         )
     }
 
-    /// The single backup slot is reused, so a second decode failure destroys the first backup
-    /// and nothing in the UI can restore either one.
+    /// A second corruption must not overwrite the first recovery backup.
     func testFirstCorruptBackupIsNotClobberedByASecondCorruptRead() {
         let firstCorrupt = Data([0xAA, 0x01])
         let secondCorrupt = Data([0xBB, 0x02])
@@ -124,7 +114,7 @@ final class P11UnguardedWritebackTests: XCTestCase {
         XCTAssertEqual(
             hex(defaults.data(forKey: "\(eventsKey).corruptBackup")),
             hex(firstCorrupt),
-            "loadRecovering(_:userDefaults:key:) reuses one backup key, so the older backup is lost."
+            "Later corruption must preserve the older backup in its original slot."
         )
     }
 
@@ -146,22 +136,13 @@ final class P11UnguardedWritebackTests: XCTestCase {
         XCTAssertEqual(
             defaults.data(forKey: selectionsKey),
             corrupt,
-            """
-            The `didSet { saveToDefaults() }` observer wrote a one-element array over the \
-            unreadable payload at \(selectionsKey); the only copy left is \
-            \(selectionsKey).corruptBackup, which no UI reads.
-            """
+            "Selection mutations must preserve the unreadable primary payload until reset."
         )
     }
 
-    // MARK: - Synthesized decoder brittleness
+    // MARK: - Legacy event decoding
 
-    /// `AutoStopEvent` is persisted with a purely synthesized decoder. Swift's synthesized
-    /// `init(from:)` ignores property default values, so a payload missing any non-optional
-    /// key fails outright — which is exactly what every previously written events payload
-    /// looks like the moment a field is added. `AutoStopRule`, `WatchedAppPreset`,
-    /// `SavedSelection` and `CodableSettings` all hand-write `init(from:)` with
-    /// `decodeIfPresent` and tolerate it.
+    /// Missing defaulted fields in legacy events must remain readable.
     func testPersistedEventDecoderHonoursPropertyDefaultsLikeEveryOtherPersistedType() throws {
         let ruleMissingDefaultedFields = Data(#"[{"processName":"Example","runtimeMinutes":5,"action":"silent"}]"#.utf8)
         let eventMissingDefaultedField = Data(
@@ -171,19 +152,10 @@ final class P11UnguardedWritebackTests: XCTestCase {
         // Control: the hand-written decoder tolerates missing `id` and `isEnabled`.
         XCTAssertNoThrow(try JSONDecoder().decode([AutoStopRule].self, from: ruleMissingDefaultedFields))
 
-        // AutoStopEvent.id is declared `var id: UUID = UUID()` — the default is ignored.
-        do {
-            _ = try JSONDecoder().decode([AutoStopEvent].self, from: eventMissingDefaultedField)
-        } catch {
-            XCTFail(
-                """
-                AutoStopEvent's synthesized decoder ignored `var id: UUID = UUID()` and threw: \(error). \
-                Any field added to AutoStopEvent therefore makes every already-persisted \
-                TaskScope.autoStopEvents.v1 payload undecodable — which routes straight into the \
-                unguarded corrupt path proven above and overwrites the audit log.
-                """
-            )
-        }
+        XCTAssertNoThrow(
+            try JSONDecoder().decode([AutoStopEvent].self, from: eventMissingDefaultedField),
+            "The event decoder must supply defaults for omitted legacy fields."
+        )
     }
 
     // MARK: - Helpers

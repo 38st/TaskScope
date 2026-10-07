@@ -66,6 +66,10 @@ The vendor also documents a related
 when pre-logon is disabled. This reference does not establish that every vendor
 build shares the same bug or behavior.
 
+The built-in preset cannot be deleted while Keep Off is enabled or settings are
+unreadable: a fallback `false` cannot prove persistent disable overrides are
+cleared. Recover settings and clear Keep Off before deleting the preset.
+
 Main/helper status, Open readiness, and direct preset stops require current-user
 ownership. Another logged-in user's GlobalProtect UI or PanGPA helper does not
 trigger Keep Off enforcement. Protected-service classification is unchanged;

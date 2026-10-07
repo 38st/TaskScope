@@ -406,6 +406,31 @@ final class SwiftUIHarnessTests: XCTestCase {
         try view.inspect().find(button: "Delete").tap()
         XCTAssertTrue(fixture.stores.watchedApps.presets.isEmpty)
     }
+    func testDeletingGlobalProtectIsRefusedWhenKeepOffSettingsAreUnreadable() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let corrupt = Data([0xFF, 0x04])
+        fixture.stores.defaults.set(corrupt, forKey: "settings")
+        let settings = SettingsStore(userDefaults: fixture.stores.defaults, key: "settings")
+        XCTAssertFalse(settings.keepGlobalProtectOff)
+        XCTAssertTrue(settings.isReadOnlyAfterCorruption)
+        let view = SettingsView(
+            settings: settings,
+            watchedApps: fixture.stores.watchedApps,
+            autoStopRules: fixture.stores.autoStopRules,
+            processManager: fixture.manager,
+            selectedTab: .watchedApps
+        )
+        try view.inspect().find(button: "Delete").tap()
+        XCTAssertEqual(fixture.stores.watchedApps.presets.map(\.id), [WatchedAppPreset.globalProtectID])
+        XCTAssertEqual(fixture.stores.defaults.data(forKey: "settings"), corrupt)
+        XCTAssertTrue(SettingsView.presetDeletionRefusal(
+            for: .globalProtect,
+            keepGlobalProtectOff: false,
+            isSettingsReadOnlyAfterCorruption: true
+        )?.contains("Settings are unreadable") == true)
+    }
+
     func testProcessRowScopesAccessibilitySummaryAndPreservesActions() throws {
         let target = process(
             pid: 70,
