@@ -119,17 +119,21 @@ enum QuickAutoStopRuleSaver {
         )
 
         if let existing = existingRule {
+            let isEnabled = existing.isEnabled || (
+                existing.action == .kill && existing.executablePath == nil &&
+                    action == .kill && executablePath != nil
+            )
             guard rules.update(AutoStopRule(
                 id: existing.id,
                 processName: trimmedName,
                 executablePath: executablePath,
                 runtimeMinutes: runtimeMinutes,
                 action: action,
-                isEnabled: existing.isEnabled
+                isEnabled: isEnabled
             )) else {
                 return Outcome(error: rules.validationError ?? "The auto-stop rule could not be updated.")
             }
-            return Outcome(statusMessage: "Updated auto-stop rule for \(trimmedName).")
+            return Outcome(statusMessage: "Updated \(isEnabled ? "" : "disabled ")auto-stop rule for \(trimmedName).")
         }
 
         if let collision = rules.rules.first(where: {

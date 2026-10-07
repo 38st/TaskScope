@@ -2,6 +2,23 @@ import XCTest
 @testable import TaskScope
 
 final class WatchedAppPresetTests: XCTestCase {
+    @MainActor
+    func testWhitespaceDisplayNameFallsBackToMainProcess() throws {
+        let form = WatchedPresetFormState()
+        form.mainProcess = "Example"
+        form.displayName = " \n\t "
+        form.appPath = "/Applications/Example.app"
+        let preset = try form.makePreset(existing: nil).get()
+        XCTAssertEqual(preset.displayName, "Example")
+        let suite = "TaskScope.FormTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let store = WatchedAppsStore(userDefaults: defaults, key: "presets")
+        XCTAssertTrue(store.add(preset))
+        form.displayName = "  Display Name \n"
+        XCTAssertEqual(try form.makePreset(existing: nil).get().displayName, "Display Name")
+    }
+
     func testDecodingOlderPresetDefaultsNewFields() throws {
         let json = """
         {

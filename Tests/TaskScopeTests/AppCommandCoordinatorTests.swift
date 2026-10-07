@@ -150,10 +150,9 @@ final class AppCommandCoordinatorTests: XCTestCase {
         XCTAssertNotEqual(result.message, "Idle.")
     }
 
-    /// `processLoadError` describes the displayed process list, which a
-    /// watched-status refresh never reloads. A refresh that read a fresh
-    /// inventory must report success even while that stale-list error stands.
-    func testRefreshReportsItsOwnOutcomeNotAStaleProcessListError() async {
+    /// A successful watched read reports its own outcome and clears the old
+    /// inventory failure so the Processes tab does not keep showing an error.
+    func testRefreshReportsSuccessAndClearsAStaleProcessListError() async {
         let inventory = ScriptedInventory(results: [
             .failure(.commandFailed("ps timed out")),
             .success([])
@@ -174,7 +173,7 @@ final class AppCommandCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(result.status, .completed, result.message)
         XCTAssertEqual(result.message, "No watched processes")
-        XCTAssertEqual(manager.processLoadError, "ps timed out", "the list was not reloaded, so its error stands")
+        XCTAssertNil(manager.processLoadError, "a successful inventory read clears the stale failure")
     }
 
     func testRefreshReportsFailureWhenItsOwnReadFails() async {

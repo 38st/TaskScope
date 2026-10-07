@@ -59,9 +59,10 @@ final class WatchedPresetFormState: ObservableObject {
             )
         }
 
+        let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return .success(WatchedAppPreset(
             id: existing?.id ?? UUID(),
-            displayName: displayName.isEmpty ? mainProcess : displayName,
+            displayName: trimmedDisplayName.isEmpty ? mainProcess : trimmedDisplayName,
             mainProcessName: mainProcess,
             helperProcessNames: PresetInputParser.list(from: helpers),
             protectedProcessNames: PresetInputParser.list(from: protectedProcesses),

@@ -456,20 +456,11 @@ struct TaskScopePopoverView: View {
 
     private var autoStopAlertContent: some View {
         quickActionSheetContent
-        .alert(
-            autoStopPromptTitle,
-            isPresented: autoStopPromptBinding(for: autoStopRules.currentPrompt),
-            presenting: autoStopRules.currentPrompt
-        ) { prompt in
-            Button("Stop Now", role: .destructive) {
-                guard let claimed = autoStopRules.claimPrompt(prompt) else { return }
-                Task { await autoStopRules.finishStop(claimed) }
-            }
-            Button("Dismiss", role: .cancel) {
-                autoStopRules.dismissPrompt(prompt)
-            }
-        } message: { prompt in
-            Text("\(prompt.process.name) has run for \(prompt.process.elapsedTime), beyond the \(prompt.rule.runtimeMinutes)-minute rule. Stop it now?")
+        .background {
+            // Replace only the alert presenter when the queue head changes.
+            // The list and its focus/selection keep their own identity.
+            AutoStopPromptAlert(prompt: autoStopRules.currentPrompt, rules: autoStopRules)
+                .id(autoStopRules.currentPrompt?.id)
         }
     }
 
@@ -581,7 +572,12 @@ struct TaskScopePopoverView: View {
                                     // Resolve against a fresh inventory: the list may
                                     // never have been loaded, or may be a poll old.
                                     Task {
-                                        await processManager.loadProcessList(showMessage: false)
+                                        guard await processManager.loadProcessList(showMessage: false) else {
+                                            pendingRecallResult = nil
+                                            pendingRecallSelection = nil
+                                            processManager.setMessage("Could not preview saved selection: \(processManager.processLoadError ?? "the process list could not be refreshed").")
+                                            return
+                                        }
                                         pendingRecallResult = savedSelections.resolve(
                                             sel,
                                             in: processManager.inventorySnapshot
@@ -705,7 +701,8 @@ struct TaskScopePopoverView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 16)
 
-            if !processManager.hasLoadedProcessList, let error = processManager.processLoadError {
+            if !processManager.hasLoadedProcessList, processManager.hasAttemptedProcessListLoad,
+               let error = processManager.processLoadError {
                 firstLoadFailedState(error: error)
             } else if processManager.hasLoadedProcessList, filteredProcesses.isEmpty {
                 // Rows exist but the filter matched none of them; the stale-list
@@ -760,10 +757,7 @@ struct TaskScopePopoverView: View {
                         return .handled
                     }
                     .onKeyPress(.return) {
-                        if let pid = keyboardSelectedPid,
-                           let proc = keyboardNavigationProcesses.first(where: { $0.pid == pid }) {
-                            confirmationState.requestTermination(proc)
-                        }
+                        requestKeyboardTermination(pid: keyboardSelectedPid)
                         return .handled
                     }
                     .onKeyPress(.escape) {
@@ -979,13 +973,6 @@ struct TaskScopePopoverView: View {
         )
     }
 
-    private var autoStopPromptTitle: String {
-        guard let processName = autoStopRules.currentPrompt?.process.name else {
-            return "Auto-Stop"
-        }
-        return "Auto-Stop: \(processName)"
-    }
-
     private var lifecycleReportBinding: Binding<LifecycleReport?> {
         Binding(
             get: {
@@ -1083,8 +1070,15 @@ struct TaskScopePopoverView: View {
         return "\(lastUpdated) Refresh failed: \(error) Actions will be revalidated before signaling."
     }
 
+    func requestKeyboardTermination(pid: Int32?) {
+        guard let pid,
+              let process = keyboardNavigationProcesses.first(where: { $0.pid == pid }),
+              !processManager.isCurrentProcess(process) else { return }
+        confirmationState.requestTermination(process)
+    }
+
     @ViewBuilder
-    private func processContextMenu(for process: AppProcess) -> some View {
+    func processContextMenu(for process: AppProcess) -> some View {
         Button("Create Auto-Stop Rule...") {
             quickAutoStopProcess = process
         }
@@ -1098,9 +1092,11 @@ struct TaskScopePopoverView: View {
         }
         Divider()
         Button("Stop") { confirmationState.requestTermination(process) }
+            .disabled(processManager.isCurrentProcess(process))
         Button("Force Stop") {
             confirmationState.requestTermination(process, mode: .force)
         }
+        .disabled(processManager.isCurrentProcess(process))
         Divider()
         Button("Show Detail") {
             detailData = nil
@@ -1145,7 +1141,8 @@ struct TaskScopePopoverView: View {
             names = preset.killableNames
         }
         let targets = names.isEmpty ? "no configured processes" : names.joined(separator: ", ")
-        let agentLabels = preset.lifecycleUserLaunchAgentJobs.map(\.label)
+        let agentPreset = preset.hasSupportedGlobalProtectIdentity ? preset.globalProtectInterfaceOnly : preset
+        let agentLabels = agentPreset.lifecycleUserLaunchAgentJobs.map(\.label)
         let agentList = agentLabels.joined(separator: ", ")
         let window = Int(ProcessTerminationController.gracefulExitWindowSeconds)
         let forceStopDisclosure = "A process still running \(window) seconds after the stop request is force stopped."
@@ -1190,24 +1187,6 @@ struct TaskScopePopoverView: View {
         let target = processes[index]
         keyboardSelectedPid = target.pid
         proxy.scrollTo(target.pid, anchor: .center)
-    }
-
-    /// Binds presentation to one specific prompt, captured when the alert was built.
-    ///
-    /// The write-back must dismiss *that* prompt, never `currentPrompt`: a button
-    /// action claims its prompt synchronously and the queue head has already moved
-    /// on by the time SwiftUI sets `isPresented = false`, so resolving the head here
-    /// would consume a second prompt the user never saw. Dismissal is idempotent, so
-    /// for a button tap this is a no-op and for Esc / click-away it does the work.
-    private func autoStopPromptBinding(for prompt: AutoStopPrompt?) -> Binding<Bool> {
-        Binding(
-            get: { prompt != nil },
-            set: { isPresented in
-                if !isPresented, let prompt {
-                    autoStopRules.dismissPrompt(prompt)
-                }
-            }
-        )
     }
 
     private func selectedProcessesForPreset() -> [AppProcess] {

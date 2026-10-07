@@ -96,7 +96,7 @@ struct PresetCard: View {
         else if isKeptOff { .green }
         else if snapshot.isMainRunning { .red }
         else if snapshot.hasHelpers { .yellow }
-        else if !snapshot.protectedRunning.isEmpty { .orange }
+        else if !snapshot.protectedRunning.isEmpty || !snapshot.unprivilegedProtectedRunning.isEmpty { .orange }
         else { .green }
     }
 
@@ -107,7 +107,7 @@ struct PresetCard: View {
         else if isKeptOff { "Off requested" }
         else if snapshot.isMainRunning { "Active" }
         else if snapshot.hasHelpers { "Helpers" }
-        else if !snapshot.protectedRunning.isEmpty { "Services" }
+        else if !snapshot.protectedRunning.isEmpty || !snapshot.unprivilegedProtectedRunning.isEmpty { "Services" }
         else { "Quiet" }
     }
 }

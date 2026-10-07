@@ -141,6 +141,12 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Fixed
 
+- Correct GlobalProtect quit agent disclosures, enable migrated Auto Stop rules
+  when the quick sheet supplies their path, and pin prompt alerts to a displayed
+  PID. Report failed saved-selection reads, recover stale inventory banners,
+  accept blank preset display names, show per-user services consistently, and
+  disable TaskScope self-stop actions in menus and keyboard navigation.
+
 - Retarget consecutive Activity Monitor handoffs while preserving the original
   search for restoration. Require confirmation for Stop Watched App intents and
   keep cold intent launches in the background. Migrate reserved saved hotkeys to

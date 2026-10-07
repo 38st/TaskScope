@@ -81,7 +81,10 @@ Record evidence for every locally testable item:
 - bundle-ID migration behavior where the identifier changes;
 - Stop, Force Stop, process exit, PID reuse, selection, and batch reporting;
 - watched-app open/close success, absent files, partial failures, and denial;
-- Prompt, Auto Stop, and Log Only rules;
+- Prompt, Auto Stop, and Log Only rules, including queue-head replacement while
+  an alert is visible and quick-sheet repair of migration-disabled rules;
+- saved-selection recall read failure, background inventory failure/recovery,
+  per-user Services badges, and TaskScope self-stop menu/Return protection;
 - corrupt settings, presets, rules/events, and saved-selection recovery/reset;
 - notification not-determined, allowed, denied, revoked, and recovery states;
 - Accessibility denial/grant and exact Activity Monitor PID handoff, including

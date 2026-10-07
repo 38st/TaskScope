@@ -8,6 +8,7 @@ final class ProcessManager: ObservableObject {
     @Published private(set) var snapshots: [WatchedAppSnapshot] = []
     @Published private(set) var processes: [AppProcess] = []
     @Published private(set) var hasLoadedProcessList = false
+    @Published private(set) var hasAttemptedProcessListLoad = false
     @Published private(set) var message: String = "Idle."
 
     func setMessage(_ text: String) {
@@ -77,6 +78,8 @@ final class ProcessManager: ObservableObject {
     }
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
     private var appliedWatchedStatusReads = 0
+    private var appliedProcessListReads = 0
+    private var appliedExtendedProcessListReads = 0
     private var extendedMetricsConsumers = 0
     private let now: () -> Date
     private var successfulInventoryReads: UInt64 = 0
@@ -269,18 +272,23 @@ final class ProcessManager: ObservableObject {
         return refreshed
     }
 
-    /// Returns whether this call performed the read. `false` means it joined an
-    /// equivalent read already in flight (or was cancelled while queued).
+    /// Returns whether a fresh list was applied by this call or the equivalent
+    /// read it joined.
     @discardableResult
     func loadProcessList(showMessage: Bool = true) async -> Bool {
+        let appliedBefore = appliedProcessListReads
         await runAction(kind: .read(.processList)) {
-            switch await processInventory.load(fetchExtendedStats: fetchExtendedStats) {
+            hasAttemptedProcessListLoad = true
+            let includesExtendedStats = fetchExtendedStats
+            switch await processInventory.load(fetchExtendedStats: includesExtendedStats) {
             case .success(let inventory):
-                recordInventorySuccess(clearsProcessLoadError: true)
+                recordInventorySuccess()
                 fullProcessInventory = inventory
                 apply(snapshots(from: inventory))
                 publishDisplayProcesses()
                 hasLoadedProcessList = true
+                appliedProcessListReads &+= 1
+                if includesExtendedStats { appliedExtendedProcessListReads &+= 1 }
                 if showMessage {
                     message = "Loaded \(processes.count) of \(inventory.count) processes."
                 }
@@ -292,6 +300,7 @@ final class ProcessManager: ObservableObject {
                 }
             }
         }
+        return !Task.isCancelled && appliedProcessListReads != appliedBefore
     }
 
     @discardableResult
@@ -931,7 +940,7 @@ final class ProcessManager: ObservableObject {
     private func refreshInventoryAfterMutation() async -> [AppProcess]? {
         switch await verificationInventory.load(fetchExtendedStats: hasLoadedProcessList && fetchExtendedStats) {
         case .success(let inventory):
-            recordInventorySuccess(clearsProcessLoadError: hasLoadedProcessList)
+            recordInventorySuccess()
             apply(snapshots(from: inventory))
             if hasLoadedProcessList {
                 fullProcessInventory = inventory
@@ -972,10 +981,8 @@ final class ProcessManager: ObservableObject {
         }
     }
 
-    private func recordInventorySuccess(clearsProcessLoadError: Bool = false) {
-        if clearsProcessLoadError {
-            processLoadError = nil
-        }
+    private func recordInventorySuccess() {
+        processLoadError = nil
         lastSuccessfulInventoryAt = now()
         lastInventoryFailure = nil
         successfulInventoryReads &+= 1
@@ -1016,7 +1023,9 @@ final class ProcessManager: ObservableObject {
         if hasLoadedProcessList {
             // Joining a basic list read already in flight would leave the
             // extended columns empty until a later refresh, so read once more.
-            if await !loadProcessList(showMessage: false), fetchExtendedStats {
+            let appliedBefore = appliedExtendedProcessListReads
+            await loadProcessList(showMessage: false)
+            if appliedExtendedProcessListReads == appliedBefore, fetchExtendedStats {
                 await loadProcessList(showMessage: false)
             }
         }

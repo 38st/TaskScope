@@ -224,7 +224,10 @@ be exported from Settings when their stored data is readable. See
 - Create Prompt, Auto Stop, or Log Only runtime rules with event history. Auto
   Stop requires a trusted executable path; legacy name-only Auto Stop rules
   load disabled until reviewed. The quick rule sheet shows the executable path
-  or name-wide scope as you edit. Delivered stop requests remain in event
+  or name-wide scope as you edit. Supplying the missing path through the quick
+  sheet enables a legacy Auto Stop rule; other disabled rules stay disabled and
+  the save message says so. Prompt alerts show the PID and are presented anew
+  when the queued target changes. Delivered stop requests remain in event
   history even if their rule is edited, disabled, or deleted during the stop.
 - View sampled process CPU and RSS history with Live, Paused, and Unavailable
   states.

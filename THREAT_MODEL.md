@@ -85,7 +85,9 @@ Required invariants:
   graceful window (3 seconds) with the identity still present;
 - require current-user ownership and an executable directory for every scoped
   termination; there is no name-only termination entry point;
-- bind queued prompts and batch reports to immutable captured targets.
+- bind queued prompts and batch reports to immutable captured targets. Prompt
+  alerts show the PID and use a new presentation identity when the queue head
+  changes; actions from a retired alert cannot claim the replacement prompt.
 - require enabled automatic-stop authority to include a trusted executable path
   and match that path again in the final inventory immediately before signal.
 - never downgrade a path-backed saved selection to legacy command/name matching.

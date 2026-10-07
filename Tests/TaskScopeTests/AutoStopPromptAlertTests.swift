@@ -30,7 +30,7 @@ final class AutoStopPromptAlertTests: XCTestCase {
         let view = makePopover(fixture: fixture)
         let alert = try view.inspect().find(ViewType.Alert.self)
         XCTAssertNoThrow(
-            try alert.find(text: "Example has run for 03:00, beyond the 1-minute rule. Stop it now?"),
+            try alert.find(text: "Example (PID 41) has run for 03:00, beyond the 1-minute rule. Stop it now?"),
             "setup: the alert must be displaying the prompt for pid 41"
         )
 
@@ -69,7 +69,7 @@ final class AutoStopPromptAlertTests: XCTestCase {
         let view = makePopover(fixture: fixture)
         let alert = try view.inspect().find(ViewType.Alert.self)
         XCTAssertNoThrow(
-            try alert.find(text: "Example has run for 03:00, beyond the 1-minute rule. Stop it now?"),
+            try alert.find(text: "Example (PID 41) has run for 03:00, beyond the 1-minute rule. Stop it now?"),
             "setup: the alert must be displaying the prompt for pid 41"
         )
 
@@ -100,7 +100,7 @@ final class AutoStopPromptAlertTests: XCTestCase {
         let view = makePopover(fixture: fixture)
         let alert = try view.inspect().find(ViewType.Alert.self)
         XCTAssertNoThrow(
-            try alert.find(text: "Example has run for 03:00, beyond the 1-minute rule. Stop it now?"),
+            try alert.find(text: "Example (PID 41) has run for 03:00, beyond the 1-minute rule. Stop it now?"),
             "setup: the alert must be displaying the prompt for pid 41"
         )
 
@@ -118,6 +118,44 @@ final class AutoStopPromptAlertTests: XCTestCase {
             1,
             "One Dismiss tap must log exactly one event, not silently dismiss the unseen prompt too"
         )
+    }
+
+    func testPrunedHeadReplacesAlertIdentityWithoutRetargetingOldActions() async throws {
+        let shown = process(pid: 41, name: "Example")
+        let queued = process(pid: 42, name: "Example")
+        let fixture = await makeFixture(processes: [shown, queued])
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.autoStopRules
+        let stopped = StopRecorder()
+        store.start(cadence: 60) { _, process in stopped.record(process.pid) }
+        store.stop()
+        XCTAssertTrue(store.add(AutoStopRule(processName: "Example", runtimeMinutes: 1, action: .prompt)))
+        await store.evaluateNow()
+        XCTAssertEqual(store.pendingPrompts.map(\.process.pid), [41, 42])
+        let view = makePopover(fixture: fixture)
+        let firstPresenter = try view.inspect().find(AutoStopPromptAlert.self)
+        let firstID = try firstPresenter.id()
+        let firstAlert = try firstPresenter.find(ViewType.Alert.self)
+        XCTAssertNoThrow(try firstAlert.find(text: "Example (PID 41) has run for 03:00, beyond the 1-minute rule. Stop it now?"))
+
+        await fixture.inventory.setProcesses([queued])
+        await store.evaluateNow()
+        XCTAssertEqual(store.currentPrompt?.process.pid, 42)
+        let nextPresenter = try view.inspect().find(AutoStopPromptAlert.self)
+        XCTAssertNotEqual(try nextPresenter.id(), firstID, "The next prompt must get a new SwiftUI presenter identity")
+        XCTAssertEqual(try firstPresenter.actualView().prompt?.process.pid, 41)
+        try firstAlert.find(button: "Stop Now").tap()
+        try firstAlert.dismiss()
+        await settle()
+        XCTAssertTrue(stopped.pids.isEmpty, "The retired alert cannot authorize its replacement")
+        XCTAssertEqual(store.currentPrompt?.process.pid, 42)
+
+        let nextAlert = try nextPresenter.find(ViewType.Alert.self)
+        XCTAssertNoThrow(try nextAlert.find(text: "Example (PID 42) has run for 03:00, beyond the 1-minute rule. Stop it now?"))
+        try nextAlert.find(button: "Stop Now").tap()
+        try nextAlert.dismiss()
+        await settle()
+        XCTAssertEqual(stopped.pids, [42])
     }
 
     // MARK: - Helpers
@@ -160,7 +198,7 @@ final class AutoStopPromptAlertTests: XCTestCase {
         let stores = makeStores(inventory: inventory)
         await manager.loadProcessList(showMessage: false)
 
-        return PromptFixture(manager: manager, signaler: signaler, stores: stores)
+        return PromptFixture(manager: manager, signaler: signaler, stores: stores, inventory: inventory)
     }
 
     private func makePopover(fixture: PromptFixture) -> TaskScopePopoverView {
@@ -210,8 +248,12 @@ private final class StopRecorder {
     }
 }
 
-private struct PromptInventory: ProcessInventoryProviding {
+private actor PromptInventory: ProcessInventoryProviding {
     var processes: [AppProcess]
+
+    init(processes: [AppProcess]) { self.processes = processes }
+
+    func setProcesses(_ processes: [AppProcess]) { self.processes = processes }
 
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         .success(processes)
@@ -261,6 +303,7 @@ private struct PromptFixture {
     var manager: ProcessManager
     var signaler: PromptSignaler
     var stores: PromptStores
+    var inventory: PromptInventory
 }
 
 @MainActor

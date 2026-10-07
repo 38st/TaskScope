@@ -5,6 +5,131 @@ import XCTest
 
 @MainActor
 final class SwiftUIHarnessTests: XCTestCase {
+    func testGlobalProtectQuitConfirmationsAndDryRunOnlyUnloadInterfaceAgent() {
+        for action in [ProcessConfirmationState.PresetAction.quitApp, .quitHelpers] {
+            let message = TaskScopePopoverView.presetConfirmationMessage(for: .init(preset: .globalProtect, action: action))
+            XCTAssertTrue(message.contains("com.paloaltonetworks.gp.pangpa"))
+            XCTAssertFalse(message.contains("com.paloaltonetworks.gp.pangps"))
+        }
+        let operations = SettingsView.lifecycleDryRunOperations(for: .globalProtect)
+            .filter { $0.hasPrefix("Quit App, Quit Helpers") }
+        XCTAssertEqual(operations.count, 1)
+        XCTAssertTrue(operations[0].contains("com.paloaltonetworks.gp.pangpa"))
+        XCTAssertFalse(operations[0].contains("com.paloaltonetworks.gp.pangps"))
+    }
+
+    func testQuickRuleEnablesMigratedAutoStopWhenSupplyingPath() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.autoStopRules
+        let legacy = AutoStopRule(processName: "Example", runtimeMinutes: 5, action: .kill)
+        let migrated = try XCTUnwrap(AutoStopRuleValidation.validateStored([legacy]).rules.first)
+        XCTAssertFalse(migrated.isEnabled)
+        XCTAssertTrue(store.add(migrated))
+        let outcome = QuickAutoStopRuleSaver.save(
+            into: store, processName: "Example", observedProcessName: "Example",
+            observedExecutablePath: "/Applications/Example.app/Contents/MacOS/Example",
+            runtimeMinutes: 5, action: .kill, existingRule: store.rules[0]
+        )
+        XCTAssertNil(outcome.error)
+        XCTAssertTrue(store.rules[0].isEnabled)
+        XCTAssertEqual(store.rules[0].executablePath, "/Applications/Example.app/Contents/MacOS/Example")
+        XCTAssertEqual(outcome.statusMessage, "Updated auto-stop rule for Example.")
+    }
+
+    func testQuickRuleReportsWhenUpdatedRuleRemainsDisabled() async {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.autoStopRules
+        for action in [AutoStopRule.Action.prompt, .kill] {
+            let rule = AutoStopRule(processName: "Example", executablePath: "/Example",
+                                   runtimeMinutes: 5, action: action, isEnabled: false)
+            XCTAssertTrue(store.add(rule))
+            let outcome = QuickAutoStopRuleSaver.save(
+                into: store, processName: "Example", observedProcessName: "Example",
+                observedExecutablePath: "/Example", runtimeMinutes: 9, action: action,
+                existingRule: store.rules[0]
+            )
+            XCTAssertNil(outcome.error)
+            XCTAssertFalse(store.rules[0].isEnabled)
+            XCTAssertEqual(outcome.statusMessage, "Updated disabled auto-stop rule for Example.")
+            XCTAssertTrue(store.remove(store.rules[0]))
+        }
+    }
+
+    func testRecallReadFailureReportsErrorInsteadOfMissingProcesses() async throws {
+        let target = process(pid: 71, parentPID: 1, name: "Example")
+        for initial in [[], [target]] {
+            let fixture = await makeFixture(inventory: UIScriptedInventory(results: [
+                .success(initial), .failure(.commandFailed("ps timed out"))
+            ]))
+            defer { fixture.stores.cleanup() }
+            XCTAssertTrue(fixture.stores.savedSelections.save(name: "Saved", processes: [target]))
+            let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
+            try view.inspect().find(button: "Preview & Recall…").tap()
+            await settle()
+            XCTAssertEqual(fixture.manager.message, "Could not preview saved selection: ps timed out.")
+            XCTAssertThrowsError(try view.inspect().find(SavedSelectionRecallSheet.self))
+        }
+    }
+
+    func testBackgroundReadFailureKeepsUnloadedProcessesTabIdle() async throws {
+        let inventory = UIScriptedInventory(results: [.failure(.commandFailed("ps timed out"))])
+        let fixture = await makeFixture(inventory: inventory, loadList: false)
+        defer { fixture.stores.cleanup() }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        XCTAssertEqual(fixture.manager.processLoadError, "ps timed out")
+        XCTAssertFalse(fixture.manager.hasAttemptedProcessListLoad)
+        let inspected = try makePopover(fixture: fixture, confirmationState: ProcessConfirmationState()).inspect()
+        XCTAssertNoThrow(try inspected.find(text: "Idle Until Needed"))
+        XCTAssertThrowsError(try inspected.find(text: "Process List Unavailable"))
+    }
+
+    func testSuccessfulWatchedReadClearsStaleListBanner() async throws {
+        let target = process(pid: 71, parentPID: 1, name: "Example")
+        let fixture = await makeFixture(inventory: UIScriptedInventory(results: [
+            .success([target]), .failure(.commandFailed("ps timed out")), .success([target])
+        ]))
+        defer { fixture.stores.cleanup() }
+        let loaded = await fixture.manager.loadProcessList(showMessage: false)
+        XCTAssertFalse(loaded)
+        let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
+        XCTAssertNoThrow(try view.inspect().find(text: "Process list is stale"))
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        XCTAssertNil(fixture.manager.processLoadError)
+        XCTAssertThrowsError(try view.inspect().find(text: "Process list is stale"))
+    }
+
+    func testUserProtectedProcessBadgeMatchesServicesHeader() throws {
+        let snapshot = WatchedAppSnapshot(preset: .globalProtect, runningNames: [],
+                                          unprivilegedProtectedNames: ["PanGPS"])
+        let card = PresetCard(snapshot: snapshot, onOpen: {}, onQuitApp: {}, onQuitHelpers: {},
+                              onQuitAll: {}, isKeptOff: false, isKeepOffControlEnabled: true,
+                              onKeepOffChanged: { _ in })
+        XCTAssertEqual([snapshot].aggregateStatus, .protectedOnly)
+        XCTAssertNoThrow(try card.inspect().find(text: "Services"))
+        XCTAssertThrowsError(try card.inspect().find(text: "Quiet"))
+        XCTAssertEqual(try card.inspect().vStack().hStack(0).hStack(2).shape(0).fillShapeStyle(Color.self), .orange)
+    }
+
+    func testOwnProcessCannotRequestStopFromContextMenuOrReturn() async throws {
+        let own = process(pid: ProcessInfo.processInfo.processIdentifier, parentPID: 1, name: "TaskScope")
+        let other = process(pid: 71, parentPID: 1, name: "Example")
+        let fixture = await makeFixture(processes: [own, other])
+        defer { fixture.stores.cleanup() }
+        let confirmation = ProcessConfirmationState()
+        let view = makePopover(fixture: fixture, confirmationState: confirmation)
+        for title in ["Stop", "Force Stop"] {
+            XCTAssertTrue(try view.processContextMenu(for: own).inspect().find(button: title).isDisabled())
+            XCTAssertFalse(try view.processContextMenu(for: other).inspect().find(button: title).isDisabled())
+        }
+        view.requestKeyboardTermination(pid: own.pid)
+        XCTAssertNil(confirmation.pendingTermination)
+        view.requestKeyboardTermination(pid: other.pid)
+        XCTAssertEqual(confirmation.pendingTermination?.process.identity, other.identity)
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+    }
+
     func testKeepOffBadgeShowsEnforcementWhileCurrentUserAgentRemains() throws {
         let snapshot = WatchedAppSnapshot(
             preset: .globalProtect,
@@ -1141,7 +1266,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         await makeFixture(inventory: UIInventory(processes: processes))
     }
 
-    private func makeFixture(inventory: any ProcessInventoryProviding) async -> UIFixture {
+    private func makeFixture(inventory: any ProcessInventoryProviding, loadList: Bool = true) async -> UIFixture {
         let signaler = UIRecordingSignaler()
         let manager = ProcessManager(
             processInventory: inventory,
@@ -1151,7 +1276,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         manager.enableNotifications = false
 
         let stores = makeStores(inventory: inventory)
-        await manager.loadProcessList(showMessage: false)
+        if loadList { await manager.loadProcessList(showMessage: false) }
 
         return UIFixture(
             manager: manager,

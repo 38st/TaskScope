@@ -467,6 +467,42 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(manager.message, "TaskScope cannot stop itself; use Quit.")
     }
 
+    func testJoinedListLoadReportsWhetherFreshInventoryWasApplied() async {
+        for result: Result<[AppProcess], ProcessInventoryError> in [.success([]), .failure(.commandFailed("ps timed out"))] {
+            let inventory = OrderedBlockingProcessInventory(results: [result])
+            let manager = makeManager(inventory: inventory)
+            let first = Task { await manager.loadProcessList(showMessage: false) }
+            await inventory.waitForFirstCall()
+            let second = Task { await manager.loadProcessList(showMessage: false) }
+            await Task.yield()
+            await inventory.finishFirstCall()
+            let firstSucceeded = await first.value
+            let secondSucceeded = await second.value
+            let shouldSucceed: Bool
+            if case .success = result { shouldSucceed = true } else { shouldSucceed = false }
+            XCTAssertEqual(firstSucceeded, shouldSucceed)
+            XCTAssertEqual(secondSucceeded, shouldSucceed)
+            let requests = await inventory.fetchOrder()
+            XCTAssertEqual(requests, [false])
+        }
+    }
+
+    func testExtendedMetricsLoadsAgainAfterJoiningBasicListRead() async {
+        let refresh = OrderedBlockingProcessInventory(results: [.success([]), .success([])])
+        let manager = makeManager(inventory: InitialLoadThenBlockingInventory(refresh: refresh))
+        await manager.loadProcessList(showMessage: false)
+        let basic = Task { await manager.loadProcessList(showMessage: false) }
+        await refresh.waitForFirstCall()
+        let extended = Task { await manager.beginExtendedMetrics() }
+        await Task.yield()
+        await refresh.finishFirstCall()
+        _ = await basic.value
+        await extended.value
+        let requests = await refresh.fetchOrder()
+        XCTAssertEqual(requests, [false, true])
+        manager.endExtendedMetrics()
+    }
+
     func testEquivalentOverlappingRefreshesAreCoalesced() async {
         let inventory = BlockingProcessInventory()
         let manager = ProcessManager(
@@ -2000,6 +2036,21 @@ private actor CancellationAwareInventory: ProcessInventoryProviding {
     func releaseBlockedCall() {
         blockedContinuation?.resume()
         blockedContinuation = nil
+    }
+}
+
+private actor InitialLoadThenBlockingInventory: ProcessInventoryProviding {
+    let refresh: OrderedBlockingProcessInventory
+    private var isInitialLoad = true
+
+    init(refresh: OrderedBlockingProcessInventory) { self.refresh = refresh }
+
+    func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
+        if isInitialLoad {
+            isInitialLoad = false
+            return .success([])
+        }
+        return await refresh.load(fetchExtendedStats: fetchExtendedStats)
     }
 }
 

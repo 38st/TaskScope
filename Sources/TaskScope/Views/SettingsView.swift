@@ -410,9 +410,11 @@ struct SettingsView: View {
         operations.append(
             "Open: open \(preset.appPath) only when \(preset.mainProcessName) is not already running, then verify it."
         )
-        if !preset.userLaunchAgentJobs.isEmpty {
+        let agentPreset = preset.hasSupportedGlobalProtectIdentity ? preset.globalProtectInterfaceOnly : preset
+        let agentLabels = agentPreset.lifecycleUserLaunchAgentJobs.map(\.label)
+        if !agentLabels.isEmpty {
             operations.append(
-                "Quit App, Quit Helpers, or Close All: unload and verify the configured user launch agents before signaling processes."
+                "Quit App, Quit Helpers, or Close All: unload and verify the user launch agents (\(agentLabels.joined(separator: ", "))) before signaling processes; Quit Helpers preserves an agent running the main process."
             )
         }
         operations.append(

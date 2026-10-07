@@ -23,7 +23,9 @@ Current regression fixtures also cover preservation of a loaded system daemon
 and its override on session layouts (reported as an incomplete Keep Off),
 background preservation of `pangps`, delayed daemon shutdown, readiness
 deadlines, failed restoration intent, and polling cancellation. These changes
-have no new live lifecycle evidence.
+have no new live lifecycle evidence. View regression tests also verify that
+Quit App / Quit Helpers confirmations and the Settings dry run list only
+`pangpa` for unloading, and that per-user protected processes show Services.
 
 Quit All now uses the full Keep Off path. Normal full stops press the vendor's
 Disconnect control through Accessibility and require a stable idle
