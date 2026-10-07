@@ -359,7 +359,8 @@ struct TaskScopeApp: App {
                 openFullWindow: {
                     showTaskScopeWindow()
                 },
-                activityMonitor: activityMonitor
+                activityMonitor: activityMonitor,
+                menuBarConfirmation: AppModalMenuBarConfirmation()
             )
             .frame(width: 480, height: 600)
             .environmentObject(settings)

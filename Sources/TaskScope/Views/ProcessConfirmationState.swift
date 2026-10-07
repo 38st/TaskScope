@@ -23,11 +23,29 @@ final class ProcessConfirmationState: ObservableObject {
     struct PendingTermination: Equatable {
         let process: AppProcess
         let mode: TerminationMode
+
+        var confirmTitle: String {
+            mode == .force ? "Force Stop \(process.name)" : "Stop \(process.name)"
+        }
+
+        var message: String {
+            mode == .force
+                ? "Immediately send a kill signal to PID \(process.pid). The process cannot clean up before it exits."
+                : "Send a normal quit signal to PID \(process.pid), allowing the process to clean up before it exits."
+        }
     }
 
     struct PendingBatchTermination: Equatable {
         let targets: [ProcessIdentity]
         let mode: TerminationMode
+
+        var title: String {
+            mode == .force ? "Force Stop Selected Processes?" : "Stop Selected Processes?"
+        }
+
+        var confirmTitle: String {
+            mode == .force ? "Force Stop Selected" : "Stop Selected"
+        }
 
         /// Describes exactly the captured targets, so the dialog cannot drift
         /// from what will be signalled if the live state changes meanwhile.

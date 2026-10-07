@@ -12,7 +12,11 @@ struct TaskScopePopoverView: View {
     var presentationStyle: TaskScopePresentationStyle = .menuBarCompact
     var openFullWindow: (() -> Void)?
     private let activityMonitor: any ActivityMonitorCoordinating
+    private let menuBarConfirmation: (any MenuBarConfirming)?
     @StateObject private var confirmationState: ProcessConfirmationState
+    @Environment(\.controlActiveState) private var controlActiveState
+    @State private var shownLifecycleReportID: LifecycleReport.ID?
+    @State private var shownBatchActionReportID: ProcessBatchActionReport.ID?
 
     @State private var detailProcess: AppProcess?
     @State private var detailData: ProcessDetail?
@@ -49,7 +53,8 @@ struct TaskScopePopoverView: View {
         presentationStyle: TaskScopePresentationStyle = .menuBarCompact,
         openFullWindow: (() -> Void)? = nil,
         confirmationState: ProcessConfirmationState? = nil,
-        activityMonitor: (any ActivityMonitorCoordinating)? = nil
+        activityMonitor: (any ActivityMonitorCoordinating)? = nil,
+        menuBarConfirmation: (any MenuBarConfirming)? = nil
     ) {
         self.processManager = processManager
         self.loginItemManager = loginItemManager
@@ -61,6 +66,7 @@ struct TaskScopePopoverView: View {
         self.presentationStyle = presentationStyle
         self.openFullWindow = openFullWindow
         self.activityMonitor = activityMonitor ?? ActivityMonitorCoordinator()
+        self.menuBarConfirmation = menuBarConfirmation
         _confirmationState = StateObject(
             wrappedValue: confirmationState ?? ProcessConfirmationState()
         )
@@ -167,15 +173,8 @@ struct TaskScopePopoverView: View {
             isPresented: terminationConfirmationBinding,
             presenting: confirmationState.pendingTermination
         ) { pending in
-            Button(
-                pending.mode == .force
-                    ? "Force Stop \(pending.process.name)"
-                    : "Stop \(pending.process.name)",
-                role: .destructive
-            ) {
-                let process = pending.process
-                let forceKill = pending.mode == .force
-                Task { await processManager.terminate(process, forceKill: forceKill) }
+            Button(pending.confirmTitle, role: .destructive) {
+                stopProcess(pending)
                 confirmationState.clearTermination()
             }
 
@@ -183,26 +182,15 @@ struct TaskScopePopoverView: View {
                 confirmationState.clearTermination()
             }
         } message: { pending in
-            if pending.mode == .force {
-                Text("Immediately send a kill signal to PID \(pending.process.pid). The process cannot clean up before it exits.")
-            } else {
-                Text("Send a normal quit signal to PID \(pending.process.pid), allowing the process to clean up before it exits.")
-            }
+            Text(pending.message)
         }
         .confirmationDialog(
-            confirmationState.pendingBatchTermination?.mode == .force
-                ? "Force Stop Selected Processes?"
-                : "Stop Selected Processes?",
+            confirmationState.pendingBatchTermination?.title ?? "Stop Selected Processes?",
             isPresented: batchConfirmationBinding,
             presenting: confirmationState.pendingBatchTermination
         ) { pending in
-            Button(
-                pending.mode == .force ? "Force Stop Selected" : "Stop Selected",
-                role: .destructive
-            ) {
-                let targets = pending.targets
-                let forceKill = pending.mode == .force
-                Task { await processManager.batchTerminate(targets, forceKill: forceKill) }
+            Button(pending.confirmTitle, role: .destructive) {
+                stopSelection(pending)
                 confirmationState.clearBatch()
             }
             Button("Cancel", role: .cancel) {
@@ -221,45 +209,114 @@ struct TaskScopePopoverView: View {
             presenting: confirmationState.pendingPresetAction
         ) { pending in
             Button(pending.title, role: .destructive) {
-                let preset = pending.preset
-                let action = pending.action
-                let failureID = pending.disconnectFailureID
-                let presentsResult = preset.hasCanonicalGlobalProtectIdentity
-                    && (action == .quitAll || action == .keepOff || action == .stopServices)
-                let showResult = openFullWindow
                 confirmationState.clearPresetAction()
-                Task {
-                    // GlobalProtect opens its own menu to disconnect, which
-                    // dismisses MenuBarExtra. Keep this user-requested action
-                    // and its result visible in the regular window instead.
-                    if !isExpandedWindow, presentsResult {
-                        await Task.yield()
-                        showResult?()
-                    }
-                    switch action {
-                    case .quitApp:
-                        _ = await processManager.quitMainApp(preset)
-                    case .quitHelpers:
-                        _ = await processManager.quitHelpers(preset)
-                    case .quitAll:
-                        _ = await processManager.quitAll(preset)
-                    case .keepOff:
-                        _ = await processManager.keepOff(preset)
-                    case .stopServices:
-                        if let failureID {
-                            _ = await processManager.stopGlobalProtectAfterFailedDisconnect(failureID: failureID)
-                        }
-                    }
-                    // The vendor UI or authorization dialog may have taken
-                    // focus. Bring the completed result back to the user.
-                    if presentsResult { showResult?() }
-                }
+                runPresetAction(pending)
             }
             Button("Cancel", role: .cancel) {
                 confirmationState.clearPresetAction()
             }
         } message: { pending in
             Text(presetConfirmationMessage(for: pending))
+        }
+        // The menu-bar window asks outside itself; see `MenuBarConfirming`.
+        .onChange(of: confirmationState.pendingTermination) { _, pending in
+            guard let pending else { return }
+            confirmInMenuBar(
+                MenuBarConfirmationRequest(title: pending.mode.title, message: pending.message, confirmTitle: pending.confirmTitle),
+                isCurrent: { $0.pendingTermination == pending },
+                clear: { $0.clearTermination() },
+                perform: { stopProcess(pending) }
+            )
+        }
+        .onChange(of: confirmationState.pendingBatchTermination) { _, pending in
+            guard let pending else { return }
+            confirmInMenuBar(
+                MenuBarConfirmationRequest(title: pending.title, message: pending.message, confirmTitle: pending.confirmTitle),
+                isCurrent: { $0.pendingBatchTermination == pending },
+                clear: { $0.clearBatch() },
+                perform: { stopSelection(pending) }
+            )
+        }
+        .onChange(of: confirmationState.pendingPresetAction) { _, pending in
+            guard let pending else { return }
+            confirmInMenuBar(
+                MenuBarConfirmationRequest(title: pending.title, message: presetConfirmationMessage(for: pending), confirmTitle: pending.title),
+                isCurrent: { $0.pendingPresetAction == pending },
+                clear: { $0.clearPresetAction() },
+                perform: { runPresetAction(pending) }
+            )
+        }
+    }
+
+    private func confirmInMenuBar(
+        _ request: MenuBarConfirmationRequest,
+        isCurrent: @escaping @MainActor (ProcessConfirmationState) -> Bool,
+        clear: @escaping @MainActor (ProcessConfirmationState) -> Void,
+        perform: @escaping @MainActor () -> Void
+    ) {
+        guard let menuBarConfirmation else { return }
+        // The menu window may close while the alert is up; keep the state it
+        // asked about rather than reading this view's storage afterwards.
+        let state = confirmationState
+        Task {
+            // Leave the view update that queued the request before the alert
+            // runs its modal loop.
+            await Task.yield()
+            guard isCurrent(state) else { return }
+            let confirmed = await menuBarConfirmation.confirm(request)
+            clear(state)
+            if confirmed { perform() }
+        }
+    }
+
+    private func stopProcess(_ pending: ProcessConfirmationState.PendingTermination) {
+        let process = pending.process
+        let forceKill = pending.mode == .force
+        let manager = processManager
+        Task { await manager.terminate(process, forceKill: forceKill) }
+    }
+
+    private func stopSelection(_ pending: ProcessConfirmationState.PendingBatchTermination) {
+        let targets = pending.targets
+        let forceKill = pending.mode == .force
+        let manager = processManager
+        Task { await manager.batchTerminate(targets, forceKill: forceKill) }
+    }
+
+    private func runPresetAction(_ pending: ProcessConfirmationState.PendingPresetAction) {
+        let preset = pending.preset
+        let action = pending.action
+        let failureID = pending.disconnectFailureID
+        let presentsResult = preset.hasCanonicalGlobalProtectIdentity
+            && (action == .quitAll || action == .keepOff || action == .stopServices)
+        let showResult = openFullWindow
+        let isExpandedWindow = isExpandedWindow
+        let manager = processManager
+        Task {
+            // GlobalProtect opens its own menu to disconnect, which
+            // dismisses MenuBarExtra. Keep this user-requested action
+            // and its result visible in the regular window instead.
+            if !isExpandedWindow, presentsResult {
+                await Task.yield()
+                showResult?()
+            }
+            switch action {
+            case .quitApp:
+                _ = await manager.quitMainApp(preset)
+            case .quitHelpers:
+                _ = await manager.quitHelpers(preset)
+            case .quitAll:
+                _ = await manager.quitAll(preset)
+            case .keepOff:
+                _ = await manager.keepOff(preset)
+            case .stopServices:
+                if let failureID {
+                    _ = await manager.stopGlobalProtectAfterFailedDisconnect(failureID: failureID)
+                }
+            }
+            // The vendor UI or authorization dialog may have taken
+            // focus. Bring the completed result back to the user.
+            if presentsResult { showResult?() }
         }
     }
 
@@ -353,6 +410,7 @@ struct TaskScopePopoverView: View {
                 report: report,
                 onClose: { processManager.dismissLifecycleReport() }
             )
+            .onAppear { shownLifecycleReportID = report.id }
         }
         .sheet(
             item: batchActionReportBinding
@@ -361,6 +419,7 @@ struct TaskScopePopoverView: View {
                 report: report,
                 onClose: { processManager.dismissBatchActionReport() }
             )
+            .onAppear { shownBatchActionReportID = report.id }
         }
     }
 
@@ -876,7 +935,7 @@ struct TaskScopePopoverView: View {
 
     private var terminationConfirmationBinding: Binding<Bool> {
         Binding(
-            get: { confirmationState.pendingTermination != nil },
+            get: { menuBarConfirmation == nil && confirmationState.pendingTermination != nil },
             set: { isPresented in
                 if !isPresented {
                     confirmationState.clearTermination()
@@ -900,7 +959,7 @@ struct TaskScopePopoverView: View {
 
     private var batchConfirmationBinding: Binding<Bool> {
         Binding(
-            get: { confirmationState.pendingBatchTermination != nil },
+            get: { menuBarConfirmation == nil && confirmationState.pendingBatchTermination != nil },
             set: { isPresented in
                 if !isPresented {
                     confirmationState.clearBatch()
@@ -911,7 +970,7 @@ struct TaskScopePopoverView: View {
 
     private var presetConfirmationBinding: Binding<Bool> {
         Binding(
-            get: { confirmationState.pendingPresetAction != nil },
+            get: { menuBarConfirmation == nil && confirmationState.pendingPresetAction != nil },
             set: { isPresented in
                 if !isPresented {
                     confirmationState.clearPresetAction()
@@ -929,13 +988,33 @@ struct TaskScopePopoverView: View {
 
     private var lifecycleReportBinding: Binding<LifecycleReport?> {
         Binding(
-            get: { ownsLifecycleReportPresentation ? processManager.lifecycleReport : nil },
+            get: {
+                Self.presentedReport(
+                    ownsLifecycleReportPresentation ? processManager.lifecycleReport : nil,
+                    alreadyShown: shownLifecycleReportID,
+                    windowState: controlActiveState
+                )
+            },
             set: { value in
                 if value == nil && ownsLifecycleReportPresentation {
                     processManager.dismissLifecycleReport()
                 }
             }
         )
+    }
+
+    /// A sheet presented while its window is in the background makes the Dock
+    /// icon bounce until the user switches to TaskScope, and GlobalProtect or
+    /// the administrator prompt takes focus during every on/off. A new report
+    /// waits until its window is in front; one already shown stays up while
+    /// the user switches apps.
+    static func presentedReport<Report: Identifiable>(
+        _ report: Report?,
+        alreadyShown shownID: Report.ID?,
+        windowState: ControlActiveState
+    ) -> Report? {
+        guard let report, report.id == shownID || windowState != .inactive else { return nil }
+        return report
     }
 
     private var ownsLifecycleReportPresentation: Bool {
@@ -948,7 +1027,13 @@ struct TaskScopePopoverView: View {
 
     private var batchActionReportBinding: Binding<ProcessBatchActionReport?> {
         Binding(
-            get: { ownsLifecycleReportPresentation ? processManager.batchActionReport : nil },
+            get: {
+                Self.presentedReport(
+                    ownsLifecycleReportPresentation ? processManager.batchActionReport : nil,
+                    alreadyShown: shownBatchActionReportID,
+                    windowState: controlActiveState
+                )
+            },
             set: { value in
                 if value == nil && ownsLifecycleReportPresentation {
                     processManager.dismissBatchActionReport()

@@ -522,6 +522,102 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNil(confirmation.pendingPresetAction)
     }
 
+    func testMenuBarConfirmsGlobalProtectKeepOffOutsideTheMenuWindow() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        let confirmation = ProcessConfirmationState()
+        let presenter = UIMenuBarConfirmation(answer: true)
+        var windowRequests = 0
+        let view = makePopover(fixture: fixture, confirmationState: confirmation, openFullWindow: {
+            XCTAssertNil(confirmation.pendingPresetAction)
+            windowRequests += 1
+        }, menuBarConfirmation: presenter)
+
+        confirmation.requestPresetAction(.keepOff, preset: .globalProtect)
+        let pending = try XCTUnwrap(confirmation.pendingPresetAction)
+        XCTAssertThrowsError(
+            try view.inspect().find(ViewType.ConfirmationDialog.self),
+            "A dialog on the menu window stops taking clicks once GlobalProtect takes focus"
+        )
+        try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingPresetAction)
+        await settle()
+
+        XCTAssertEqual(presenter.requests, [MenuBarConfirmationRequest(
+            title: "Keep GlobalProtect Off",
+            message: TaskScopePopoverView.presetConfirmationMessage(for: pending),
+            confirmTitle: "Keep GlobalProtect Off"
+        )])
+        XCTAssertEqual(windowRequests, 2)
+        XCTAssertNil(confirmation.pendingPresetAction)
+        XCTAssertEqual(fixture.manager.message, "Automatic GlobalProtect disconnect is unavailable. Its services were left running.")
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+    }
+
+    func testCancellingMenuBarConfirmationRunsNothing() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let confirmation = ProcessConfirmationState()
+        let presenter = UIMenuBarConfirmation(answer: false)
+        var windowRequests = 0
+        let view = makePopover(fixture: fixture, confirmationState: confirmation, openFullWindow: {
+            windowRequests += 1
+        }, menuBarConfirmation: presenter)
+        let previousMessage = fixture.manager.message
+
+        confirmation.requestPresetAction(.quitAll, preset: .globalProtect)
+        try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingPresetAction)
+        await settle()
+
+        XCTAssertEqual(presenter.requests.map(\.confirmTitle), ["Quit All"])
+        XCTAssertEqual(windowRequests, 0)
+        XCTAssertEqual(fixture.manager.message, previousMessage)
+        XCTAssertNil(confirmation.pendingPresetAction)
+    }
+
+    func testMenuBarConfirmsProcessStopsOutsideTheMenuWindow() async throws {
+        let target = process(pid: 75, parentPID: 1, name: "MenuTarget")
+        let fixture = await makeFixture(processes: [target])
+        defer { fixture.stores.cleanup() }
+        let confirmation = ProcessConfirmationState()
+        let presenter = UIMenuBarConfirmation(answer: false)
+        let view = makePopover(fixture: fixture, confirmationState: confirmation, menuBarConfirmation: presenter)
+
+        confirmation.requestTermination(target)
+        XCTAssertThrowsError(try view.inspect().find(ViewType.ConfirmationDialog.self))
+        try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingTermination)
+        await settle()
+        XCTAssertEqual(presenter.requests, [MenuBarConfirmationRequest(
+            title: "Stop Process?",
+            message: "Send a normal quit signal to PID 75, allowing the process to clean up before it exits.",
+            confirmTitle: "Stop MenuTarget"
+        )])
+        XCTAssertNil(confirmation.pendingTermination)
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+
+        presenter.answer = true
+        confirmation.requestBatch([target.identity], mode: .force)
+        try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingBatchTermination)
+        await settle()
+        XCTAssertEqual(presenter.requests.last?.confirmTitle, "Force Stop Selected")
+        XCTAssertNil(confirmation.pendingBatchTermination)
+        XCTAssertEqual(fixture.signaler.sent.map(\.pid), [75])
+    }
+
+    func testReportsWaitForTheirWindowSoTheDockIconDoesNotBounce() {
+        let report = LifecycleReport(title: "GlobalProtect Keep Off", jobs: [])
+
+        XCTAssertNil(TaskScopePopoverView.presentedReport(report, alreadyShown: nil, windowState: .inactive))
+        XCTAssertEqual(TaskScopePopoverView.presentedReport(report, alreadyShown: nil, windowState: .key), report)
+        XCTAssertEqual(TaskScopePopoverView.presentedReport(report, alreadyShown: nil, windowState: .active), report)
+        XCTAssertEqual(
+            TaskScopePopoverView.presentedReport(report, alreadyShown: report.id, windowState: .inactive),
+            report,
+            "A report already on screen stays while the user switches apps"
+        )
+        XCTAssertNil(TaskScopePopoverView.presentedReport(LifecycleReport?.none, alreadyShown: report.id, windowState: .key))
+    }
+
     func testFailedDisconnectOffersASeparateConfirmedServiceStop() async throws {
         let fixture = await makeFixture(processes: [])
         defer { fixture.stores.cleanup() }
@@ -1062,7 +1158,8 @@ final class SwiftUIHarnessTests: XCTestCase {
     private func makePopover(
         fixture: UIFixture,
         confirmationState: ProcessConfirmationState,
-        openFullWindow: (() -> Void)? = nil
+        openFullWindow: (() -> Void)? = nil,
+        menuBarConfirmation: (any MenuBarConfirming)? = nil
     ) -> TaskScopePopoverView {
         TaskScopePopoverView(
             processManager: fixture.manager,
@@ -1075,7 +1172,8 @@ final class SwiftUIHarnessTests: XCTestCase {
             presentationStyle: .menuBarCompact,
             openFullWindow: openFullWindow,
             confirmationState: confirmationState,
-            activityMonitor: UIActivityMonitor()
+            activityMonitor: UIActivityMonitor(),
+            menuBarConfirmation: menuBarConfirmation
         )
     }
 
@@ -1163,6 +1261,21 @@ private struct UIInventory: ProcessInventoryProviding {
 
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         .success(processes)
+    }
+}
+
+@MainActor
+private final class UIMenuBarConfirmation: MenuBarConfirming {
+    var answer: Bool
+    private(set) var requests: [MenuBarConfirmationRequest] = []
+
+    init(answer: Bool) {
+        self.answer = answer
+    }
+
+    func confirm(_ request: MenuBarConfirmationRequest) async -> Bool {
+        requests.append(request)
+        return answer
     }
 }
 
