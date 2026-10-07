@@ -20,12 +20,15 @@ A failed connection can also be stopped when the vendor shows **Connection Faile
 with an enabled **Connect** control and no **Disconnect** control; an **Error**
 tooltip alone is insufficient. After confirmation and macOS administrator approval when needed, TaskScope disables
 and unloads the known per-user agents and the fixed system `PanGPS` VPN service.
+On session-agent layouts, a loaded system daemon is preserved with its existing
+override, and Keep Off reports an incomplete stop; TaskScope does not disable a
+service that its session restoration path would leave disabled.
 **Open** clears the required disable overrides and
 restores the installed login-session VPN service (`pangps`) before the app.
 Installations without that agent use the system daemon (`pangpsd`). A session
 service can run as root; TaskScope verifies its launchd PID and executable
 instead of choosing a service solely from its owner. For installations with a
-valid session agent, Open leaves the separate system daemon disabled. After
+valid session agent, Open preserves the unused system daemon's disable override. After
 the first full stop, later Open/Keep Off cycles need no administrator prompt
 unless something restores that system service or changes the installed layout.
 Turning Keep Off off now performs the same full restoration as Open, starting
@@ -46,8 +49,9 @@ Quit App, Quit Helpers, URL Close, and Shortcuts Stop retain their existing
 user-process scope. They do not disconnect, so for GlobalProtect they unload only
 the interface agent (`pangpa`) and leave the login-session VPN service (`pangps`)
 loaded; stopping it under a connected tunnel can leave DNS unusable. Background Keep Off
-enforcement never requests privileges; if the system service returns, its
-running state and **Apply Keep Off…** remain visible. Existing Keep Off
+enforcement persistently disables both user jobs but unloads only `pangpa`,
+leaving any loaded `pangps` untouched. It never requests privileges; if a VPN
+service returns, its running state and **Apply Keep Off…** remain visible. Existing Keep Off
 preferences from older builds do not authorize a background system stop: choose
 Apply Keep Off once to include the VPN service. GlobalProtect layouts and
 management policies vary; rejected or unverifiable actions are reported as
@@ -207,7 +211,8 @@ be exported from Settings when their stored data is readable. See
 - Keep GlobalProtect off by persistently disabling its known user agents and,
   with explicit administrator approval, its system VPN service. Open restores
   the required services without reinstalling; session installations keep the
-  separate system daemon disabled to avoid repeated administrator prompts.
+  unused system daemon disabled to avoid repeated administrator prompts, and
+  preserve a loaded system daemon with an incomplete-stop report.
   Login/reboot behavior still needs live validation.
   Automatic disconnect has a 90-second deadline; a timeout leaves services
   running. If disconnect fails, **Stop Services Anyway…** offers a separately

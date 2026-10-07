@@ -19,6 +19,12 @@ session-agent installation. The separate system daemon remains disabled;
 Open no longer re-enables a service that the session restoration path does not
 use. System-only layouts retain the administrator path.
 
+Current regression fixtures also cover preservation of a loaded system daemon
+and its override on session layouts (reported as an incomplete Keep Off),
+background preservation of `pangps`, delayed daemon shutdown, readiness
+deadlines, failed restoration intent, and polling cancellation. These changes
+have no new live lifecycle evidence.
+
 Quit All now uses the full Keep Off path. Normal full stops press the vendor's
 Disconnect control through Accessibility and require a stable idle
 state before changing launch jobs: Not Connected, or Error accompanied by
@@ -50,7 +56,10 @@ On the tested 6.3.3-1121 layout, the GUI-session `pangps` job runs a setuid
 PanGPS process as root. A root process therefore does not by itself establish
 that `pangpsd` is running. When the session agent is installed, Open restores
 that service and verifies its launchd PID and executable; only layouts without
-it require the separate system daemon. The vendor also documents a related
+it use TaskScope's system-daemon restoration path. A loaded system daemon on a
+session layout is preserved during Keep Off, including its existing override;
+the session plist alone does not establish that the system daemon is unused.
+The vendor also documents a related
 [daemon-to-session-agent startup failure](https://docs.paloaltonetworks.com/globalprotect/release-notes/6-3/globalprotect-addressed-issues/globalprotect-6-3-3-h9-windows-and-macos-addressed-issues)
 when pre-logon is disabled. This reference does not establish that every vendor
 build shares the same bug or behavior.
@@ -122,7 +131,7 @@ artifact/revision. Retain the baseline and each after-action self-check export.
 | Step | Evidence to record |
 | --- | --- |
 | Baseline | Installed known agents, explicit overrides or plist defaults, loaded state, process counts, protected-service state |
-| Enable Keep Off | Confirmation and actual lifecycle result; known user and system overrides disabled, all known jobs unloaded, user-facing and system processes absent or failures explained |
+| Enable Keep Off | Confirmation and actual lifecycle result; known jobs disabled/unloaded or failures explained. On session layouts a loaded system daemon and its override must remain unchanged, with an incomplete-stop result |
 | Relaunch TaskScope | Actual result and new report; distinguish preserved intent from observed launchd state |
 | Log out/in or reboot | Which event occurred, user-agent/process state afterward, management software interference, and new report |
 | Turn Keep Off off | Full Open restoration: required overrides cleared, VPN service and one UI running; unused system daemon stays disabled on session-agent installations |
@@ -131,7 +140,8 @@ artifact/revision. Retain the baseline and each after-action self-check export.
 
 Record **pass**, **fail**, or **not tested** for each performed step, with the
 observed result and redacted artifact references. Only the explicitly approved Keep Off or GlobalProtect Quit All action may unload the fixed system
-daemon. Record its absence after stopping and verified identity after Open;
+daemon on daemon-only layouts. Record its absence after stopping and verified identity after Open;
+on session layouts, record preservation of any loaded system daemon and its override;
 never directly signal it or restart a loaded daemon just to obtain evidence. System-state changes may be
 caused by policy or other software; the self-check cannot attribute causation.
 

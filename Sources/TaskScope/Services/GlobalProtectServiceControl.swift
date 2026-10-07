@@ -17,14 +17,28 @@ extension ProcessLifecycleController {
         guard allowAdministratorPrompt else {
             return systemResult(job, .failed, "\(before) Choose Apply Keep Off to stop the system VPN service with administrator approval.")
         }
+        let sessionJob = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+        let preservesLoadedDaemon = runtime.fileExists(sessionJob.plistPath)
+        if preservesLoadedDaemon {
+            let inspection = await runtime.runCommand(
+                "/bin/launchctl print \(ShellCommandRunner.shellQuoted("system/\(job.label)"))", 15
+            )
+            guard GlobalProtectCompatibilityChecker.loadedState(inspection, service: .pangpsd) == .notLoaded else {
+                return systemResult(job, .failed, "The system VPN service is loaded or its state is unknown. Its override and loaded state were preserved because this installation restores the login-session service. Keep Off is incomplete.")
+            }
+        }
         // Retain a usable restoration path before introducing a persistent
         // disable override. Never move, rewrite, or remove vendor files.
         guard runtime.fileExists(job.plistPath),
               runtime.launchAgentLabel(job.plistPath) == job.label else {
             return systemResult(job, .failed, "The system service plist is missing or its label does not match. Nothing was disabled; restoration could not be guaranteed.")
         }
-        let result = await requestAdminServiceChange(adminDisableScript(for: job), runtime: runtime)
-        let remaining = await systemOffState(job, runtime: runtime)
+        let result = await requestAdminServiceChange(
+            adminDisableScript(for: job, preservingLoadedDaemon: preservesLoadedDaemon), runtime: runtime
+        )
+        let remaining = result.succeeded
+            ? await waitForSystemOff(job, runtime: runtime)
+            : await systemOffState(job, runtime: runtime)
         guard result.succeeded, remaining == nil else {
             let failure = result.succeeded ? "" : "Administrator stop failed or was cancelled (\(result.failureDescription)). "
             return systemResult(job, .failed, "\(failure)\(remaining ?? "The service is off, but the administrator command did not finish successfully.") Choose Open to restore GlobalProtect or Apply Keep Off to retry.")
@@ -69,9 +83,13 @@ extension ProcessLifecycleController {
         return systemResult(job, .changed, "Persistent system disable cleared and verified; no process was started.")
     }
 
-    static func adminDisableScript(for job: SystemLaunchDaemonJob) -> String {
+    static func adminDisableScript(for job: SystemLaunchDaemonJob, preservingLoadedDaemon: Bool = false) -> String {
         let target = ShellCommandRunner.shellQuoted("system/\(job.label)")
-        return """
+        // Recheck inside the privileged command in case launchd loaded the
+        // daemon while authorization was pending.
+        let preserve = preservingLoadedDaemon
+            ? "if /bin/launchctl print \(target) >/dev/null 2>&1; then exit 1; fi\n" : ""
+        return preserve + """
         /bin/launchctl disable \(target) || exit $?
         if /bin/launchctl print \(target) >/dev/null 2>&1; then
           /bin/launchctl bootout \(target)
@@ -91,20 +109,24 @@ extension ProcessLifecycleController {
     }
 
     private static func systemDisabledState(
-        _ job: SystemLaunchDaemonJob, runtime: ProcessLifecycleRuntime
+        _ job: SystemLaunchDaemonJob, timeout: TimeInterval = 15, runtime: ProcessLifecycleRuntime
     ) async -> GlobalProtectCompatibilityReport.DisabledState {
-        let result = await runtime.runCommand("/bin/launchctl print-disabled system", 15)
+        let result = await runtime.runCommand("/bin/launchctl print-disabled system", timeout)
         return GlobalProtectCompatibilityChecker.disabledState(result, label: job.label)
     }
 
     /// nil means both independent launchd checks succeeded. A failed, timed-out,
     /// or unrecognized probe never establishes that the service is off.
     private static func systemOffState(
-        _ job: SystemLaunchDaemonJob, runtime: ProcessLifecycleRuntime
+        _ job: SystemLaunchDaemonJob, deadline: TimeInterval? = nil, runtime: ProcessLifecycleRuntime
     ) async -> String? {
-        let disabled = await systemDisabledState(job, runtime: runtime)
+        let remaining = deadline.map { $0 - runtime.systemUptime() } ?? 15
+        guard remaining > 0, !Task.isCancelled else { return "System stop verification did not complete." }
+        let disabled = await systemDisabledState(job, timeout: min(remaining, 15), runtime: runtime)
+        let printRemaining = deadline.map { $0 - runtime.systemUptime() } ?? 15
+        guard printRemaining > 0, !Task.isCancelled else { return "System stop verification did not complete." }
         let result = await runtime.runCommand(
-            "/bin/launchctl print \(ShellCommandRunner.shellQuoted("system/\(job.label)"))", 15
+            "/bin/launchctl print \(ShellCommandRunner.shellQuoted("system/\(job.label)"))", min(printRemaining, 15)
         )
         guard GlobalProtectCompatibilityChecker.loadedState(result, service: .pangpsd) == .notLoaded else {
             return "The system VPN service is still loaded or its state could not be verified."
@@ -113,6 +135,22 @@ extension ProcessLifecycleController {
             return "The persistent system disable override is not verified; the VPN service could start again."
         }
         return nil
+    }
+
+    private static func waitForSystemOff(
+        _ job: SystemLaunchDaemonJob, runtime: ProcessLifecycleRuntime
+    ) async -> String? {
+        let deadline = runtime.systemUptime() + 30
+        var remaining: String? = "System stop verification did not complete."
+        for attempt in 0...60 {
+            guard runtime.systemUptime() < deadline, !Task.isCancelled else { break }
+            remaining = await systemOffState(job, deadline: deadline, runtime: runtime)
+            guard remaining != nil else { return nil }
+            let sleepSeconds = min(0.5, deadline - runtime.systemUptime())
+            guard sleepSeconds > 0, !Task.isCancelled else { break }
+            if attempt < 60 { await runtime.sleep(UInt64(sleepSeconds * 1_000_000_000)) }
+        }
+        return remaining
     }
 
     private static func systemResult(

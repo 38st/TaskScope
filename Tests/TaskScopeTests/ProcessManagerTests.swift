@@ -1041,6 +1041,7 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(lifecycle.calls.contains("daemon.disable:false"))
         XCTAssertEqual(lifecycle.calls.filter { $0 == "daemon.disable:true" }.count, 1)
         XCTAssertEqual(lifecycle.calls.filter { $0 == "vpn.disconnect" }.count, 1)
+        XCTAssertEqual(lifecycle.preservedVPNServices, [false, true])
         XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
     }
 
@@ -1334,6 +1335,72 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertTrue(result.message.contains("running processes were not signalled"))
     }
 
+    func testOpenRetainsKeepOffUntilAgentBootstrapSucceeds() async {
+        for cancelled in [false, true] {
+            let lifecycle = FakeLifecycleService()
+            lifecycle.agentLoadResult = LifecycleBatchResult(jobs: [
+                LifecycleJobResult(label: "com.paloaltonetworks.gp.pangpa", state: .failed,
+                                   detail: cancelled ? "Command cancelled." : "Bootstrap failed.")
+            ])
+            if cancelled {
+                lifecycle.agentLoadAction = { withUnsafeCurrentTask { $0?.cancel() } }
+            }
+            let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+            var keptOff = true
+            manager.isPresetKeptOffProvider = { _ in keptOff }
+            manager.setPresetKeptOffHandler = { _, value in keptOff = value }
+            let task = Task { await manager.openApp(.globalProtect) }
+            let result = await task.value
+            XCTAssertEqual(result.status, .failed)
+            XCTAssertTrue(keptOff)
+            XCTAssertFalse(lifecycle.calls.contains("open"))
+        }
+    }
+
+    func testPollingRestartSkipsCancelledEnforcementWithoutReportOrDiagnostic() async {
+        let blocked = BlockingProcessInventory()
+        let lifecycle = FakeLifecycleService()
+        lifecycle.agentDisableAction = { _ = await blocked.load(fetchExtendedStats: false) }
+        lifecycle.agentDisableResult = LifecycleBatchResult(jobs: [
+            LifecycleJobResult(label: "com.paloaltonetworks.gp.pangps", state: .failed, detail: "Command cancelled.")
+        ])
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        manager.isPresetKeptOffProvider = { _ in true }
+        let controller = ProcessPollingController(sleep: { _ in false })
+        let finished = expectation(description: "cancelled enforcement finished")
+        var result: TaskScopeCommandResult?
+        controller.restart(interval: 10, performImmediately: true) {
+            result = await manager.keepOff(.globalProtect, recordIntent: false)
+            finished.fulfill()
+        }
+        await blocked.waitForFirstCall()
+        controller.restart(interval: 20) {}
+        await blocked.finishFirstCall()
+        await fulfillment(of: [finished], timeout: 1)
+        controller.stop()
+        XCTAssertEqual(result?.status, .rejected)
+        XCTAssertNil(manager.lifecycleReport)
+        XCTAssertTrue(manager.lifecycleDiagnostics.failures(for: WatchedAppPreset.globalProtect.id).isEmpty)
+        XCTAssertEqual(lifecycle.calls, ["agents.disable"])
+        XCTAssertEqual(manager.operationState, .idle)
+    }
+
+    func testStartupKeepOffPreservesSessionVPNServiceForEitherOwner() async {
+        for owner in [uid_t(0), getuid()] {
+            var agent = process(pid: 42, uid: owner, name: "PanGPS")
+            agent.executablePath = "/Applications/GlobalProtect.app/Contents/Resources/PanGPS"
+            let lifecycle = FakeLifecycleService()
+            let manager = makeManager(inventory: FakeProcessInventory(results: [.success([agent])]), lifecycle: lifecycle)
+            manager.watchedAppsProvider = { [.globalProtect] }
+            manager.keptOffPresetsProvider = { [.globalProtect] }
+            manager.isPresetKeptOffProvider = { _ in true }
+            await manager.enforceKeptOffPresets(force: true)
+            XCTAssertEqual(lifecycle.preservedVPNServices, [true])
+            XCTAssertFalse(lifecycle.calls.contains("vpn.disconnect"))
+            XCTAssertFalse(lifecycle.calls.contains("terminate.helper:PanGPS"))
+        }
+    }
+
     func testOpeningKeptOffPresetReEnablesAgentsAndClearsIntent() async {
         let lifecycle = FakeLifecycleService()
         lifecycle.agentEnableResult = LifecycleBatchResult(jobs: [
@@ -1549,12 +1616,12 @@ final class ProcessManagerTests: XCTestCase {
         ])
     }
 
-    func testKeepOffEnforcesCurrentUserPanGPSOnlyAndStopsRepeatingOnceGone() async {
+    func testBackgroundKeepOffPreservesExternallyRestoredPanGPS() async {
         var agent = process(pid: 42, uid: getuid(), name: "PanGPS")
         agent.executablePath = "/Applications/GlobalProtect.app/Contents/Resources/PanGPS"
         let lifecycle = FakeLifecycleService()
         let manager = makeManager(
-            inventory: FakeProcessInventory(results: [.success([agent]), .success([agent]), .success([])]),
+            inventory: FakeProcessInventory(results: [.success([agent])]),
             lifecycle: lifecycle
         )
         manager.watchedAppsProvider = { [.globalProtect] }
@@ -1563,9 +1630,11 @@ final class ProcessManagerTests: XCTestCase {
         await manager.enforceKeptOffPresets()
         await manager.enforceKeptOffPresets()
 
-        XCTAssertEqual(lifecycle.calls.filter { $0 == "agents.disable" }.count, 1)
+        XCTAssertEqual(lifecycle.calls.filter { $0 == "agents.disable" }.count, 2)
         XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
         XCTAssertFalse(lifecycle.calls.contains("terminate.helper:PanGPS"))
+        XCTAssertEqual(lifecycle.preservedVPNServices, [true, true])
+        XCTAssertTrue(manager.snapshots[0].hasKeepOffTargets)
         XCTAssertNil(manager.lifecycleReport)
     }
 
@@ -1713,6 +1782,9 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     var appExists = true
     var daemonResult = LifecycleBatchResult.notNeeded
     var agentLoadResult = LifecycleBatchResult.notNeeded
+    var agentLoadAction: (@Sendable () async -> Void)?
+    var agentDisableAction: (@Sendable () async -> Void)?
+    private(set) var preservedVPNServices: [Bool] = []
     var agentUnloadResult = LifecycleBatchResult.notNeeded
     var agentDisableResult = LifecycleBatchResult.notNeeded
     var agentEnableResult = LifecycleBatchResult.notNeeded
@@ -1772,11 +1844,14 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
 
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         calls.append("agents.load")
+        await agentLoadAction?()
         return agentLoadResult
     }
 
-    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+    func disableUserLaunchAgents(for preset: WatchedAppPreset, preservingVPNService: Bool) async -> LifecycleBatchResult {
         calls.append("agents.disable")
+        preservedVPNServices.append(preservingVPNService)
+        await agentDisableAction?()
         return agentDisableResult
     }
 

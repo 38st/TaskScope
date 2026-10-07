@@ -707,6 +707,80 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
     }
 
+    func testBackgroundKeepOffDisablesBothJobsButOnlyBootsOutInterface() async {
+        let harness = LifecycleRuntimeHarness(existingPaths: [], commandResults: [
+            result(exitCode: 0), // pangps disable; no inspection or bootout
+            result(exitCode: 0), // pangpa disable
+            result(stdout: launchctlPrintOutput(pid: 42), exitCode: 0),
+            result(exitCode: 0),
+            result(stderr: "Could not find service", exitCode: 113)
+        ])
+        let batch = await ProcessLifecycleController.disableUserLaunchAgents(
+            for: .globalProtect, preservingVPNService: true, runtime: harness.runtime
+        )
+        XCTAssertTrue(batch.succeeded)
+        XCTAssertEqual(harness.commands.filter { $0.contains("launchctl disable") }.count, 2)
+        XCTAssertEqual(harness.commands.filter { $0.contains("bootout") }, [
+            "/bin/launchctl bootout 'gui/501/com.paloaltonetworks.gp.pangpa'"
+        ])
+        XCTAssertTrue(batch.jobs.contains { $0.detail.contains("loaded VPN service was preserved") })
+    }
+
+    func testReadinessCommandsShareWallClockDeadline() async {
+        for session in [false, true] {
+            let sessionJob = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+            let daemonJob = WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0]
+            let path = session ? sessionJob.plistPath : daemonJob.plistPath
+            let clock = LifecycleTestClock()
+            let harness = LifecycleRuntimeHarness(
+                existingPaths: [path], launchAgentLabels: [path: sessionJob.label], commandResults: [],
+                respond: { _ in ShellCommandResult(command: "", stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0) }
+            )
+            var runtime = harness.runtime
+            let run = runtime.runCommand
+            runtime.runCommand = { command, timeout in
+                // The initial loaded probe is immediate. Subsequent probes take
+                // ten seconds unless the shared deadline allows less.
+                if !harness.commands.isEmpty { clock.advance(min(10, timeout)) }
+                return await run(command, timeout)
+            }
+            runtime.systemUptime = { clock.now }
+            runtime.sleep = { duration in
+                if duration == 500_000_000 { clock.advance(0.5) }
+            }
+            let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: runtime)
+            XCTAssertFalse(result.succeeded)
+            XCTAssertEqual(clock.now, 15, accuracy: 0.001)
+            XCTAssertEqual(harness.timeouts, [15, 15, 4.5])
+            XCTAssertFalse(harness.commands.contains { $0.contains("osascript") })
+        }
+    }
+
+    func testReadinessDoesNotRetryAfterInventoryConsumesDeadline() async {
+        for session in [false, true] {
+            let job = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+            let path = session ? job.plistPath : WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0].plistPath
+            let clock = LifecycleTestClock()
+            var service = process(pid: 42, command: "/Applications/GlobalProtect.app/Contents/Resources/PanGPS")
+            service.uid = 0
+            let harness = LifecycleRuntimeHarness(
+                existingPaths: [path], launchAgentLabels: [path: job.label], commandResults: [],
+                respond: { _ in ShellCommandResult(command: "", stdout: launchctlPrintOutput(pid: 42), stderr: "", exitCode: 0) },
+                inventory: [service]
+            )
+            var runtime = harness.runtime
+            let load = runtime.loadProcessInventory
+            runtime.loadProcessInventory = {
+                clock.advance(20)
+                return await load()
+            }
+            runtime.systemUptime = { clock.now }
+            let result = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: runtime)
+            XCTAssertFalse(result.succeeded)
+            XCTAssertEqual(harness.commands.count, session ? 2 : 1)
+        }
+    }
+
     func testKeepOffDisablesAndBootsOutLoadedUserAgent() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],

@@ -163,7 +163,9 @@ Required invariants:
   override so the restore path remains available;
 - disable before bootout so launchd cannot immediately respawn the service;
 - check both the disabled override and absence of the loaded job after stopping;
-  denied, cancelled, timed-out, or unknown reads cannot establish success;
+  after a successful administrator stop, allow up to 30 seconds for shutdown,
+  with probe timeouts bounded by the remaining deadline. Denied, cancelled,
+  timed-out, or unknown reads cannot establish success;
 - enable before bootstrap; Open restores the installed session `pangps` job
   before its UI, checking the launchd PID, current-user/root ownership, and a
   fresh kernel executable path in the fixed product directories; only layouts
@@ -174,7 +176,10 @@ Required invariants:
   toggle-off preserve an existing disable override on the separate system
   daemon. This avoids privilege requests by avoiding the unnecessary system
   mutation; it installs no helper, stores no credentials, and changes no
-  authorization policy. Missing session agents retain the administrator path;
+  authorization policy. On session layouts, Keep Off changes the system override
+  only after verifying the daemon is unloaded; a loaded or unknown daemon is
+  preserved and reported as an incomplete stop. Missing session agents retain
+  the administrator path;
 - turning Keep Off off uses the same full restoration command as Open;
 - Open restarts an orphaned GlobalProtect UI only when a fresh inventory shows
   that UI running without any PanGPS service. Recovery unloads only the fixed
@@ -186,7 +191,10 @@ Required invariants:
   GlobalProtect UI. Preserve that UI instead of starting a duplicate; unknown
   inventory fails without launching;
 - report cancellation and partial failures, retaining requested intent until
-  restoration succeeds; show a running system service instead of an off badge;
+  user-agent restoration succeeds; show a running system service instead of an
+  off badge. Polling cancellation skips background reports and failure retention;
+- bound service readiness by a monotonic 15-second deadline, including probe
+  time and inventory reads, and cap each command timeout by remaining time;
 - escape command arguments, retain no credentials, and never remove, rename,
   or rewrite vendor files;
 - changes to the fixed system job use launchd, never arbitrary elevated process
@@ -205,8 +213,9 @@ system databases. Existing user-only intent does not authorize privileged
 background operations after upgrade; Apply Keep Off requests the expanded
 operation explicitly. Open and toggle-off are the explicit restoration paths.
 
-Background enforcement continues to unload only fixed current-user `pangpa` and
-optional `pangps` jobs. It re-checks intent inside the operation gate so queued
+Background enforcement persistently disables both fixed current-user jobs but
+unloads only `pangpa`. Any loaded `pangps` is preserved because polling does not
+verify a disconnected tunnel. It re-checks intent inside the operation gate so queued
 enforcement cannot undo Open. It never repeatedly prompts for system approval
 or automatically fights a system service restored by management. Automatic
 disconnect UI control runs only during an explicit action, never polling. The UI shows

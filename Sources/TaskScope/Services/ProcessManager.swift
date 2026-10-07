@@ -409,7 +409,6 @@ final class ProcessManager: ObservableObject {
                     commandResult = TaskScopeCommandResult(status: .failed, message: message)
                     return
                 }
-                setPresetKeptOffHandler?(preset, false)
             } else {
                 enableResult = .notNeeded
             }
@@ -425,6 +424,9 @@ final class ProcessManager: ObservableObject {
                 diagnosticReason = .userLaunchAgentFailed
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
+            }
+            if wasKeptOff || preset.hasCanonicalGlobalProtectIdentity {
+                setPresetKeptOffHandler?(preset, false)
             }
             let serviceJobs = daemonResult.jobs + enableResult.jobs + agentResult.jobs
             lifecycleReport = serviceJobs.isEmpty
@@ -531,7 +533,14 @@ final class ProcessManager: ObservableObject {
             }
             var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
             var diagnosticJobs: [LifecycleJobResult] = []
+            var report: LifecycleReport?
+            var shouldPublishReport = false
             defer {
+                if !recordIntent && Task.isCancelled {
+                    commandResult = TaskScopeCommandResult(status: .rejected, message: "Keep Off enforcement cancelled; it will retry on the next poll.")
+                } else if shouldPublishReport {
+                    lifecycleReport = report
+                }
                 if commandResult.status == .failed {
                     lifecycleDiagnostics.record(
                         presetID: preset.id, action: .keepOff,
@@ -540,6 +549,7 @@ final class ProcessManager: ObservableObject {
                     )
                 }
             }
+            guard recordIntent || !Task.isCancelled else { return }
             if !recordIntent, isPresetKeptOffProvider?(preset) != true {
                 commandResult = TaskScopeCommandResult(
                     status: .rejected,
@@ -577,16 +587,20 @@ final class ProcessManager: ObservableObject {
             case .failure:
                 inventoryWasAvailable = false
             }
-            let userDisable = await lifecycle.disableUserLaunchAgents(for: preset)
+            guard recordIntent || !Task.isCancelled else { return }
+            let userDisable = await lifecycle.disableUserLaunchAgents(for: preset, preservingVPNService: !recordIntent)
+            guard recordIntent || !Task.isCancelled else { return }
             let systemDisable = preset.hasCanonicalGlobalProtectIdentity
                 ? await lifecycle.disableSystemLaunchDaemons(for: preset, allowAdministratorPrompt: recordIntent)
                 : .notNeeded
+            guard recordIntent || !Task.isCancelled else { return }
             let disableResult = LifecycleBatchResult(jobs: userDisable.jobs + systemDisable.jobs)
             diagnosticJobs += disableResult.jobs
             // Background enforcement runs on every launch and poll tick; only a
             // failure is worth interrupting the user with a report sheet.
             if recordIntent || !disableResult.succeeded {
-                lifecycleReport = disableResult.jobs.isEmpty
+                shouldPublishReport = true
+                report = disableResult.jobs.isEmpty
                     ? nil
                     : LifecycleReport(
                         title: "\(preset.displayName) Keep Off",
@@ -609,6 +623,7 @@ final class ProcessManager: ObservableObject {
             }
             await lifecycle.settleAfterProcessChange()
             let refreshed = await refreshAfterMutation()
+            guard recordIntent || !Task.isCancelled else { return }
             let nowSnapshot = snapshot(for: preset)
 
             if !disableResult.succeeded {
@@ -648,6 +663,9 @@ final class ProcessManager: ObservableObject {
                 }
                 commandResult = TaskScopeCommandResult(status: .completed, message: message)
             }
+        }
+        if !recordIntent && Task.isCancelled {
+            return TaskScopeCommandResult(status: .rejected, message: "Keep Off enforcement cancelled; it will retry on the next poll.")
         }
         return commandResult
     }

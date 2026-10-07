@@ -33,6 +33,7 @@ struct ProcessLifecycleRuntime: Sendable {
         DarwinProcessSignaler().isAlive(pid)
     }
     var sleep: @Sendable (UInt64) async -> Void
+    var systemUptime: @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
 
     /// A signal to a target that no longer exists (`ESRCH`) counts as delivered:
     /// the process is not running, which is what the caller asked for. Any pid

@@ -3,6 +3,89 @@ import XCTest
 @testable import TaskScope
 
 final class GlobalProtectServiceControlTests: XCTestCase {
+    func testSessionKeepOffPreservesLoadedSystemDaemonAndItsOverride() async {
+        for disabled in [false, true] {
+            let harness = ServiceHarness(disabled: disabled, loaded: true)
+            let session = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
+            var runtime = harness.runtime
+            let exists = runtime.fileExists
+            runtime.fileExists = { $0 == session.plistPath || exists($0) }
+            runtime.launchAgentLabel = { $0 == session.plistPath ? session.label : ServiceHarness.label }
+            let stopped = await ProcessLifecycleController.disableSystemLaunchDaemons(
+                for: .globalProtect, allowAdministratorPrompt: true, runtime: runtime
+            )
+            XCTAssertFalse(stopped.succeeded)
+            XCTAssertTrue(stopped.failureSummary?.contains("preserved") == true)
+            let opened = await ProcessLifecycleController.ensureSystemLaunchDaemons(for: .globalProtect, runtime: runtime)
+            let enabled = await ProcessLifecycleController.enableSystemLaunchDaemons(for: .globalProtect, runtime: runtime)
+            XCTAssertTrue(opened.succeeded)
+            XCTAssertTrue(enabled.succeeded)
+            let state = await harness.state
+            XCTAssertEqual(state.disabled, disabled)
+            XCTAssertTrue(state.loaded)
+            let commands = await harness.commands
+            XCTAssertFalse(commands.contains { $0.contains("osascript") })
+        }
+    }
+
+    func testSessionKeepOffRejectsUnknownSystemStateWithoutChangingOverride() async {
+        let harness = ServiceHarness()
+        var runtime = harness.runtime
+        runtime.fileExists = { _ in true }
+        let run = runtime.runCommand
+        runtime.runCommand = { command, timeout in
+            if command.hasPrefix("/bin/launchctl print ") {
+                return ShellCommandResult(command: command, stdout: "", stderr: "Access denied", exitCode: 1)
+            }
+            return await run(command, timeout)
+        }
+        let result = await ProcessLifecycleController.disableSystemLaunchDaemons(
+            for: .globalProtect, allowAdministratorPrompt: true, runtime: runtime
+        )
+        XCTAssertFalse(result.succeeded)
+        let commands = await harness.commands
+        XCTAssertFalse(commands.contains { $0.contains("osascript") })
+    }
+
+    func testAdministratorStopWaitsForDelayedDaemonExitAndBoundsFailure() async {
+        for delayedProbes in [3, 1000] {
+            let clock = LifecycleTestClock()
+            let harness = ServiceHarness(delayedStopProbes: delayedProbes)
+            var runtime = harness.runtime
+            runtime.systemUptime = { clock.now }
+            runtime.sleep = { clock.advance(Double($0) / 1_000_000_000) }
+            let result = await ProcessLifecycleController.disableSystemLaunchDaemons(
+                for: .globalProtect, allowAdministratorPrompt: true, runtime: runtime
+            )
+            XCTAssertEqual(result.succeeded, delayedProbes == 3)
+            XCTAssertEqual(clock.now, delayedProbes == 3 ? 1.5 : 30, accuracy: 0.001)
+            let commands = await harness.commands
+            XCTAssertEqual(commands.filter { $0.contains("osascript") }.count, 1)
+            XCTAssertLessThan(commands.count, 130)
+        }
+    }
+
+    func testSystemStopDeadlineIncludesSlowVerificationCommands() async {
+        let clock = LifecycleTestClock()
+        let harness = ServiceHarness(delayedStopProbes: 1000)
+        var runtime = harness.runtime
+        let run = runtime.runCommand
+        runtime.runCommand = { command, timeout in
+            let commands = await harness.commands
+            if commands.contains(where: { $0.contains("osascript") }) {
+                clock.advance(min(12, timeout))
+            }
+            return await run(command, timeout)
+        }
+        runtime.systemUptime = { clock.now }
+        runtime.sleep = { clock.advance(Double($0) / 1_000_000_000) }
+        let result = await ProcessLifecycleController.disableSystemLaunchDaemons(
+            for: .globalProtect, allowAdministratorPrompt: true, runtime: runtime
+        )
+        XCTAssertFalse(result.succeeded)
+        XCTAssertEqual(clock.now, 30, accuracy: 0.001)
+    }
+
     func testExplicitStopDisablesAndUnloadsThenRestoresWithoutChangingFiles() async {
         let harness = ServiceHarness()
         let stopped = await ProcessLifecycleController.disableSystemLaunchDaemons(
@@ -208,9 +291,18 @@ final class GlobalProtectServiceControlTests: XCTestCase {
     }
 
     func testPrivilegedDisableScriptParsesAsShell() async {
-        let script = ProcessLifecycleController.adminDisableScript(for: WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0])
-        let result = await ShellCommandRunner.run("/bin/sh -n -c \(ShellCommandRunner.shellQuoted(script))", timeout: 5)
-        XCTAssertTrue(result.succeeded, result.stderr)
+        for preservesLoadedDaemon in [false, true] {
+            let script = ProcessLifecycleController.adminDisableScript(
+                for: WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0],
+                preservingLoadedDaemon: preservesLoadedDaemon
+            )
+            if preservesLoadedDaemon {
+                XCTAssertTrue(script.hasPrefix("if /bin/launchctl print"))
+                XCTAssertTrue(script.components(separatedBy: "launchctl disable")[0].contains("exit 1"))
+            }
+            let result = await ShellCommandRunner.run("/bin/sh -n -c \(ShellCommandRunner.shellQuoted(script))", timeout: 5)
+            XCTAssertTrue(result.succeeded, result.stderr)
+        }
     }
 }
 
@@ -221,14 +313,17 @@ private actor ServiceHarness {
     let adminFailure: AdminFailure?
     let plistLabel: String?
     let disabledProbe: ShellCommandResult?
+    var delayedStopProbes: Int
+    var stopAcknowledged = false
     static let label = "com.paloaltonetworks.gp.pangpsd"
 
     init(disabled: Bool = false, loaded: Bool = true, adminFailure: AdminFailure? = nil,
-         plistLabel: String? = label, disabledProbe: ShellCommandResult? = nil) {
+         plistLabel: String? = label, disabledProbe: ShellCommandResult? = nil, delayedStopProbes: Int = 0) {
         state = (disabled, loaded)
         self.adminFailure = adminFailure
         self.plistLabel = plistLabel
         self.disabledProbe = disabledProbe
+        self.delayedStopProbes = delayedStopProbes
     }
 
     nonisolated var runtime: ProcessLifecycleRuntime {
@@ -242,6 +337,7 @@ private actor ServiceHarness {
                     command: "/Applications/GlobalProtect.app/Contents/Resources/PanGPS",
                     elapsedTime: "00:10", netInKB: nil, netOutKB: nil, diskReadBytes: nil, diskWriteBytes: nil)])
             },
+            executablePathForPID: { _ in "/Applications/GlobalProtect.app/Contents/Resources/PanGPS" },
             sleep: { _ in }
         )
     }
@@ -252,6 +348,10 @@ private actor ServiceHarness {
             return disabledProbe ?? result("disabled services = {\n\"\(Self.label)\" => \(state.disabled ? "disabled" : "enabled")\n}")
         }
         if command.hasPrefix("/bin/launchctl print ") {
+            if stopAcknowledged {
+                state.loaded = delayedStopProbes > 0
+                delayedStopProbes = max(0, delayedStopProbes - 1)
+            }
             return state.loaded ? result(launchctlPrintOutput(pid: 42))
                 : result("", error: "Could not find service \"\(Self.label)\" in domain for system", code: 113)
         }
@@ -260,10 +360,12 @@ private actor ServiceHarness {
             if command.contains("launchctl disable") {
                 state.disabled = true
                 if adminFailure == .bootoutFailed { return result("", error: "Bootout failed", code: 1) }
-                state.loaded = false
+                stopAcknowledged = true
+                state.loaded = delayedStopProbes > 0
             } else if command.contains("launchctl bootstrap") {
                 state.disabled = false
                 state.loaded = true
+                stopAcknowledged = false
             } else if command.contains("launchctl enable") {
                 state.disabled = false
             }

@@ -330,7 +330,7 @@ private struct DiagnosticsLifecycleService: ProcessLifecycleServicing {
     func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool { false }
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { batch }
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { batch }
-    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { batch }
+    func disableUserLaunchAgents(for preset: WatchedAppPreset, preservingVPNService: Bool) async -> LifecycleBatchResult { batch }
     func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { batch }
     func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
         systemServiceFails ? batch : .notNeeded

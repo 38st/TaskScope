@@ -11,7 +11,6 @@ enum ProcessLifecycleController {
     /// readiness is reported as unverifiable. TaskScope never restarts a loaded
     /// system daemon, so waiting for launchd is the only recovery it performs.
     static let systemDaemonReadinessTimeout: TimeInterval = 15
-    private static let systemDaemonReadinessPollNanoseconds: UInt64 = 500_000_000
 
     enum LaunchJobInspection: Equatable {
         case loaded
@@ -190,10 +189,12 @@ enum ProcessLifecycleController {
     }
 
     /// Persistently disables configured per-user jobs and unloads any live
-    /// instances. This changes only the current user's launchd domain; protected
-    /// system launch daemons are deliberately outside its scope.
+    /// instances, preserving the VPN service when background enforcement cannot
+    /// verify a disconnect. This changes only the current user's launchd domain;
+    /// protected system launch daemons are deliberately outside its scope.
     static func disableUserLaunchAgents(
         for preset: WatchedAppPreset,
+        preservingVPNService: Bool = false,
         runtime: ProcessLifecycleRuntime = .live
     ) async -> LifecycleBatchResult {
         let jobs = preset.lifecycleUserLaunchAgentJobs
@@ -212,6 +213,17 @@ enum ProcessLifecycleController {
                     label: job.label,
                     state: .failed,
                     detail: commandFailure(disable, fallback: "Could not disable the user launch agent.")
+                ))
+                continue
+            }
+
+            // Background ticks cannot establish a disconnected tunnel. Persist
+            // suppression without unloading the session VPN service underneath it.
+            if preservingVPNService, preset.hasCanonicalGlobalProtectIdentity,
+               job == WatchedAppPreset.globalProtectUserLaunchAgentJobs[1] {
+                results.append(LifecycleJobResult(
+                    label: job.label, state: .changed,
+                    detail: "Disabled persistently; any loaded VPN service was preserved. Choose Apply Keep Off to disconnect and stop it."
                 ))
                 continue
             }
@@ -463,6 +475,7 @@ enum ProcessLifecycleController {
                 continue
             }
 
+            let readinessDeadline = runtime.systemUptime() + systemDaemonReadinessTimeout
             switch await systemLaunchDaemonReadiness(job, runtime: runtime) {
             case .ready:
                 results.append(LifecycleJobResult(
@@ -472,7 +485,7 @@ enum ProcessLifecycleController {
                 ))
                 continue
             case .loadedButNotReady:
-                let verified = await waitForSystemLaunchDaemon(job, runtime: runtime)
+                let verified = await waitForSystemLaunchDaemon(job, deadline: readinessDeadline, runtime: runtime)
                 results.append(LifecycleJobResult(
                     label: job.label,
                     state: verified ? .verified : .failed,
@@ -515,10 +528,13 @@ enum ProcessLifecycleController {
         let loaded = await bootstrapUserLaunchAgents(jobs: [job], runtime: runtime)
         guard loaded.succeeded else { return loaded }
         let target = "gui/\(runtime.userID)/\(job.label)"
+        let deadline = runtime.systemUptime() + systemDaemonReadinessTimeout
         let attempts = Int(systemDaemonReadinessTimeout / 0.5)
         for attempt in 0...attempts {
+            let remaining = deadline - runtime.systemUptime()
+            guard remaining > 0, !Task.isCancelled else { break }
             let inspection = await runtime.runCommand(
-                "/bin/launchctl print \(ShellCommandRunner.shellQuoted(target))", 15
+                "/bin/launchctl print \(ShellCommandRunner.shellQuoted(target))", min(remaining, 15)
             )
             if let pid = launchJobPID(from: inspection),
                case .success(let inventory) = await runtime.loadProcessInventory(),
@@ -527,7 +543,8 @@ enum ProcessLifecycleController {
                let path = runtime.executablePathForPID(pid) {
                 var verified = process
                 verified.executablePath = path
-                if GlobalProtectCompatibilityChecker.trustedName(verified) == .panGPS {
+                if GlobalProtectCompatibilityChecker.trustedName(verified) == .panGPS,
+                   runtime.systemUptime() <= deadline, !Task.isCancelled {
                     return LifecycleBatchResult(jobs: [LifecycleJobResult(
                         label: job.label,
                         state: loaded.didChangeState ? .changed : .verified,
@@ -535,7 +552,9 @@ enum ProcessLifecycleController {
                     )])
                 }
             }
-            if attempt < attempts { await runtime.sleep(systemDaemonReadinessPollNanoseconds) }
+            let sleepSeconds = min(0.5, deadline - runtime.systemUptime())
+            guard sleepSeconds > 0, !Task.isCancelled else { break }
+            if attempt < attempts { await runtime.sleep(UInt64(sleepSeconds * 1_000_000_000)) }
         }
         return LifecycleBatchResult(jobs: [LifecycleJobResult(
             label: job.label, state: .failed,
@@ -623,12 +642,14 @@ enum ProcessLifecycleController {
 
     static func systemLaunchDaemonReadiness(
         _ job: SystemLaunchDaemonJob,
+        timeout: TimeInterval = 15,
         runtime: ProcessLifecycleRuntime
     ) async -> SystemDaemonReadiness {
+        let deadline = runtime.systemUptime() + timeout
         let target = "system/\(job.label)"
         let inspection = await runtime.runCommand(
             "/bin/launchctl print \(ShellCommandRunner.shellQuoted(target))",
-            15
+            timeout
         )
         switch launchJobInspection(from: inspection) {
         case .notLoaded:
@@ -641,7 +662,8 @@ enum ProcessLifecycleController {
 
         guard let jobPID = launchJobPID(from: inspection),
               case .success(let inventory) = await runtime.loadProcessInventory(),
-              inventory.contains(where: { $0.pid == jobPID && $0.name == job.processName }) else {
+              inventory.contains(where: { $0.pid == jobPID && $0.name == job.processName }),
+              runtime.systemUptime() <= deadline, !Task.isCancelled else {
             return .loadedButNotReady
         }
         return .ready
@@ -652,21 +674,26 @@ enum ProcessLifecycleController {
         return GlobalProtectCompatibilityChecker.topLevelPID(result.stdout)
     }
 
-    /// Bounded by attempts rather than wall-clock time so an injected no-op
-    /// sleep cannot turn the wait into a busy loop.
+    /// The deadline includes command and inventory time. The attempt cap also
+    /// bounds tests whose injected sleep does not advance their clock.
     private static func waitForSystemLaunchDaemon(
         _ job: SystemLaunchDaemonJob,
+        deadline: TimeInterval? = nil,
         runtime: ProcessLifecycleRuntime
     ) async -> Bool {
-        let pollSeconds = Double(systemDaemonReadinessPollNanoseconds) / 1_000_000_000
-        let attempts = max(1, Int(systemDaemonReadinessTimeout / pollSeconds))
-        for _ in 0..<attempts {
-            if await systemLaunchDaemonReadiness(job, runtime: runtime) == .ready {
-                return true
+        let deadline = deadline ?? (runtime.systemUptime() + systemDaemonReadinessTimeout)
+        let attempts = Int(systemDaemonReadinessTimeout / 0.5)
+        for attempt in 0...attempts {
+            let remaining = deadline - runtime.systemUptime()
+            guard remaining > 0, !Task.isCancelled else { return false }
+            if await systemLaunchDaemonReadiness(job, timeout: min(remaining, 15), runtime: runtime) == .ready {
+                return runtime.systemUptime() <= deadline
             }
-            await runtime.sleep(systemDaemonReadinessPollNanoseconds)
+            let sleepSeconds = min(0.5, deadline - runtime.systemUptime())
+            guard sleepSeconds > 0, !Task.isCancelled else { return false }
+            if attempt < attempts { await runtime.sleep(UInt64(sleepSeconds * 1_000_000_000)) }
         }
-        return await systemLaunchDaemonReadiness(job, runtime: runtime) == .ready
+        return false
     }
 
     /// The privileged script only ever bootstraps a daemon that launchd does not

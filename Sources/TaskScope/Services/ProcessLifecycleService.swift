@@ -22,7 +22,7 @@ protocol UserLaunchAgentControlling: Sendable {
         preservingPIDs: Set<Int32>
     ) async -> LifecycleBatchResult
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
-    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
+    func disableUserLaunchAgents(for preset: WatchedAppPreset, preservingVPNService: Bool) async -> LifecycleBatchResult
     func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult
 }
 
@@ -34,7 +34,7 @@ extension UserLaunchAgentControlling {
         await unloadUserLaunchAgents(for: preset)
     }
 
-    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+    func disableUserLaunchAgents(for preset: WatchedAppPreset, preservingVPNService: Bool) async -> LifecycleBatchResult {
         .notNeeded
     }
 
@@ -138,8 +138,8 @@ struct SystemProcessLifecycleService: ProcessLifecycleServicing {
         await ProcessLifecycleController.bootstrapUserLaunchAgents(for: preset)
     }
 
-    func disableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
-        await ProcessLifecycleController.disableUserLaunchAgents(for: preset)
+    func disableUserLaunchAgents(for preset: WatchedAppPreset, preservingVPNService: Bool) async -> LifecycleBatchResult {
+        await ProcessLifecycleController.disableUserLaunchAgents(for: preset, preservingVPNService: preservingVPNService)
     }
 
     func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {

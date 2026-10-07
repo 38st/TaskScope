@@ -45,6 +45,14 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
+- Fixed GlobalProtect lifecycle audit findings: background Keep Off preserves
+  loaded session VPN services; session layouts preserve loaded system daemons
+  and their overrides with an incomplete-stop report. Wait for acknowledged
+  daemon shutdown, bound readiness probes by elapsed time, retain Keep Off
+  intent after failed agent restoration, and skip cancelled polling failures.
+  Focused fake-runtime regressions cover these cases; live compatibility is
+  unverified.
+
 - Changed the default global shortcut to Control-Option-Command-T (⌃⌥⌘T).
   Supported saved shortcuts, including Command-Shift-T, remain unchanged and
   can still be recorded explicitly; reserved shortcuts migrate as described below.

@@ -115,6 +115,13 @@ of a passing parser test or a single snapshot. If no managed lifecycle test was
 performed, release notes must explicitly say **GlobalProtect lifecycle
 compatibility unverified** and retain the existing source/development scope.
 
+The lifecycle audit fixes have fixture coverage only: background polling preserves
+loaded session VPN services, session layouts preserve loaded system daemons and
+their overrides with an incomplete-stop report, shutdown/readiness waits use
+bounded deadlines, failed agent restoration retains Keep Off intent, and polling
+cancellation produces no failure report. Validate these cases on an authorized
+managed test machine before claiming live compatibility.
+
 Both public-binary modes of `script/release.sh` enforce the
 [machine-checkable evidence contract](GLOBALPROTECT_COMPATIBILITY.md#machine-checkable-release-evidence).
 For the exact version/build, retain at least one tracked `.evidence` manifest
