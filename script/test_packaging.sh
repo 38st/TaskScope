@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Each case supplies its own packaging inputs, independent of release exports.
+unset TASKSCOPE_BUNDLE_ID TASKSCOPE_SIGNING_STYLE TASKSCOPE_CODE_SIGN_IDENTITY \
+  TASKSCOPE_VERIFIED_BUNDLE_COPY TASKSCOPE_INSTALL_FAIL_AT TASKSCOPE_SKIP_BUILD \
+  TASKSCOPE_RELEASE_ARCHS TASKSCOPE_EXPECTED_TEAM_ID TASKSCOPE_NOTARY_KEYCHAIN_PROFILE \
+  BUILD_CONFIGURATION
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_SCRIPT="$ROOT_DIR/script/build_and_run.sh"
 INSTALL_SCRIPT="$ROOT_DIR/script/install.sh"
@@ -186,12 +192,20 @@ if [[ -e "$SWIFT_MARKER" ]]; then
   exit 1
 fi
 
+DISTRIBUTION_IDENTITY_OUTPUT="$TEST_DIR/distribution-identity.out"
 rm -f "$SWIFT_MARKER"
 if TASKSCOPE_BUNDLE_ID='com.example.TaskScopeTests' \
   TASKSCOPE_SIGNING_STYLE=distribution \
-  TASKSCOPE_CODE_SIGN_IDENTITY='Apple Development: Not Distribution' \
-  PATH="$FAKE_BIN:$PATH" "$BUILD_SCRIPT" --stage >/dev/null 2>&1; then
+  TASKSCOPE_CODE_SIGN_IDENTITY=- \
+  PATH="$FAKE_BIN:$PATH" "$BUILD_SCRIPT" --stage >/dev/null 2>"$DISTRIBUTION_IDENTITY_OUTPUT"; then
   echo "Distribution mode accepted a non-Developer-ID identity." >&2
+  exit 1
+fi
+if ! /usr/bin/grep -Fq \
+  'Distribution packaging requires an explicit Developer ID Application identity.' \
+  "$DISTRIBUTION_IDENTITY_OUTPUT"; then
+  echo "Distribution identity rejection did not reach the Developer ID check." >&2
+  cat "$DISTRIBUTION_IDENTITY_OUTPUT" >&2
   exit 1
 fi
 if [[ -e "$SWIFT_MARKER" ]]; then

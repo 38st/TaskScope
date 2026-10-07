@@ -45,6 +45,11 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Changed
 
+- Stop verified staged app instances before every bundle replacement, isolate
+  packaging tests from release exports, and check the distribution rejection
+  reason. Validate shell syntax one script at a time and require release build
+  numbers to exceed every `v*` tag, rejecting unreadable or invalid history.
+
 - Fixed GlobalProtect lifecycle audit findings: background Keep Off preserves
   loaded session VPN services; session layouts preserve loaded system daemons
   and their overrides with an incomplete-stop report. Wait for acknowledged
@@ -104,7 +109,7 @@ All notable changes to TaskScope are documented in this file. The project uses
 - Removed hosted GitHub Actions CI. The complete build, test, and packaging
   gate remains available locally; weekly Swift dependency updates remain enabled.
 - Bumped the build number to 3. `script/release.sh` now refuses a build number
-  that is not greater than the latest `v*` tag's and a release whose version
+  that is not greater than every `v*` tag's and a release whose version
   has no changelog heading.
 - `script/build_and_run.sh --verify` verifies the bundle that is already
   staged instead of rebuilding and restaging it first.

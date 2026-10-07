@@ -4,7 +4,7 @@ Describe the problem and the change.
 
 ## Validation
 
-- [ ] `bash -n script/*.sh`
+- [ ] `for f in script/*.sh; do bash -n "$f" || exit 1; done`
 - [ ] `swift build -c debug -Xswiftc -warnings-as-errors`
 - [ ] `swift test`
 - [ ] `swift test --enable-code-coverage`

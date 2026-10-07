@@ -102,7 +102,9 @@ Build the release executable, stage `dist/build.noindex/TaskScope.app`, and open
 The local bundle stays in a `.noindex` build folder so Spotlight shows the
 installed `/Applications/TaskScope.app` without a duplicate build result.
 Staging and startup verification also remove the build's temporary launcher
-registration. Running the development app explicitly still launches that copy.
+registration. Every restage, including `--stage`, stops verified running copies
+of the staged app before replacing it. Running the development app explicitly
+still launches that copy.
 
 Other modes:
 
@@ -122,7 +124,7 @@ Finder and About TaskScope read their version from `VERSION` and `BUILD_NUMBER`.
 Run the complete local quality gate before proposing a change:
 
 ```bash
-bash -n script/*.sh
+for f in script/*.sh; do bash -n "$f" || exit 1; done
 swift build -c debug -Xswiftc -warnings-as-errors
 swift test
 swift test --enable-code-coverage

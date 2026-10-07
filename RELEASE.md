@@ -9,7 +9,7 @@ staged app is not itself a published release.
 
 - Version: `1.0.0`
 - Build: `3` (the 1.0.0 tag carries build `2`; `script/release.sh` refuses a
-  build number that is not greater than the latest `v*` tag's)
+  build number that is not greater than every `v*` tag's)
 - Deployment target: macOS 14
 - Verified packaging architecture: arm64 only
 - Distribution: GitHub source release and local-development packaging
@@ -52,7 +52,7 @@ Before starting:
 Run from the repository root on a clean checkout with Xcode 26 or newer:
 
 ```bash
-bash -n script/*.sh
+for f in script/*.sh; do bash -n "$f" || exit 1; done
 swift build -c debug -Xswiftc -warnings-as-errors
 swift test
 swift test --enable-code-coverage
@@ -150,7 +150,9 @@ must review their contents and keep compatibility claims within that coverage.
 
 ## Local source/development release verification
 
-Stage and verify the current-architecture bundle:
+Stage and verify the current-architecture bundle. Staging stops verified running
+copies of the staged app before replacement, including when invoked by the
+installer, release pipeline, or packaging tests:
 
 ```bash
 ./script/build_and_run.sh --stage
@@ -185,7 +187,9 @@ credentials but does not sign, notarize, or create a releasable artifact.
 The evidence regression tests run as part of `script/test_packaging.sh` and can
 also run alone with `bash script/test_release_compatibility.sh`. They use only
 synthetic files in a disposable Git repository and stub release tools; their
-passing results are not installed-product compatibility evidence.
+passing results are not installed-product compatibility evidence. Packaging tests
+clear inherited packaging and release inputs, so exported production settings
+do not change their development defaults.
 
 The full pipeline requires all of these environment variables:
 
@@ -206,7 +210,8 @@ With those values configured securely outside Git, run:
 ```
 
 The script requires a clean worktree; validates identifier syntax, version,
-build (which must exceed the build number at the latest `v*` tag), the
+build (which must exceed the maximum build number across all `v*` tags,
+including prereleases and hotfixes; missing or invalid tagged values fail), the
 presence of a `## [<version>]` changelog heading, arm64 architecture, retained
 GlobalProtect lifecycle evidence, deployment target, and App Intents metadata; builds
 with hardened runtime and no entitlements; verifies the Developer ID team;
@@ -296,7 +301,8 @@ Never move an existing tag to another commit. For a defective release:
 1. Mark the GitHub release and artifact status clearly; remove a dangerous
    binary from download if necessary without erasing the tag/history.
 2. Open a private security advisory first when disclosure itself creates risk.
-3. Prepare a higher patch version and build number from the last safe commit.
+3. Prepare a higher patch version from the last safe commit, with a build number
+   greater than every existing `v*` tag, including other release lines.
 4. Run the full gate and publish a new immutable tag/release.
 5. Explain affected versions, mitigation, preference compatibility, and upgrade
    instructions without exposing unresolved exploit details.

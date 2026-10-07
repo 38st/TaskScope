@@ -527,10 +527,10 @@ fi
 verify_bundle "$STAGING_BUNDLE"
 
 case "$MODE" in
-  run|--debug|debug|--logs|logs|--telemetry|telemetry)
+  run|--stage|stage|--debug|debug|--logs|logs|--telemetry|telemetry)
     # Stop running copies before the swap: afterwards their executable is the
     # deleted backup, which the kernel-path check can no longer match, and the
-    # relaunch below would leave two instances running.
+    # next launch would leave two instances running.
     stop_staged_app_instances
     ;;
 esac

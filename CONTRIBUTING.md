@@ -30,7 +30,7 @@ a successful cross-build.
 4. Run the complete local quality gate from the repository root:
 
    ```bash
-   bash -n script/*.sh
+   for f in script/*.sh; do bash -n "$f" || exit 1; done
    swift build -c debug -Xswiftc -warnings-as-errors
    swift test
    swift test --enable-code-coverage

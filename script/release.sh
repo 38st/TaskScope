@@ -195,16 +195,8 @@ validate_credential_independent_inputs() {
   require_command git
 
   # Build numbers must increase for every distributed artifact: refuse to
-  # release a build number that is not greater than the latest v* tag's.
-  local latest_tag
-  local tagged_build
-  latest_tag="$(git -C "$ROOT_DIR" tag --list 'v*' --sort=-version:refname | head -n 1)"
-  if [[ -n "$latest_tag" ]]; then
-    tagged_build="$(git -C "$ROOT_DIR" show "$latest_tag:BUILD_NUMBER" 2>/dev/null | tr -d '[:space:]' || true)"
-    if [[ "$tagged_build" =~ ^[0-9]+$ ]] && (( APP_BUILD_NUMBER <= tagged_build )); then
-      fail "BUILD_NUMBER ($APP_BUILD_NUMBER) must be greater than the value at $latest_tag ($tagged_build)."
-    fi
-  fi
+  # release a build number that is not greater than every v* tag's.
+  taskscope_validate_build_number_history "$ROOT_DIR" "$APP_BUILD_NUMBER" || exit 1
 
   # The release notes must exist before the artifact does.
   if ! /usr/bin/grep -Eq "^## \[$APP_VERSION\]" "$ROOT_DIR/CHANGELOG.md"; then

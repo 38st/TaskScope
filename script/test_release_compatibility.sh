@@ -15,6 +15,131 @@ EVIDENCE_RELATIVE='Evidence/GlobalProtect/lifecycle/1.2.3-7'
 EVIDENCE_DIR="$FIXTURE_DIR/$EVIDENCE_RELATIVE"
 MANIFEST="$EVIDENCE_DIR/arm64.evidence"
 CHECKS=0
+# Exercise only the swap section with fake process and file operations. Never
+# build, signal a real process, or launch an app in these regression cases.
+test_staging_stops_before_swap() (
+  local swap_script
+  local MODE
+  local running
+  local swaps
+  local APP_BUNDLE="$TEST_DIR/staged.app"
+  local OUTPUT_BACKUP="$TEST_DIR/backup.app"
+  local STAGING_BUNDLE="$TEST_DIR/new.app"
+  mkdir -p "$APP_BUNDLE"
+  swap_script="$(awk '
+    /^verify_bundle "\$STAGING_BUNDLE"$/ { copying = 1; next }
+    copying { print }
+    copying && /^rm -rf "\$OUTPUT_BACKUP"$/ { exit }
+  ' "$ROOT_DIR/script/build_and_run.sh")"
+  [[ -n "$swap_script" ]] || exit 1
+  stop_staged_app_instances() { running=0; }
+  mv() {
+    [[ "$running" -eq 0 ]] || {
+      echo "Bundle swap orphaned a running instance in mode $MODE." >&2
+      exit 1
+    }
+    swaps=$((swaps + 1))
+  }
+  rm() { :; }
+  for MODE in run --stage stage --debug debug --logs logs --telemetry telemetry; do
+    running=1
+    swaps=0
+    eval "$swap_script"
+    [[ "$running" -eq 0 && "$swaps" -eq 2 ]] || exit 1
+  done
+)
+
+test_packaging_environment_isolation() (
+  local name
+  local inputs=(TASKSCOPE_BUNDLE_ID TASKSCOPE_SIGNING_STYLE TASKSCOPE_CODE_SIGN_IDENTITY
+    TASKSCOPE_VERIFIED_BUNDLE_COPY TASKSCOPE_INSTALL_FAIL_AT TASKSCOPE_SKIP_BUILD
+    TASKSCOPE_RELEASE_ARCHS TASKSCOPE_EXPECTED_TEAM_ID TASKSCOPE_NOTARY_KEYCHAIN_PROFILE
+    BUILD_CONFIGURATION)
+  for name in "${inputs[@]}"; do
+    export "$name=inherited-release-value"
+  done
+  # Stop before any test setup or real packaging operations.
+  eval "$(awk '/^ROOT_DIR=/ { exit } { print }' "$ROOT_DIR/script/test_packaging.sh")"
+  for name in "${inputs[@]}"; do
+    [[ -z "${!name:-}" ]] || {
+      echo "Packaging tests inherited $name." >&2
+      exit 1
+    }
+  done
+  source "$ROOT_DIR/script/packaging_common.sh"
+  [[ "$(taskscope_resolve_bundle_id)" == com.local.TaskScope ]]
+)
+
+test_build_number_history() (
+  source "$ROOT_DIR/script/packaging_common.sh"
+  local fixture_tags=''
+  local release_build=9
+  local hotfix_build=12
+  local prerelease_build=8
+  local candidate
+  # Git history is supplied by a fake; this test never creates or changes tags.
+  git() {
+    case "$3" in
+      tag) printf '%s' "$fixture_tags" ;;
+      show)
+        case "$4" in
+          v1.1.0:BUILD_NUMBER) printf '%s\n' "$release_build" ;;
+          v1.0.1:BUILD_NUMBER) printf '%s\n' "$hotfix_build" ;;
+          v1.1.0-rc1:BUILD_NUMBER) printf '%s\n' "$prerelease_build" ;;
+          *) return 1 ;;
+        esac
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  taskscope_validate_build_number_history "$TEST_DIR" 1
+  # The lower-version hotfix has the maximum build, independent of tag order.
+  fixture_tags=$'v1.1.0-rc1\nv1.1.0\nv1.0.1'
+  taskscope_validate_build_number_history "$TEST_DIR" 13
+  for candidate in 9 11 12; do
+    if taskscope_validate_build_number_history "$TEST_DIR" "$candidate" > "$OUTPUT" 2>&1; then
+      echo "Release accepted reused build $candidate." >&2
+      exit 1
+    fi
+    grep -Fq 'value at v1.0.1 (12)' "$OUTPUT"
+  done
+  # A prerelease sorted above the final tag must not hide the final build.
+  fixture_tags=$'v1.1.0-rc1\nv1.1.0'
+  if taskscope_validate_build_number_history "$TEST_DIR" 9 > "$OUTPUT" 2>&1; then
+    exit 1
+  fi
+  grep -Fq 'value at v1.1.0 (9)' "$OUTPUT"
+  taskscope_validate_build_number_history "$TEST_DIR" 10
+  for release_build in '' invalid 0 01; do
+    if taskscope_validate_build_number_history "$TEST_DIR" 13 > "$OUTPUT" 2>&1; then
+      echo "Release accepted invalid tagged BUILD_NUMBER '$release_build'." >&2
+      exit 1
+    fi
+    grep -Fq 'Invalid BUILD_NUMBER at v1.1.0' "$OUTPUT"
+  done
+  release_build=99999999999999999999
+  if taskscope_validate_build_number_history "$TEST_DIR" "$release_build" > "$OUTPUT" 2>&1; then
+    exit 1
+  fi
+  grep -Fq "value at v1.1.0 ($release_build)" "$OUTPUT"
+  taskscope_validate_build_number_history "$TEST_DIR" 100000000000000000000
+  fixture_tags=v0.9.0
+  if taskscope_validate_build_number_history "$TEST_DIR" 13 > "$OUTPUT" 2>&1; then
+    exit 1
+  fi
+  grep -Fq 'Could not read BUILD_NUMBER at v0.9.0.' "$OUTPUT"
+  git() { return 1; }
+  if taskscope_validate_build_number_history "$TEST_DIR" 13 > "$OUTPUT" 2>&1; then
+    exit 1
+  fi
+  grep -Fq 'Could not list release tags.' "$OUTPUT"
+)
+
+test_staging_stops_before_swap
+test_packaging_environment_isolation
+test_build_number_history
+echo 'Packaging regression tests passed (staging, environment isolation, build history).'
+
 mkdir -p "$FIXTURE_DIR/script" "$FIXTURE_DIR/Sources" "$EVIDENCE_DIR" "$FAKE_BIN"
 cp "$ROOT_DIR/script/release.sh" "$ROOT_DIR/script/packaging_common.sh" "$FIXTURE_DIR/script/"
 printf '1.2.3\n' > "$FIXTURE_DIR/VERSION"

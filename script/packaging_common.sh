@@ -42,6 +42,46 @@ taskscope_read_release_value() {
   printf '%s' "$value"
 }
 
+taskscope_validate_build_number_history() {
+  local root_dir="$1"
+  local build_number="$2"
+  local tags
+  local tag
+  local tagged_build
+  local maximum_build=0
+  local maximum_tag=""
+  local LC_ALL=C
+
+  tags="$(git -C "$root_dir" tag --list 'v*')" || {
+    echo "Could not list release tags." >&2
+    return 1
+  }
+  while IFS= read -r tag; do
+    [[ -n "$tag" ]] || continue
+    tagged_build="$(git -C "$root_dir" show "$tag:BUILD_NUMBER" 2>/dev/null)" || {
+      echo "Could not read BUILD_NUMBER at $tag." >&2
+      return 1
+    }
+    tagged_build="$(printf '%s' "$tagged_build" | tr -d '[:space:]')"
+    if [[ ! "$tagged_build" =~ ^[1-9][0-9]*$ ]]; then
+      echo "Invalid BUILD_NUMBER at $tag: '$tagged_build'." >&2
+      return 1
+    fi
+    # Compare decimal strings without overflowing shell integer arithmetic.
+    if [[ ${#tagged_build} -gt ${#maximum_build} \
+      || ( ${#tagged_build} -eq ${#maximum_build} && "$tagged_build" > "$maximum_build" ) ]]; then
+      maximum_build="$tagged_build"
+      maximum_tag="$tag"
+    fi
+  done <<< "$tags"
+
+  if [[ ${#build_number} -lt ${#maximum_build} \
+    || ( ${#build_number} -eq ${#maximum_build} && ! "$build_number" > "$maximum_build" ) ]]; then
+    echo "BUILD_NUMBER ($build_number) must be greater than the value at $maximum_tag ($maximum_build)." >&2
+    return 1
+  fi
+}
+
 taskscope_find_signing_identity() {
   local requested="$1"
 
