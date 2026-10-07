@@ -13,7 +13,7 @@ let package = Package(
     dependencies: [
         .package(
             url: "https://github.com/nalexn/ViewInspector.git",
-            exact: "0.10.3"
+            exact: "0.10.5"
         )
     ],
     targets: [

@@ -320,6 +320,8 @@ final class SwiftUIHarnessTests: XCTestCase {
         )
 
         let buttons = stack.findAll(ViewType.Button.self)
+        XCTAssertEqual(buttons.count, 2)
+        guard buttons.count == 2 else { return }
         XCTAssertEqual(try buttons[0].accessibilityLabel().string(), "Add Accessible to selection")
         XCTAssertEqual(try buttons[1].accessibilityLabel().string(), "Stop Accessible")
     }
@@ -339,10 +341,12 @@ final class SwiftUIHarnessTests: XCTestCase {
         let rows = try view.inspect().findAll(ProcessRow.self)
 
         XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(try rows[0].actualView().process.identity, needle.identity)
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(try row.actualView().process.identity, needle.identity)
 
-        let rowButtons = rows[0].findAll(ViewType.Button.self)
+        let rowButtons = row.findAll(ViewType.Button.self)
         XCTAssertEqual(rowButtons.count, 2)
+        guard rowButtons.count == 2 else { return }
 
         try rowButtons[0].tap()
         XCTAssertEqual(fixture.manager.selectedPids, [needle.pid])
@@ -768,9 +772,10 @@ final class SwiftUIHarnessTests: XCTestCase {
         )
         let rows = try view.inspect().findAll(ProcessRow.self)
         XCTAssertEqual(rows.count, 1)
-        XCTAssertEqual(try rows[0].actualView().process.identity, needle.identity)
+        let row = try XCTUnwrap(rows.first)
+        XCTAssertEqual(try row.actualView().process.identity, needle.identity)
 
-        try rows[0].findAll(ViewType.Button.self)[0].tap()
+        try XCTUnwrap(row.findAll(ViewType.Button.self).first).tap()
         XCTAssertEqual(fixture.manager.selectedPids, [needle.pid])
 
         // What `selectedProcessesForPreset()` now calls. ViewInspector 0.10.3 has no
@@ -974,7 +979,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             toggleSelection: { selectionAttempts += 1 }
         )
 
-        let selectionButton = try row.inspect().findAll(ViewType.Button.self)[0]
+        let selectionButton = try XCTUnwrap(row.inspect().findAll(ViewType.Button.self).first)
         XCTAssertTrue(selectionButton.isDisabled())
         XCTAssertEqual(
             try selectionButton.accessibilityLabel().string(),
