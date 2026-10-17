@@ -133,7 +133,13 @@ taskscope_require_no_other_app_instance() {
     return 1
   }
   while IFS= read -r path; do
-    [[ -n "$path" && "$path" != "$expected_path" ]] || continue
+    [[ -n "$path" ]] || continue
+    # Foundation's symlink resolution drops a leading /private (for example
+    # /private/var becomes /var), so compare the physical directory paths.
+    if [[ -d "$path" && "$(cd "$path" && pwd -P)" == "$expected_path" ]]; then
+      continue
+    fi
+    [[ "$path" != "$expected_path" ]] || continue
     echo "TaskScope with bundle identifier '$bundle_id' is already running at $path." >&2
     echo "Quit that copy before launching $bundle." >&2
     return 1
