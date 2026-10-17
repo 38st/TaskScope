@@ -1,10 +1,19 @@
 # TaskScope
 
+<img src="docs/images/taskscope-icon.png" alt="TaskScope app icon" width="96" align="right">
+
 TaskScope is a native macOS process monitor and task controller for the window
 and menu bar.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![macOS 14+](https://img.shields.io/badge/macOS-14%2B-black.svg)](https://support.apple.com/macos)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-window-dark.png">
+  <img src="docs/images/main-window-light.png" alt="TaskScope window showing a process list sorted by CPU, with high-usage rows highlighted and two processes selected for a batch stop">
+</picture>
+
+Screenshots show synthetic process data and were rendered on macOS 27.
 
 ## What it does
 
@@ -124,6 +133,11 @@ signals itself, and rechecks process identity immediately before signaling.
 Unavailable readings remain unavailable. See [process actions](docs/USING_TASKSCOPE.md#process-actions-and-observations).
 
 ### Presets and lifecycle actions
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/menu-bar-presets-dark.png">
+  <img src="docs/images/menu-bar-presets-light.png" width="420" alt="Menu bar popover on the Presets tab, showing the running GlobalProtect preset with Open, Quit App, Quit Helpers, and Quit All actions above a quiet Simulator preset">
+</picture>
 
 Add, edit, reorder, import, and export presets in **Settings > Watched Apps**.
 Import previews every lifecycle field before saving and performs no action.
