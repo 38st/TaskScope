@@ -140,14 +140,14 @@ private func process(pid: Int32, name: String) -> AppProcess {
 
 private final class TestClock: @unchecked Sendable {
     private let lock = NSLock()
-    private var current = Date(timeIntervalSince1970: 1_000)
+    private var current: TimeInterval = 1_000
 
-    func now() -> Date {
+    func now() -> TimeInterval {
         lock.withLock { current }
     }
 
     func advance(_ seconds: TimeInterval) {
-        lock.withLock { current = current.addingTimeInterval(seconds) }
+        lock.withLock { current += seconds }
     }
 }
 

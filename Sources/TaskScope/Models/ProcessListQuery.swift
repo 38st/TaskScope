@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 enum ProcessFilterMode: String, CaseIterable, Identifiable {
@@ -17,27 +18,41 @@ enum ProcessFilterMode: String, CaseIterable, Identifiable {
 }
 
 /// One watched preset's process boundary, mirroring `WatchedSnapshotBuilder`:
-/// main and helper names count only inside the preset's app bundle, matched by
-/// command name or executable file name; protected names match by name.
+/// current-user main processes count inside Contents/MacOS and helpers inside
+/// Contents, matched by command or executable name; protected names match by
+/// name across users.
 struct WatchedProcessScope: Hashable {
     var bundleContentsDirectory: String
-    var processNames: Set<String>
+    var mainExecutableDirectory: String
+    var mainProcessName: String
+    var helperNames: Set<String>
     var protectedNames: Set<String>
+    var currentUID: uid_t
 
     init(preset: WatchedAppPreset) {
+        self.init(preset: preset, currentUID: getuid())
+    }
+
+    init(preset: WatchedAppPreset, currentUID: uid_t) {
         bundleContentsDirectory = preset.bundleContentsDirectory
-        processNames = Set([preset.mainProcessName] + preset.helperProcessNames)
+        mainExecutableDirectory = preset.mainExecutableDirectory
+        mainProcessName = preset.mainProcessName
+        helperNames = Set(preset.helperProcessNames)
         protectedNames = Set(preset.protectedProcessNames)
+        self.currentUID = currentUID
     }
 
     func contains(_ process: AppProcess) -> Bool {
         if protectedNames.contains(process.name) { return true }
-        guard let executablePath = process.executablePath,
+        guard process.uid == currentUID,
+              let executablePath = process.executablePath,
               executablePath.hasPrefix(bundleContentsDirectory) else {
             return false
         }
-        return processNames.contains(process.name)
-            || processNames.contains(URL(fileURLWithPath: executablePath).lastPathComponent)
+        let executableName = URL(fileURLWithPath: executablePath).lastPathComponent
+        if helperNames.contains(process.name) || helperNames.contains(executableName) { return true }
+        return executablePath.hasPrefix(mainExecutableDirectory)
+            && (process.name == mainProcessName || executableName == mainProcessName)
     }
 }
 

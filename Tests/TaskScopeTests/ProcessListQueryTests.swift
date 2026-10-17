@@ -87,6 +87,7 @@ final class ProcessListQueryTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 0,
+            uid: getuid(),
             cpu: cpu,
             memoryMB: memory,
             command: command ?? "/tmp/\(name)",

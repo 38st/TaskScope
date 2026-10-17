@@ -123,9 +123,14 @@ enum ProcessTerminationController {
         expectedExecutableDirectory: String?,
         runtime: ProcessLifecycleRuntime
     ) async -> Bool {
-        let deadline = Date().addingTimeInterval(timeoutSeconds)
-        while Date() < deadline {
+        let timeout = max(0, timeoutSeconds)
+        let deadline = runtime.systemUptime() + timeout
+        let attempts = Int((timeout / 0.3).rounded(.up))
+        // A monotonic deadline includes inventory time; the attempt cap also
+        // bounds injected clocks or sleeps that do not advance normally.
+        for _ in 0..<attempts {
             guard !Task.isCancelled else { return false }
+            guard runtime.systemUptime() < deadline else { break }
             if await isRunning(
                 named: name,
                 expectedExecutableDirectory: expectedExecutableDirectory,
@@ -134,7 +139,9 @@ enum ProcessTerminationController {
                 return true
             }
             guard !Task.isCancelled else { return false }
-            await runtime.sleep(300_000_000)
+            let remaining = deadline - runtime.systemUptime()
+            guard remaining > 0 else { break }
+            await runtime.sleep(UInt64(min(0.3, remaining) * 1_000_000_000))
         }
         guard !Task.isCancelled else { return false }
         return await isRunning(

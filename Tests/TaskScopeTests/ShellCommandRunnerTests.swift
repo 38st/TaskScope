@@ -151,7 +151,17 @@ final class ShellCommandRunnerTests: XCTestCase {
                 await withTaskGroup(of: ShellCommandResult.self) { group in
                     for _ in 0..<24 {
                         group.addTask {
-                            await ShellCommandRunner.run("printf '%s' $$; exit 3", timeout: 1)
+                            let probe = DeferredChildWaitProbe(deferredProbes: 3)
+                            let started = ContinuousClock.now
+                            let result = await ShellCommandRunner.run(
+                                "printf '%s' $$; exit 3", timeout: 4,
+                                waitForChild: { probe.wait($0, $1, $2) }
+                            )
+                            XCTAssertLessThan(
+                                started.duration(to: .now), .seconds(2),
+                                "An immediate exit must not wait for the command timeout"
+                            )
+                            return result
                         }
                     }
                     for await result in group {
@@ -173,6 +183,7 @@ final class ShellCommandRunnerTests: XCTestCase {
         }
         await fulfillment(of: [finished], timeout: 15)
         bursts.cancel()
+        await bursts.value
     }
 
     func testRunCapturesOutputAndExitStatus() async {
@@ -428,5 +439,23 @@ final class ShellCommandRunnerTests: XCTestCase {
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
         XCTFail("Descendant PID \(pid) survived command termination.", file: file, line: line)
+    }
+}
+
+/// Models NOTE_EXIT arriving before waitpid can reap. Only the runner's own
+/// spawned children reach the real waitpid; returning zero never reaps them.
+private final class DeferredChildWaitProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var remaining: Int
+
+    init(deferredProbes: Int) { remaining = deferredProbes }
+
+    func wait(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>, _ options: Int32) -> pid_t {
+        let deferProbe = lock.withLock {
+            guard remaining > 0 else { return false }
+            remaining -= 1
+            return true
+        }
+        return deferProbe ? 0 : Darwin.waitpid(pid, status, options)
     }
 }

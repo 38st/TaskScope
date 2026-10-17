@@ -9,9 +9,12 @@ enum ShellCommandRunner {
 
     static func run(
         _ command: String,
-        timeout: TimeInterval = 15
+        timeout: TimeInterval = 15,
+        waitForChild: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t = {
+            Darwin.waitpid($0, $1, $2)
+        }
     ) async -> ShellCommandResult {
-        let execution = CommandExecution(command: command, timeout: timeout)
+        let execution = CommandExecution(command: command, timeout: timeout, waitForChild: waitForChild)
         return await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 execution.start(continuation: continuation)
@@ -73,6 +76,7 @@ enum ShellCommandRunner {
 
         private let command: String
         private let timeout: TimeInterval
+        private let waitForChild: @Sendable (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t
         private let standardOutput = Pipe()
         private let standardError = Pipe()
         private let outputCapture = PipeCapture()
@@ -97,9 +101,14 @@ enum ShellCommandRunner {
         private var errorSource: DispatchSourceRead?
         private var exitSource: DispatchSourceProcess?
 
-        init(command: String, timeout: TimeInterval) {
+        init(
+            command: String,
+            timeout: TimeInterval,
+            waitForChild: @escaping @Sendable (pid_t, UnsafeMutablePointer<Int32>, Int32) -> pid_t
+        ) {
             self.command = command
             self.timeout = max(0.1, timeout)
+            self.waitForChild = waitForChild
         }
 
         func start(continuation: CheckedContinuation<ShellCommandResult, Never>) {
@@ -183,7 +192,7 @@ enum ShellCommandRunner {
                 queue: ioQueue
             )
             source.setEventHandler { [weak self] in
-                self?.reapIfExited(pid)
+                self?.reapIfExited(pid, retryUntilReaped: true)
             }
             // resume() returns before kevent registration. A short-lived child
             // can exit after the first WNOHANG check but before registration,
@@ -194,7 +203,7 @@ enum ShellCommandRunner {
             return source
         }
 
-        private func reapIfExited(_ pid: pid_t) {
+        private func reapIfExited(_ pid: pid_t, retryUntilReaped: Bool = false) {
             // Serialize the probes and stop probing once reaped: a delayed
             // registration callback must never wait on a reused PID.
             stateLock.lock()
@@ -205,10 +214,18 @@ enum ShellCommandRunner {
             var status: Int32 = 0
             var waitedPID: pid_t
             repeat {
-                waitedPID = Darwin.waitpid(pid, &status, WNOHANG)
+                waitedPID = waitForChild(pid, &status, WNOHANG)
             } while waitedPID == -1 && errno == EINTR
             guard waitedPID == pid else {
                 stateLock.unlock()
+                if waitedPID == 0, retryUntilReaped {
+                    // NOTE_EXIT (including a synthesized registration event)
+                    // can precede the child becoming waitable. It fires only
+                    // once, so keep probing without blocking the I/O queue.
+                    ioQueue.asyncAfter(deadline: .now() + .milliseconds(10)) { [self] in
+                        reapIfExited(pid, retryUntilReaped: true)
+                    }
+                }
                 return
             }
             childReaped = true
@@ -222,10 +239,10 @@ enum ShellCommandRunner {
         }
 
         private func requestStop(message: String, exitCode: Int32) {
-            // A missed exit notification must not leave a timeout waiting
-            // forever for a child that is already a zombie.
+            // Continue probing after a stop even if no further exit event
+            // arrives: the timeout task is no longer available as a backstop.
             if let pid = currentProcessIdentifier() {
-                reapIfExited(pid)
+                reapIfExited(pid, retryUntilReaped: true)
             }
             stateLock.lock()
             guard !completed, !completionScheduled else {
@@ -434,8 +451,8 @@ enum ShellCommandRunner {
 
             timeoutTask?.cancel()
             killFallbackTask?.cancel()
-            // The exit source stays armed until the child is reaped, so a
-            // stopped command is never left as a zombie.
+            // The exit source and any reap retries remain active until the
+            // child is reaped, including after the timeout task has fired.
             closePipeWriters()
             continuation?.resume(returning: result)
         }
