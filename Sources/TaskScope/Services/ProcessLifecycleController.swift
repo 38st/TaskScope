@@ -165,7 +165,7 @@ enum ProcessLifecycleController {
 
             let command = "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))"
             let result = await runtime.runCommand(command, launchAgentBootoutTimeout)
-            let after = await inspectAfterBootout(target, runtime: runtime)
+            let after = await inspectAfterBootout(target, commandResult: result, runtime: runtime)
             let didUnload = after == .notLoaded
             results.append(LifecycleJobResult(
                 label: job.label,
@@ -248,7 +248,7 @@ enum ProcessLifecycleController {
                     "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))",
                     launchAgentBootoutTimeout
                 )
-                let after = await inspectAfterBootout(target, runtime: runtime)
+                let after = await inspectAfterBootout(target, commandResult: bootout, runtime: runtime)
                 let didUnload = after == .notLoaded
                 results.append(LifecycleJobResult(
                     label: job.label,
@@ -620,12 +620,22 @@ enum ProcessLifecycleController {
 
     /// bootout can return before removal finishes, including a nonzero answer
     /// while removal is in progress. Final inspection determines the outcome;
-    /// confirm disappearance without signalling or restarting that PID.
+    /// confirm disappearance without signalling or restarting that PID. A
+    /// definitive refusal needs only one inspection, not a disappearance wait.
     private static func inspectAfterBootout(
         _ target: String,
+        commandResult: ShellCommandResult,
         runtime: ProcessLifecycleRuntime
     ) async -> LaunchJobInspection {
-        let attempts = Int(launchAgentBootoutTimeout / 0.5)
+        let detail = (commandResult.stderr + " " + commandResult.stdout)
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let shouldWait = commandResult.succeeded
+            || commandResult.exitCode == 36
+            || detail.contains("in progress")
+            || commandResult.exitCode == ShellCommandRunner.timedOutExitCode
+            || commandResult.terminatedBySignal != nil
+            || detail.isEmpty
+        let attempts = shouldWait ? Int(launchAgentBootoutTimeout / 0.5) : 0
         for attempt in 0...attempts {
             let state = await inspectLaunchJob(target, runtime: runtime).inspection
             guard state == .loaded, attempt < attempts else { return state }

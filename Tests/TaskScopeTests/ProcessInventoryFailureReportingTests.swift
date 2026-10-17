@@ -48,9 +48,9 @@ final class ProcessInventoryFailureReportingTests: XCTestCase {
 
         // (c) The user must not be told the target's identity changed: it was
         //     never compared against anything.
-        XCTAssertNotEqual(
+        XCTAssertEqual(
             manager.message,
-            "Target is no longer the same running process.",
+            "Could not verify Target; nothing was stopped.",
             "an unreadable inventory must not be reported as an identity change"
         )
 
@@ -61,13 +61,12 @@ final class ProcessInventoryFailureReportingTests: XCTestCase {
             "an unreadable inventory must surface as processLoadError"
         )
 
-        // (e) `.stale` means 'no longer the same running process'; returning it
-        //     makes AutoStopRulesStore log .failed / "Automatic stop did not
-        //     complete." for a stop that was never attempted.
-        XCTAssertNotEqual(
+        // (e) An unreadable inventory is retryable; it proves neither exit nor
+        //     a changed identity.
+        XCTAssertEqual(
             result,
-            .stale,
-            "a read failure must not be reported to callers as a stale target"
+            .rejected,
+            "a read failure must be reported to callers as an unverified target"
         )
     }
 
@@ -104,17 +103,12 @@ final class ProcessInventoryFailureReportingTests: XCTestCase {
             "summary line correctly reports the read failure"
         )
 
-        // The per-target sheet must not assert that every still-running target
-        // is already gone ("No longer matched") when nothing was checked.
+        // Every captured target remains unverified when nothing was checked.
         let labels = manager.batchActionReport?.targets.map(\.state.label) ?? []
-        XCTAssertNotEqual(
+        XCTAssertEqual(
             labels,
-            ["No longer matched", "No longer matched", "No longer matched"],
-            "an unreadable inventory must not be reported per-target as 'No longer matched'"
-        )
-        XCTAssertFalse(
-            labels.contains("No longer matched"),
-            "no target may be labelled 'No longer matched' when no target was checked"
+            Array(repeating: ProcessTargetActionState.unverified.label, count: targets.count),
+            "every target must remain unverified when the inventory read failed"
         )
     }
 
@@ -127,6 +121,7 @@ final class ProcessInventoryFailureReportingTests: XCTestCase {
     ) -> ProcessManager {
         let manager = ProcessManager(
             processInventory: inventory,
+            verificationInventory: inventory,
             processSignaler: signaler,
             lifecycle: lifecycle,
             settleAfterProcessChange: {}

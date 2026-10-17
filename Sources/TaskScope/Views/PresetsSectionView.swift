@@ -17,8 +17,8 @@ struct PresetsSectionView: View {
                             .font(.caption).fontWeight(.semibold)
                         Text(error)
                             .font(.caption).foregroundStyle(.secondary)
-                        if let lastRead = processManager.lastSuccessfulInventoryAt {
-                            Text("Last successful inventory: \(lastRead.formatted(date: .omitted, time: .standard))")
+                        if let lastRead = processManager.lastSuccessfulWatchedReadAt {
+                            Text("Last successful inventory: \(lastRead.formatted(date: Calendar.current.isDateInToday(lastRead) ? .omitted : .abbreviated, time: .standard))")
                                 .font(.caption2).foregroundStyle(.secondary)
                         }
                         Button("Retry") {

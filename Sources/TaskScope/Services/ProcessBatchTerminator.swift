@@ -105,7 +105,7 @@ struct ProcessBatchTerminator {
         }
 
         let currentByIdentity = Dictionary(
-            currentProcesses.map { ($0.identity, $0) },
+            currentProcesses.filter { !$0.hasExited }.map { ($0.identity, $0) },
             uniquingKeysWith: { first, _ in first }
         )
         let verified = requestedIdentities.compactMap { currentByIdentity[$0] }
@@ -114,7 +114,7 @@ struct ProcessBatchTerminator {
             return ProcessTargetActionResult(
                 identity: identity,
                 name: displayName(for: identity),
-                state: currentProcesses.contains { $0.pid == identity.pid } ? .identityChanged : .stale
+                state: currentProcesses.contains { $0.pid == identity.pid && !$0.hasExited } ? .identityChanged : .stale
             )
         }
         let staleCount = targetResults.count

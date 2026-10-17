@@ -580,6 +580,19 @@ final class AutoStopRulesStore: ObservableObject {
         let isActive = isStillActive(rule) || (automaticProcesses[occurrence] != nil && rules.contains {
             $0.id == rule.id && qualifiesForAutomaticStop($0, process: process)
         })
+        if result == .rejected, !isStillActive(rule), isActive {
+            // An edit revoked the captured pre-signal authority. Preserve any
+            // accepted first request's retry budget, but do not log a failure
+            // for an action that never sent its signal.
+            if let pending = pendingExits[occurrence] {
+                pendingExits[occurrence] = PendingExit(
+                    prompt: pending.prompt, canRetry: true, firstAcceptedAt: pending.firstAcceptedAt
+                )
+            } else {
+                handledOccurrences.remove(occurrence)
+            }
+            return
+        }
         if !isActive {
             handledOccurrences.remove(occurrence)
             pendingExits[occurrence] = nil
@@ -648,19 +661,24 @@ final class AutoStopRulesStore: ObservableObject {
     }
 
     private func pruneEndedOccurrences(_ processes: [AppProcess]) {
-        let runningIdentities = Set(processes.map(\.identity))
+        let runningProcesses = processes.filter { !$0.hasExited }
+        let runningIdentities = Set(runningProcesses.map(\.identity))
         automaticProcesses = automaticProcesses.filter { runningIdentities.contains($0.key.processIdentity) }
-        let currentByPID = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
-        // A kernel path can change during one lifetime. Keep Dismiss and handled
-        // state attached to that lifetime, even when its signal identity changes.
+        let currentByPID = Dictionary(runningProcesses.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+        // A kernel path can change during one lifetime. Keep Dismiss and the
+        // automatic signal budget, but let unanswered prompts use the new identity.
         func currentOccurrence(_ occurrence: AutoStopOccurrence) -> AutoStopOccurrence? {
             guard let process = currentByPID[occurrence.processIdentity.pid],
                   process.startTime == occurrence.processIdentity.startTime else { return nil }
             return AutoStopOccurrence(ruleID: occurrence.ruleID, processIdentity: process.identity)
         }
-        let changed = handledOccurrences.filter { !runningIdentities.contains($0.processIdentity) }
+        let unanswered = Set(pendingPrompts.map(\.id))
+        let carried = handledOccurrences.filter {
+            runningIdentities.contains($0.processIdentity) || !unanswered.contains($0)
+        }
+        let changed = carried.filter { !runningIdentities.contains($0.processIdentity) }
         let replacementOccurrences = Set(changed.compactMap(currentOccurrence))
-        handledOccurrences = Set(handledOccurrences.compactMap(currentOccurrence))
+        handledOccurrences = Set(carried.compactMap(currentOccurrence))
         reportedFailures = Set(reportedFailures.compactMap(currentOccurrence))
         dismissedOccurrences = Set(dismissedOccurrences.compactMap(currentOccurrence))
         for (occurrence, pending) in pendingExits
@@ -719,7 +737,8 @@ final class AutoStopRulesStore: ObservableObject {
     }
 
     private func matches(_ rule: AutoStopRule, process: AppProcess) -> Bool {
-        guard process.pid != currentPID,
+        guard !process.hasExited,
+              process.pid != currentPID,
               ProcessSignalGuard.isSignalablePID(process.pid),
               process.uid == currentUID,
               rule.processName.caseInsensitiveCompare(process.name) == .orderedSame else {

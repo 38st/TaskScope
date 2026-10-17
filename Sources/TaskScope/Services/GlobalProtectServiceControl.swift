@@ -19,8 +19,10 @@ struct GlobalProtectServiceObservation: Equatable, Sendable {
             case .unknown:
                 return .unknown
             case .loaded:
-                guard let pid = ProcessLifecycleController.launchJobPID(from: inspection),
-                      case .success(let inventory) = await runtime.loadProcessInventory(),
+                guard let pid = ProcessLifecycleController.launchJobPID(from: inspection) else {
+                    return hasNoRunningPID(inspection.stdout) ? .absent : .unknown
+                }
+                guard case .success(let inventory) = await runtime.loadProcessInventory(),
                       var process = inventory.first(where: { $0.pid == pid }),
                       process.uid == 0 || (!service.isSystem && process.uid == runtime.userID),
                       let path = runtime.executablePathForPID(pid) else { return .unknown }
@@ -31,6 +33,35 @@ struct GlobalProtectServiceObservation: Equatable, Sendable {
         let session = await state(for: .pangps)
         let system = await state(for: .pangpsd)
         return Self(session: session, system: system)
+    }
+
+    /// A complete job listing with state but no top-level PID describes a
+    /// loaded job without a running process. Empty, truncated, or malformed PID
+    /// output remains unknown rather than bypassing service attribution.
+    private static func hasNoRunningPID(_ output: String) -> Bool {
+        var depth = 0
+        var sawRoot = false
+        var sawState = false
+        for raw in output.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if depth == 1 {
+                if line.hasPrefix("pid") { return false }
+                if line.hasPrefix("state = "), line.count > 8 { sawState = true }
+            }
+            if line.hasSuffix("{") {
+                if depth == 0 {
+                    guard !sawRoot, line.hasSuffix(" = {") else { return false }
+                    sawRoot = true
+                }
+                depth += 1
+            } else if line == "}" {
+                depth -= 1
+                if depth < 0 { return false }
+            } else if depth == 0, !line.isEmpty {
+                return false
+            }
+        }
+        return sawRoot && sawState && depth == 0
     }
 }
 

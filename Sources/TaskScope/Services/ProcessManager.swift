@@ -34,6 +34,8 @@ final class ProcessManager: ObservableObject {
     @Published private(set) var processLoadError: String?
     /// Time the inventory backing the displayed rows was last replaced.
     @Published private(set) var lastSuccessfulInventoryAt: Date?
+    /// Time the watched snapshots on screen were last replaced after a read.
+    @Published private(set) var lastSuccessfulWatchedReadAt: Date?
     @Published private(set) var lifecycleReport: LifecycleReport?
     /// One explicit failed disconnect may be followed by a separately confirmed
     /// service stop. Never persisted, exposed to URLs, or used by polling.
@@ -990,7 +992,7 @@ final class ProcessManager: ObservableObject {
 
         var result: ProcessActionResult = .rejected
         await runAction(kind: .mutation) {
-            let verificationResult = await verificationInventory.load(fetchExtendedStats: false)
+            let verificationResult = await verificationInventory.load(fetchExtendedStats: hasLoadedProcessList && fetchExtendedStats)
             // An unreadable process list says nothing about this target. Treating it
             // as an identity change both lied to the user and wiped the whole
             // selection by reconciling against an empty inventory.
@@ -1007,8 +1009,8 @@ final class ProcessManager: ObservableObject {
                 return
             }
             recordInventorySuccess()
-            guard currentProcesses.contains(where: { $0.identity == process.identity }) else {
-                let identityChanged = currentProcesses.contains { $0.pid == process.pid }
+            guard currentProcesses.contains(where: { !$0.hasExited && $0.identity == process.identity }) else {
+                let identityChanged = currentProcesses.contains { $0.pid == process.pid && !$0.hasExited }
                 message = identityChanged
                     ? "\(process.name)'s identity changed; nothing was stopped."
                     : "\(process.name) is no longer running."
@@ -1231,6 +1233,7 @@ final class ProcessManager: ObservableObject {
     private func apply(_ watched: [WatchedAppSnapshot]) {
         let previousPresets = notifiablePresets(in: snapshots)
         snapshots = watched
+        lastSuccessfulWatchedReadAt = now()
         watchedStatusAvailability = .current
         status = watched.aggregateStatus
 

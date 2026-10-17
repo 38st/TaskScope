@@ -58,6 +58,13 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         self.diskWriteBytes = diskWriteBytes
     }
 
+    /// `ps comm` reports an exited, unreaped process as `<defunct>` and the
+    /// kernel no longer resolves its executable. A missing path alone is not
+    /// exit evidence: live processes can also have unreadable paths.
+    var hasExited: Bool {
+        executablePath == nil && command.trimmingCharacters(in: .whitespacesAndNewlines) == "<defunct>"
+    }
+
     var id: Int32 {
         pid
     }
