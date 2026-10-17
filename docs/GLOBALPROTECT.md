@@ -36,7 +36,10 @@ disables the known per-user jobs, unloads them, and stops eligible app/helper
 processes. The fixed system `pangpsd` daemon can be disabled then booted out
 with macOS administrator approval. After successful authorization, shutdown
 verification allows up to 30 seconds with bounded probes. Unknown reads and
-partial failures are reported, never treated as proof of an off state.
+partial failures are reported, never treated as proof of an off state. Once the
+privileged script reports that its disable step succeeded, that verification
+decides the result, not bootout's exit status. Cancelled or denied approval and
+a failed disable are reported after one inspection, without waiting.
 
 On session-agent installations, a loaded or uninspectable separate system
 daemon and its override are preserved and the stop is incomplete. Retrying

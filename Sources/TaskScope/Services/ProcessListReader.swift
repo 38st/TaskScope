@@ -67,6 +67,16 @@ enum ProcessListReader {
             },
             uniquingKeysWith: { first, _ in first }
         )
+        // Read between the snapshots, like the paths, so identity validation
+        // also vouches for these start times.
+        let currentUID = getuid()
+        let monotonicStarts = Dictionary(
+            parsed.compactMap { process -> (Int32, UInt64)? in
+                guard process.uid == currentUID else { return nil }
+                return startUptimeNanoseconds(for: process.pid).map { (process.pid, $0) }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         let validation = await ShellCommandRunner.run(identityValidationCommand)
         if let cancellation = cancellation(of: validation) {
             return .failure(cancellation)
@@ -91,6 +101,12 @@ enum ProcessListReader {
         attachExecutablePaths(
             to: &parsed,
             resolvedPaths: resolvedPaths,
+            validatedStartTimes: validatedStartTimeMap
+        )
+        attachMonotonicStarts(
+            to: &parsed,
+            startTimes: monotonicStarts,
+            currentUID: currentUID,
             validatedStartTimes: validatedStartTimeMap
         )
 
@@ -205,6 +221,26 @@ enum ProcessListReader {
         }
     }
 
+    /// Current-user rows carry the kernel's start time so a wall-clock change
+    /// cannot advance a runtime rule. A failed read or a changed identity
+    /// marks the row unavailable rather than unread.
+    static func attachMonotonicStarts(
+        to processes: inout [AppProcess],
+        startTimes: [Int32: UInt64],
+        currentUID: uid_t,
+        validatedStartTimes: [Int32: String]
+    ) {
+        for index in processes.indices where processes[index].uid == currentUID {
+            let process = processes[index]
+            guard validatedStartTimes[process.pid] == process.startTime,
+                  let start = startTimes[process.pid] else {
+                processes[index].monotonicStart = .unavailable
+                continue
+            }
+            processes[index].monotonicStart = .uptimeNanoseconds(start)
+        }
+    }
+
     static func parseStartTimes(
         _ output: String
     ) -> Result<[Int32: String], ProcessInventoryError> {
@@ -267,6 +303,19 @@ enum ProcessListReader {
     /// they were never a source of data. The kernel refuses this call for
     /// processes the caller may not inspect; those rows stay nil.
     static func diskIOBytes(for pid: Int32) -> (read: Double, written: Double)? {
+        guard let info = resourceUsage(for: pid) else { return nil }
+        return (Double(info.ri_diskio_bytesread), Double(info.ri_diskio_byteswritten))
+    }
+
+    /// The kernel's uptime clock when the process started, in nanoseconds.
+    /// Unlike the wall-clock start `ps` reports, setting the system clock
+    /// cannot move it. Nil when the kernel refuses the read.
+    static func startUptimeNanoseconds(for pid: Int32) -> UInt64? {
+        guard let info = resourceUsage(for: pid), info.ri_proc_start_abstime > 0 else { return nil }
+        return UptimeSample.nanoseconds(fromMachTime: info.ri_proc_start_abstime)
+    }
+
+    private static func resourceUsage(for pid: Int32) -> rusage_info_v4? {
         // `rusage_info_t` is `void *`; the C API is declared as taking a pointer
         // to it but writes the struct at the pointed-to address itself, exactly
         // as its callers pass `(rusage_info_t *)&info`.
@@ -276,8 +325,7 @@ enum ProcessListReader {
                 proc_pid_rusage(pid, RUSAGE_INFO_V4, buffer)
             }
         }
-        guard status == 0 else { return nil }
-        return (Double(info.ri_diskio_bytesread), Double(info.ri_diskio_byteswritten))
+        return status == 0 ? info : nil
     }
 
     private static func currentNetworkStats() async -> [Int32: (Double, Double)]? {

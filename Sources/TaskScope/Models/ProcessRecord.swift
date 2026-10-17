@@ -1,5 +1,16 @@
 import Foundation
 
+/// Where a row's process start sits on the kernel's uptime clock.
+enum MonotonicStart: Equatable, Sendable {
+    /// The row's source does not read kernel start times. The live inventory
+    /// reads them for the current user's processes only.
+    case notRead
+    /// The kernel did not report a start time, or the row's identity changed
+    /// while it was read.
+    case unavailable
+    case uptimeNanoseconds(UInt64)
+}
+
 struct AppProcess: Identifiable, Equatable, Sendable {
     var pid: Int32
     var parentPID: Int32
@@ -19,6 +30,9 @@ struct AppProcess: Identifiable, Equatable, Sendable {
     var executablePath: String?
     var elapsedTime: String
     var startTime: String
+    /// Runtime rules require this for live rows: `elapsedTime` is wall-clock
+    /// arithmetic that a clock change can inflate.
+    var monotonicStart: MonotonicStart
     var netInKB: Double?
     var netOutKB: Double?
     /// Cumulative disk bytes read/written by the process, from
@@ -37,6 +51,7 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         executablePath: String? = nil,
         elapsedTime: String,
         startTime: String = "",
+        monotonicStart: MonotonicStart = .notRead,
         netInKB: Double?,
         netOutKB: Double?,
         diskReadBytes: Double?,
@@ -52,6 +67,7 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         self.executablePath = executablePath
         self.elapsedTime = elapsedTime
         self.startTime = startTime
+        self.monotonicStart = monotonicStart
         self.netInKB = netInKB
         self.netOutKB = netOutKB
         self.diskReadBytes = diskReadBytes
@@ -102,7 +118,9 @@ struct AppProcess: Identifiable, Equatable, Sendable {
         )
     }
 
-    /// Runtime reported by `ps etime`, whose shape is `[[dd-]hh:]mm:ss`.
+    /// Runtime reported by `ps etime`, whose shape is `[[dd-]hh:]mm:ss`. It is
+    /// the current wall clock minus the wall-clock start, so a forward clock
+    /// step overstates it; see `monotonicStart`.
     var runtimeSeconds: TimeInterval? {
         let normalizedElapsedTime = elapsedTime.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedElapsedTime.isEmpty else { return nil }

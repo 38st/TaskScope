@@ -60,6 +60,9 @@ final class AutoStopRulesStore: ObservableObject {
     private let eventsPersistence: RecoveringCodableStorage<[AutoStopEvent]>
     private let now: () -> Date
     private let monotonicNow: () -> ContinuousClock.Instant
+    private let uptimeClock: () -> UptimeSample
+    /// Sleep observed while this store runs; see `ruleRuntime(of:at:)`.
+    private var processAges = ProcessAgeHistory()
     private let currentUID: uid_t
     private let currentPID: Int32
     private let inventory: any ProcessInventoryProviding
@@ -94,7 +97,8 @@ final class AutoStopRulesStore: ObservableObject {
         pollingController: ProcessPollingController? = nil,
         currentUID: uid_t = getuid(),
         currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
-        monotonicNow: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }
+        monotonicNow: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now },
+        uptimeClock: @escaping () -> UptimeSample = UptimeSample.now
     ) {
         let boundedEventLimit = max(1, eventLimit)
         let rulesPersistence = RecoveringCodableStorage<[AutoStopRule]>(
@@ -112,6 +116,7 @@ final class AutoStopRulesStore: ObservableObject {
         self.eventLimit = boundedEventLimit
         self.now = now
         self.monotonicNow = monotonicNow
+        self.uptimeClock = uptimeClock
         self.currentUID = currentUID
         self.currentPID = currentPID
         let rulesLoad = rulesPersistence.loadRecoveringElements()
@@ -162,6 +167,8 @@ final class AutoStopRulesStore: ObservableObject {
         events = Array((loadedEvents.value ?? []).prefix(boundedEventLimit))
         rulesRecoveryMessage = rulesMessage
         eventsRecoveryMessage = eventsMessage
+        // Processes already running may count sleep observed from here on.
+        processAges.record(uptimeClock())
 
         if allowsEventsPersistence,
            let loadedEventCount = loadedEvents.value?.count,
@@ -245,8 +252,9 @@ final class AutoStopRulesStore: ObservableObject {
             return false
         }
         validationError = nil
+        let sample = recordUptime()
         let retained = Set(automaticProcesses.compactMap { occurrence, process in
-            occurrence.ruleID == rule.id && qualifiesForAutomaticStop(normalized, process: process)
+            occurrence.ruleID == rule.id && qualifiesForAutomaticStop(normalized, process: process, at: sample)
                 ? occurrence : nil
         })
         rules[index] = normalized
@@ -472,8 +480,9 @@ final class AutoStopRulesStore: ObservableObject {
         onAction: @escaping (AutoStopRule, AppProcess) -> Void
     ) {
         let activeRules = rules.filter(\.isEnabled)
+        let sample = recordUptime()
         for process in runningProcesses {
-            guard let runtime = process.runtimeSeconds else { continue }
+            guard let runtime = ruleRuntime(of: process, at: sample) else { continue }
             for rule in activeRules where matches(rule, process: process) {
                 let occurrence = AutoStopOccurrence(ruleID: rule.id, processIdentity: process.identity)
                 guard runtime >= TimeInterval(rule.runtimeMinutes) * 60,
@@ -498,8 +507,9 @@ final class AutoStopRulesStore: ObservableObject {
 
     private func evaluate(_ processes: [AppProcess]) async {
         let activeRules = rules.filter(\.isEnabled)
+        let sample = recordUptime()
         for process in processes {
-            guard let runtime = process.runtimeSeconds else { continue }
+            guard let runtime = ruleRuntime(of: process, at: sample) else { continue }
             for rule in activeRules where matches(rule, process: process) && isStillActive(rule) {
                 guard !Task.isCancelled else { return }
                 let occurrence = AutoStopOccurrence(ruleID: rule.id, processIdentity: process.identity)
@@ -577,8 +587,9 @@ final class AutoStopRulesStore: ObservableObject {
 
         // A retired rule cannot authorize more work, but a signal already
         // delivered must remain in the event history.
+        let sample = recordUptime()
         let isActive = isStillActive(rule) || (automaticProcesses[occurrence] != nil && rules.contains {
-            $0.id == rule.id && qualifiesForAutomaticStop($0, process: process)
+            $0.id == rule.id && qualifiesForAutomaticStop($0, process: process, at: sample)
         })
         if result == .rejected, !isStillActive(rule), isActive {
             // An edit revoked the captured pre-signal authority. Preserve any
@@ -749,9 +760,31 @@ final class AutoStopRulesStore: ObservableObject {
         return AutoStopRuleValidation.pathsMatch(rulePath, processPath)
     }
 
-    private func qualifiesForAutomaticStop(_ rule: AutoStopRule, process: AppProcess) -> Bool {
+    private func qualifiesForAutomaticStop(_ rule: AutoStopRule, process: AppProcess, at sample: UptimeSample) -> Bool {
         rule.isEnabled && rule.action == .kill && matches(rule, process: process)
-            && (process.runtimeSeconds ?? 0) >= TimeInterval(rule.runtimeMinutes) * 60
+            && (ruleRuntime(of: process, at: sample) ?? 0) >= TimeInterval(rule.runtimeMinutes) * 60
+    }
+
+    private func recordUptime() -> UptimeSample {
+        let sample = uptimeClock()
+        processAges.record(sample)
+        return sample
+    }
+
+    /// The runtime a rule may act on. `ps etime` is wall-clock arithmetic, so
+    /// a live row must also reach the threshold on the kernel's monotonic
+    /// clocks, and a forward clock step cannot make a rule act early. Rows
+    /// from sources that never read kernel start times use `etime` alone.
+    private func ruleRuntime(of process: AppProcess, at sample: UptimeSample) -> TimeInterval? {
+        guard let elapsed = process.runtimeSeconds else { return nil }
+        switch process.monotonicStart {
+        case .notRead:
+            return elapsed
+        case .unavailable:
+            return nil
+        case .uptimeNanoseconds(let start):
+            return processAges.minimumAge(sinceUptime: start, at: sample).map { min(elapsed, $0) }
+        }
     }
 
     private func refusalDetail(for process: AppProcess) -> String {

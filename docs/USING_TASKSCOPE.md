@@ -96,6 +96,13 @@ kernel executable path, checked again immediately before signaling. Symlinked
 rule paths resolve to their targets. Legacy name-only Auto Stop rules load
 disabled until reviewed.
 
+A runtime threshold must be reached both by the elapsed time `ps` reports and
+by the kernel's monotonic process age, so setting the system clock forward
+cannot make a rule act early. The monotonic clock stops during sleep. Sleep
+counts only when TaskScope observed it after the process started; sleep before
+TaskScope launched can make a rule act later than the displayed elapsed time.
+A process whose kernel start time cannot be read is not acted on.
+
 The quick rule sheet shows the executable path or name-wide scope as you edit.
 Supplying a path enables a disabled name-only Auto Stop rule, including migrated
 legacy rules; the sheet and save message disclose this. Other disabled rules

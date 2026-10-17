@@ -165,9 +165,67 @@ final class GlobalProtectServiceControlTests: XCTestCase {
             )
             XCTAssertFalse(stopped.succeeded)
             XCTAssertTrue(stopped.failureSummary?.contains("Open") == true)
+            if failure == .bootoutFailed {
+                XCTAssertTrue(stopped.failureSummary?.contains("launchctl bootout exited with status 5.") == true)
+            }
             let state = await harness.state
             XCTAssertTrue(state.loaded)
             XCTAssertEqual(state.disabled, failure == .bootoutFailed)
+        }
+    }
+
+    func testNonzeroAdministratorBootoutIsJudgedByBoundedFinalInspection() async {
+        for delayedProbes in [0, 3, 1000] {
+            let clock = LifecycleTestClock()
+            let harness = ServiceHarness(adminFailure: .bootoutNonzeroAfterExit, delayedStopProbes: delayedProbes)
+            var runtime = harness.runtime
+            runtime.systemUptime = { clock.now }
+            runtime.sleep = { clock.advance(Double($0) / 1_000_000_000) }
+            let stopped = await ProcessLifecycleController.disableSystemLaunchDaemons(
+                for: .globalProtect, allowAdministratorPrompt: true, runtime: runtime
+            )
+            let exits = delayedProbes < 1000
+            XCTAssertEqual(stopped.succeeded, exits, stopped.failureSummary ?? "")
+            XCTAssertEqual(stopped.jobs.first?.state, exits ? .changed : .failed)
+            XCTAssertEqual(clock.now, exits ? Double(delayedProbes) * 0.5 : 30, accuracy: 0.001)
+            if !exits {
+                XCTAssertTrue(stopped.failureSummary?.contains("still loaded") == true)
+                XCTAssertTrue(stopped.failureSummary?.contains("launchctl bootout exited with status 36.") == true)
+            }
+            let state = await harness.state
+            XCTAssertTrue(state.disabled)
+            XCTAssertEqual(state.loaded, !exits)
+            let commands = await harness.commands
+            XCTAssertEqual(commands.filter { $0.contains("osascript") }.count, 1)
+        }
+    }
+
+    func testRefusedApprovalAndFailedDisableAreToldApartWithoutWaiting() async throws {
+        let expectations: [(ServiceHarness.AdminFailure, String)] = [
+            (.cancelled, "Administrator approval was cancelled; TaskScope made no change."),
+            (.denied, "Administrator approval was denied or could not be requested (AppleScript error -60005); TaskScope made no change."),
+            (.disableFailed, "The administrator stop did not confirm its disable step (Could not disable service: Operation not permitted).")
+        ]
+        for (failure, reason) in expectations {
+            let harness = ServiceHarness(adminFailure: failure)
+            let stopped = await ProcessLifecycleController.disableSystemLaunchDaemons(
+                for: .globalProtect, allowAdministratorPrompt: true, runtime: harness.runtime
+            )
+            XCTAssertFalse(stopped.succeeded)
+            let detail = try XCTUnwrap(stopped.jobs.first?.detail)
+            XCTAssertTrue(detail.hasPrefix(reason), detail)
+            XCTAssertTrue(detail.contains("still loaded"), detail)
+            XCTAssertTrue(detail.hasSuffix("Choose Open to restore GlobalProtect or Apply Keep Off to retry."), detail)
+            // A definitive refusal needs one inspection, not a disappearance wait.
+            let commands = await harness.commands
+            let admin = try XCTUnwrap(commands.firstIndex { $0.hasPrefix("/usr/bin/osascript") })
+            XCTAssertEqual(Array(commands[(admin + 1)...]), [
+                "/bin/launchctl print-disabled system",
+                "/bin/launchctl print 'system/com.paloaltonetworks.gp.pangpsd'"
+            ])
+            let state = await harness.state
+            XCTAssertFalse(state.disabled)
+            XCTAssertTrue(state.loaded)
         }
     }
 
@@ -326,10 +384,76 @@ final class GlobalProtectServiceControlTests: XCTestCase {
             XCTAssertTrue(result.succeeded, result.stderr)
         }
     }
+
+    /// Runs the root script against a shell-function stand-in for launchctl;
+    /// the real tool is never invoked.
+    func testPrivilegedStopScriptReportsDisablePhaseAndBootoutStatus() async throws {
+        let marker = ProcessLifecycleController.systemDisablePhaseMarker
+        let status = ProcessLifecycleController.systemBootoutStatusPrefix
+        let cases: [(preserve: Bool, disable: Int, print: Int, bootout: Int, exit: Int32, stdout: String)] = [
+            (false, 0, 0, 36, 0, "\(marker)\n\(status)36"),
+            (false, 0, 0, 0, 0, marker),
+            (false, 0, 113, 0, 0, marker),
+            (false, 5, 0, 0, 5, ""),
+            (true, 0, 0, 0, 1, ""),
+            (true, 0, 113, 36, 0, marker)
+        ]
+        for scenario in cases {
+            let script = ProcessLifecycleController.adminDisableScript(
+                for: WatchedAppPreset.globalProtectSystemLaunchDaemonJobs[0],
+                preservingLoadedDaemon: scenario.preserve
+            ).replacingOccurrences(of: "/bin/launchctl", with: "fake_launchd_tool")
+            guard !script.contains("launchctl") else { return XCTFail("The stand-in did not replace every launchctl call") }
+            let program = """
+            fake_launchd_tool() {
+              case "$1" in
+                disable) return \(scenario.disable) ;;
+                print) return \(scenario.print) ;;
+                bootout) return \(scenario.bootout) ;;
+              esac
+              return 99
+            }
+            \(script)
+            """
+            let result = await ShellCommandRunner.run("/bin/sh -c \(ShellCommandRunner.shellQuoted(program))", timeout: 5)
+            XCTAssertEqual(result.exitCode, scenario.exit, "\(scenario)")
+            XCTAssertEqual(result.stdout.trimmingCharacters(in: .newlines), scenario.stdout, "\(scenario)")
+        }
+    }
+
+    func testAdministratorStopOutcomeRequiresThePhaseMarkerAndNamesRefusals() {
+        typealias Outcome = ProcessLifecycleController.AdministratorStopOutcome
+        func osascript(stdout: String = "", stderr: String = "", exitCode: Int32) -> ShellCommandResult {
+            ShellCommandResult(command: "osascript", stdout: stdout, stderr: stderr, exitCode: exitCode)
+        }
+        let marker = ProcessLifecycleController.systemDisablePhaseMarker
+        let status = ProcessLifecycleController.systemBootoutStatusPrefix
+        // `do shell script` returns carriage-return line endings.
+        XCTAssertEqual(Outcome(osascript(stdout: "\(marker)\r\(status)36\n", exitCode: 0)), .disabled(bootoutStatus: 36))
+        XCTAssertEqual(Outcome(osascript(stdout: "\(marker)\n", exitCode: 0)), .disabled(bootoutStatus: nil))
+        XCTAssertEqual(Outcome(osascript(stdout: "", exitCode: 0)), .failed("exited with status 0"))
+        XCTAssertEqual(Outcome(osascript(stderr: "0:242: execution error: User canceled. (-128)\n", exitCode: 1)), .cancelled)
+        XCTAssertEqual(
+            Outcome(osascript(stderr: "0:242: execution error: The administrator user name or password was incorrect. (-60005)", exitCode: 1)),
+            .denied(-60005)
+        )
+        XCTAssertEqual(Outcome(osascript(stderr: "0:242: execution error: No user interaction allowed. (-60007)", exitCode: 1)), .denied(-60007))
+        XCTAssertEqual(
+            Outcome(osascript(stderr: "0:242: execution error: The command exited with a non-zero status. (1)", exitCode: 1)),
+            .failed("The command exited with a non-zero status.")
+        )
+        XCTAssertEqual(Outcome(osascript(stderr: "User canceled.", exitCode: 1)), .failed("exited with status 1"))
+        XCTAssertEqual(
+            Outcome(osascript(exitCode: ShellCommandRunner.timedOutExitCode)),
+            .failed("exited with status \(ShellCommandRunner.timedOutExitCode)")
+        )
+    }
 }
 
 private actor ServiceHarness {
-    enum AdminFailure { case cancelled, bootoutFailed }
+    /// `bootoutFailed` leaves the daemon loaded; `bootoutNonzeroAfterExit`
+    /// reports a nonzero bootout while launchd still removes the job.
+    enum AdminFailure { case cancelled, denied, disableFailed, bootoutFailed, bootoutNonzeroAfterExit }
     var state: (disabled: Bool, loaded: Bool)
     var commands: [String] = []
     let adminFailure: AdminFailure?
@@ -381,12 +505,32 @@ private actor ServiceHarness {
                 : result("", error: "Could not find service \"\(Self.label)\" in domain for system", code: 113)
         }
         if command.hasPrefix("/usr/bin/osascript") {
-            if adminFailure == .cancelled { return result("", error: "User cancelled", code: 1) }
+            // osascript's own report of a refused authorization.
+            if adminFailure == .cancelled {
+                return result("", error: "0:242: execution error: User canceled. (-128)", code: 1)
+            }
+            if adminFailure == .denied {
+                return result("", error: "0:242: execution error: The administrator user name or password was incorrect. (-60005)", code: 1)
+            }
             if command.contains("launchctl disable") {
+                if adminFailure == .disableFailed {
+                    return result("", error: "0:242: execution error: Could not disable service: Operation not permitted (1)", code: 1)
+                }
                 state.disabled = true
-                if adminFailure == .bootoutFailed { return result("", error: "Bootout failed", code: 1) }
-                stopAcknowledged = true
-                state.loaded = delayedStopProbes > 0
+                // `do shell script` returns stdout only when the script exits 0.
+                let phase = command.contains("echo TASKSCOPE_SYSTEM_DISABLED") ? "TASKSCOPE_SYSTEM_DISABLED" : ""
+                switch adminFailure {
+                case .bootoutFailed:
+                    return bootoutFailure(5, "Input/output error", phase: phase, command: command)
+                case .bootoutNonzeroAfterExit:
+                    stopAcknowledged = true
+                    state.loaded = delayedStopProbes > 0
+                    return bootoutFailure(36, "Operation now in progress", phase: phase, command: command)
+                default:
+                    stopAcknowledged = true
+                    state.loaded = delayedStopProbes > 0
+                    return result(phase)
+                }
             } else if command.contains("launchctl bootstrap") {
                 state.disabled = false
                 state.loaded = true
@@ -397,6 +541,15 @@ private actor ServiceHarness {
             return result("")
         }
         return result("", error: "Unexpected command", code: 1)
+    }
+
+    /// A script that captures bootout's status still exits 0 and returns its
+    /// output; one that exits with that status surfaces only the error.
+    func bootoutFailure(_ status: Int32, _ reason: String, phase: String, command: String) -> ShellCommandResult {
+        if command.contains("TASKSCOPE_BOOTOUT_EXIT=") {
+            return result("\(phase)\rTASKSCOPE_BOOTOUT_EXIT=\(status)")
+        }
+        return result("", error: "0:242: execution error: Boot-out failed: \(status): \(reason) (\(status))", code: 1)
     }
 
     func result(_ text: String, error: String = "", code: Int32 = 0) -> ShellCommandResult {

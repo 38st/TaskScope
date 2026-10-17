@@ -101,14 +101,89 @@ extension ProcessLifecycleController {
         let result = await requestAdminServiceChange(
             adminDisableScript(for: job, preservingLoadedDaemon: preservesLoadedDaemon), runtime: runtime
         )
-        let remaining = result.succeeded
-            ? await waitForSystemOff(job, runtime: runtime)
-            : await systemOffState(job, runtime: runtime)
-        guard result.succeeded, remaining == nil else {
-            let failure = result.succeeded ? "" : "Administrator stop failed or was cancelled (\(result.failureDescription)). "
-            return systemResult(job, .failed, "\(failure)\(remaining ?? "The service is off, but the administrator command did not finish successfully.") Choose Open to restore GlobalProtect or Apply Keep Off to retry.")
+        let retry = "Choose Open to restore GlobalProtect or Apply Keep Off to retry."
+        let reason: String
+        switch AdministratorStopOutcome(result) {
+        case .disabled(let bootoutStatus):
+            // bootout can return before launchd finishes removing the job, and
+            // can exit nonzero both while removal is in progress and after it
+            // completed. The bounded wait and its final inspection decide.
+            guard let remaining = await waitForSystemOff(job, runtime: runtime) else {
+                return systemResult(job, .changed, "System VPN service disabled persistently and unloaded; Open restores the required services without reinstalling.")
+            }
+            let bootout = bootoutStatus.map { " launchctl bootout exited with status \($0)." } ?? ""
+            return systemResult(job, .failed, "\(remaining)\(bootout) \(retry)")
+        case .cancelled:
+            reason = "Administrator approval was cancelled; TaskScope made no change."
+        case .denied(let code):
+            reason = "Administrator approval was denied or could not be requested (AppleScript error \(code)); TaskScope made no change."
+        case .failed(let detail):
+            let trimmed = detail.hasSuffix(".") ? String(detail.dropLast()) : detail
+            reason = "The administrator stop did not confirm its disable step (\(trimmed))."
         }
-        return systemResult(job, .changed, "System VPN service disabled persistently and unloaded; Open restores the required services without reinstalling.")
+        // No confirmed removal is in progress, so there is nothing to wait for;
+        // one inspection reports the current state.
+        let remaining = await systemOffState(job, runtime: runtime)
+        return systemResult(job, .failed, "\(reason) \(remaining ?? "The service is off, but the administrator command did not finish successfully.") \(retry)")
+    }
+
+    /// Printed by the privileged stop only after `launchctl disable` succeeds.
+    /// `do shell script` returns stdout only when its script exits 0, so the
+    /// script reports bootout's status instead of exiting with it.
+    static let systemDisablePhaseMarker = "TASKSCOPE_SYSTEM_DISABLED"
+    static let systemBootoutStatusPrefix = "TASKSCOPE_BOOTOUT_EXIT="
+
+    /// What the privileged stop reported. Only `.disabled` started a removal
+    /// that waiting can confirm.
+    enum AdministratorStopOutcome: Equatable {
+        /// The disable phase ran. A nonzero bootout status is not a verdict:
+        /// launchd may still be removing the job, or may already have.
+        case disabled(bootoutStatus: Int32?)
+        case cancelled
+        case denied(Int)
+        case failed(String)
+
+        init(_ result: ShellCommandResult) {
+            if result.stdout.contains(ProcessLifecycleController.systemDisablePhaseMarker) {
+                let status = result.stdout
+                    .range(of: ProcessLifecycleController.systemBootoutStatusPrefix)
+                    .flatMap { prefix in
+                        Int32(result.stdout[prefix.upperBound...].prefix { $0.isASCII && $0.isNumber })
+                    }
+                self = .disabled(bootoutStatus: status)
+                return
+            }
+            guard let error = Self.appleScriptError(in: result.stderr) else {
+                self = .failed(result.failureDescription)
+                return
+            }
+            switch error.number {
+            case -128, -60006:
+                // userCanceledErr, errAuthorizationCanceled
+                self = .cancelled
+            case -60005, -60007:
+                // errAuthorizationDenied, errAuthorizationInteractionNotAllowed
+                self = .denied(error.number)
+            default:
+                self = .failed(error.message.isEmpty ? result.failureDescription : error.message)
+            }
+        }
+
+        /// osascript reports a failed script on stderr as
+        /// "<range>: execution error: <message> (<number>)". AppleScript and
+        /// Authorization Services use negative numbers; a positive number is
+        /// the root script's own exit status.
+        static func appleScriptError(in stderr: String) -> (message: String, number: Int)? {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let start = text.range(of: "execution error: "),
+                  text.hasSuffix(")"),
+                  let open = text.range(of: " (", options: .backwards),
+                  start.upperBound <= open.lowerBound,
+                  let number = Int(text[open.upperBound..<text.index(before: text.endIndex)]) else {
+                return nil
+            }
+            return (String(text[start.upperBound..<open.lowerBound]), number)
+        }
     }
 
     /// Restores a required system override; bootstrap belongs to Open. When the
@@ -154,11 +229,15 @@ extension ProcessLifecycleController {
         // daemon while authorization was pending.
         let preserve = preservingLoadedDaemon
             ? "if /bin/launchctl print \(target) >/dev/null 2>&1; then exit 1; fi\n" : ""
+        // Once disable succeeds the script exits 0 so its phase marker reaches
+        // TaskScope; launchd inspection, not bootout's status, decides the stop.
         return preserve + """
         /bin/launchctl disable \(target) || exit $?
+        echo \(systemDisablePhaseMarker)
         if /bin/launchctl print \(target) >/dev/null 2>&1; then
-          /bin/launchctl bootout \(target)
+          /bin/launchctl bootout \(target) || echo "\(systemBootoutStatusPrefix)$?"
         fi
+        exit 0
         """
     }
 
