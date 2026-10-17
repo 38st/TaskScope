@@ -6,29 +6,53 @@ import Foundation
 enum GlobalProtectAccessibilityDisconnect {
     static let executable = "/Applications/GlobalProtect.app/Contents/MacOS/GlobalProtect"
 
-    static func disconnectIfNeeded() async -> GlobalProtectDisconnectResult {
-        guard case .success(let processes) = await ProcessListReader.currentProcessList(fetchExtendedStats: false) else {
+    struct Runtime: Sendable {
+        var lifecycle: ProcessLifecycleRuntime
+        var requestAccessibility: @Sendable () -> Bool
+        var application: @Sendable () async -> (pid: Int32, launched: Bool)?
+        var disconnect: @Sendable (Int32, Bool) async -> GlobalProtectDisconnectResult
+    }
+
+    static let liveRuntime = Runtime(
+        lifecycle: .live,
+        requestAccessibility: {
+            AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        },
+        application: { await applicationPID(openIfNeeded: true) },
+        disconnect: { pid, launched in
+            await GlobalProtectDisconnectController.disconnect(
+                using: GlobalProtectAccessibilityRuntime(pid: pid),
+                startupUnavailableObservations: launched ? 20 : 0
+            )
+        }
+    )
+
+    static func disconnectIfNeeded(runtime: Runtime = liveRuntime) async -> GlobalProtectDisconnectResult {
+        guard case .success(let processes) = await runtime.lifecycle.loadProcessInventory() else {
             return .failed("The process list is unavailable. GlobalProtect's services were left running.")
         }
-        let snapshot = WatchedSnapshotBuilder(excludedPID: getpid()).snapshot(for: .globalProtect, in: processes)
-        guard snapshot.hasAny else { return .disconnected }
+        let snapshot = WatchedSnapshotBuilder(excludedPID: getpid(), currentUID: runtime.lifecycle.userID)
+            .snapshot(for: .globalProtect, in: processes)
+        let services = await GlobalProtectServiceObservation.read(runtime: runtime.lifecycle)
+        guard services.session != .unknown, services.system != .unknown else {
+            return .failed("TaskScope could not verify GlobalProtect's login-session or system VPN service. Its services were left running.")
+        }
+        guard snapshot.isMainRunning || snapshot.hasHelpers
+                || services.session == .running || services.system == .running else { return .disconnected }
 
         // Check permission before touching the vendor app, so a denied request
         // never leaves an interface running that was not running before.
-        let trusted = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        let trusted = runtime.requestAccessibility()
         guard trusted else {
             return .failed("Allow TaskScope in System Settings → Privacy & Security → Accessibility, then choose Quit All again. This lets TaskScope disconnect the VPN for you. Its services were left running.")
         }
         // UI control is confined to the fixed vendor executable, never a name
         // supplied by a preset. A running service without a UI gets its UI opened.
-        let application = await applicationPID(openIfNeeded: true)
-        guard let pid = application?.pid, ProcessListReader.executablePath(for: pid) == executable else {
+        let application = await runtime.application()
+        guard let pid = application?.pid, runtime.lifecycle.executablePathForPID(pid) == executable else {
             return .failed("GlobalProtect's interface could not be opened to disconnect. Its services were left running.")
         }
-        return await GlobalProtectDisconnectController.disconnect(
-            using: GlobalProtectAccessibilityRuntime(pid: pid),
-            startupUnavailableObservations: application?.launched == true ? 20 : 0
-        )
+        return await runtime.disconnect(pid, application?.launched == true)
     }
 
     @MainActor

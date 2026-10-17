@@ -32,6 +32,7 @@ struct PresetCard: View {
                 PresetActionButton(title: "Quit App", systemImage: "power", role: .destructive, action: onQuitApp)
                 PresetActionButton(title: "Quit Helpers", systemImage: "wrench.and.screwdriver", role: .destructive, action: onQuitHelpers)
                 PresetActionButton(title: snapshot.preset.hasCanonicalGlobalProtectIdentity ? "Quit All" : "Quit All Killable", systemImage: "stop.circle", role: .destructive, action: onQuitAll)
+                    .disabled(snapshot.preset.hasCanonicalGlobalProtectIdentity && !isKeepOffControlEnabled)
             }
 
             if snapshot.preset.id == WatchedAppPreset.globalProtectID {
@@ -55,13 +56,20 @@ struct PresetCard: View {
                 .accessibilityHint(
                     "Automatically disconnects and stops GlobalProtect. Turning this off restores its VPN service and opens the app."
                 )
+                if !isKeepOffControlEnabled {
+                    Text("Settings are unreadable. Reset settings in Settings → General before changing Keep Off.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if isKeptOff {
                     Button("Apply Keep Off…", role: .destructive) { onKeepOffChanged(true) }
                         .disabled(!isKeepOffControlEnabled)
-                        .help("Retry stopping all GlobalProtect services with administrator approval.")
+                        .help("Retry the confirmed disconnect and service stop. A system daemon preserved on a session installation remains running.")
                 }
                 if let onStopWithoutDisconnect {
-                    Text("Automatic disconnect failed. You can still stop the services.")
+                    Text(isKeepOffControlEnabled
+                         ? "Automatic disconnect failed. You can still stop the services."
+                         : "Automatic disconnect failed. Reset settings before choosing Stop Services Anyway.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Button("Stop Services Anyway…", role: .destructive, action: onStopWithoutDisconnect)
@@ -101,7 +109,7 @@ struct PresetCard: View {
     }
 
     private var label: String {
-        if isKeptOff && !snapshot.protectedRunning.isEmpty { "Service running" }
+        if isKeptOff && (!snapshot.protectedRunning.isEmpty || snapshot.hasCurrentUserLaunchAgent) { "Service running" }
         else if isKeptOff && snapshot.hasKeepOffTargets { "Enforcing" }
         else if isKeptOff && snapshot.hasAny { "Still running" }
         else if isKeptOff { "Off requested" }

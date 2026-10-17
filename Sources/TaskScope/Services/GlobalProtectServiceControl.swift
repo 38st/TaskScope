@@ -1,5 +1,39 @@
 import Foundation
 
+struct GlobalProtectServiceObservation: Equatable, Sendable {
+    enum State: Equatable, Sendable { case absent, running, unknown }
+    var session: State
+    var system: State
+
+    /// Names and effective UID alone cannot identify another login session's
+    /// setuid PanGPS. Only the fixed local jobs and a kernel product path count.
+    static func read(runtime: ProcessLifecycleRuntime = .live) async -> Self {
+        func state(for service: GlobalProtectCompatibilityReport.Service) async -> State {
+            let domain = service.isSystem ? "system" : "gui/\(runtime.userID)"
+            let inspection = await runtime.runCommand(
+                "/bin/launchctl print \(ShellCommandRunner.shellQuoted("\(domain)/\(service.label)"))", 15
+            )
+            switch GlobalProtectCompatibilityChecker.loadedState(inspection, service: service) {
+            case .notLoaded:
+                return .absent
+            case .unknown:
+                return .unknown
+            case .loaded:
+                guard let pid = ProcessLifecycleController.launchJobPID(from: inspection),
+                      case .success(let inventory) = await runtime.loadProcessInventory(),
+                      var process = inventory.first(where: { $0.pid == pid }),
+                      process.uid == 0 || (!service.isSystem && process.uid == runtime.userID),
+                      let path = runtime.executablePathForPID(pid) else { return .unknown }
+                process.executablePath = path
+                return GlobalProtectCompatibilityChecker.trustedName(process) == .panGPS ? .running : .unknown
+            }
+        }
+        let session = await state(for: .pangps)
+        let system = await state(for: .pangpsd)
+        return Self(session: session, system: system)
+    }
+}
+
 extension ProcessLifecycleController {
     /// Only an explicit Keep Off action may request privileges. Background
     /// enforcement verifies the system state without prompting or changing it.
@@ -14,9 +48,6 @@ extension ProcessLifecycleController {
         guard let before else {
             return systemResult(job, .verified, "System VPN service is disabled persistently and unloaded.")
         }
-        guard allowAdministratorPrompt else {
-            return systemResult(job, .failed, "\(before) Choose Apply Keep Off to stop the system VPN service with administrator approval.")
-        }
         let sessionJob = WatchedAppPreset.globalProtectUserLaunchAgentJobs[1]
         let preservesLoadedDaemon = runtime.fileExists(sessionJob.plistPath)
         if preservesLoadedDaemon {
@@ -26,6 +57,9 @@ extension ProcessLifecycleController {
             guard GlobalProtectCompatibilityChecker.loadedState(inspection, service: .pangpsd) == .notLoaded else {
                 return systemResult(job, .failed, "The system VPN service is loaded or its state is unknown. Its override and loaded state were preserved because this installation restores the login-session service. Keep Off is incomplete.")
             }
+        }
+        guard allowAdministratorPrompt else {
+            return systemResult(job, .failed, "\(before) Choose Apply Keep Off to stop the system VPN service with administrator approval.")
         }
         // Retain a usable restoration path before introducing a persistent
         // disable override. Never move, rewrite, or remove vendor files.

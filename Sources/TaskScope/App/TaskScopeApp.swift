@@ -307,6 +307,10 @@ struct TaskScopeApp: App {
         )
 
         processManager.watchedAppsProvider = { watchedApps.presets }
+        processManager.isKeepOffIntentWritableProvider = { !settings.isReadOnlyAfterCorruption }
+        processManager.globalProtectServiceObservationProvider = {
+            await GlobalProtectServiceObservation.read()
+        }
         processManager.keptOffPresetsProvider = {
             settings.keepGlobalProtectOff
                 ? watchedApps.presets.filter { $0.id == WatchedAppPreset.globalProtectID }

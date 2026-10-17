@@ -38,6 +38,13 @@ final class ProcessManager: ObservableObject {
     /// One explicit failed disconnect may be followed by a separately confirmed
     /// service stop. Never persisted, exposed to URLs, or used by polling.
     @Published private(set) var globalProtectDisconnectFailureID: UUID?
+    @Published private(set) var isGlobalProtectKeepOffPending = false
+    private var pendingGlobalProtectKeepOffCount = 0
+    private struct BackgroundKeepOffFailure: Equatable {
+        var message: String
+        var jobs: [LifecycleJobResult]
+    }
+    private var backgroundKeepOffFailures: [UUID: BackgroundKeepOffFailure] = [:]
     @Published private(set) var batchActionReport: ProcessBatchActionReport?
     private(set) var lifecycleDiagnostics = LifecycleDiagnosticsHistory()
 
@@ -569,11 +576,41 @@ final class ProcessManager: ObservableObject {
         recordIntent: Bool,
         confirmedFailureID: UUID? = nil
     ) async -> TaskScopeCommandResult {
+        let tracksPendingAction = recordIntent && preset.hasCanonicalGlobalProtectIdentity
+        if tracksPendingAction {
+            pendingGlobalProtectKeepOffCount += 1
+            isGlobalProtectKeepOffPending = true
+        }
+        defer {
+            if tracksPendingAction {
+                pendingGlobalProtectKeepOffCount -= 1
+                isGlobalProtectKeepOffPending = pendingGlobalProtectKeepOffCount > 0
+            }
+        }
         var commandResult = TaskScopeCommandResult(
             status: .failed,
             message: "Keep Off did not complete."
         )
         await runAction(kind: .mutation) {
+            // Check before disconnect and again afterwards: settings or the
+            // preset may change while the vendor UI is settling.
+            @MainActor func preparationRefusal() -> String? {
+                guard recordIntent else { return nil }
+                if isKeepOffIntentWritableProvider?() == false {
+                    return "Settings are unreadable. Reset settings in Settings → General before changing Keep Off."
+                }
+                if preset.hasCanonicalGlobalProtectIdentity,
+                   let presets = watchedAppsProvider?(),
+                   !presets.contains(where: { $0.id == preset.id && $0.hasCanonicalGlobalProtectIdentity }) {
+                    return "The built-in GlobalProtect preset was removed. Keep Off was not recorded and no services were disabled."
+                }
+                return nil
+            }
+            if let refusal = preparationRefusal() {
+                commandResult = TaskScopeCommandResult(status: .rejected, message: refusal)
+                message = refusal
+                return
+            }
             if let confirmedFailureID {
                 guard recordIntent, preset.hasCanonicalGlobalProtectIdentity,
                       confirmedFailureID == globalProtectDisconnectFailureID else {
@@ -589,15 +626,26 @@ final class ProcessManager: ObservableObject {
             defer {
                 if !recordIntent && Task.isCancelled {
                     commandResult = TaskScopeCommandResult(status: .rejected, message: "Keep Off enforcement cancelled; it will retry on the next poll.")
-                } else if shouldPublishReport {
-                    lifecycleReport = report
-                }
-                if commandResult.status == .failed {
-                    lifecycleDiagnostics.record(
-                        presetID: preset.id, action: .keepOff,
-                        backgroundEnforcement: !recordIntent, reason: diagnosticReason,
-                        jobs: diagnosticJobs, at: now()
-                    )
+                } else {
+                    let failure = BackgroundKeepOffFailure(message: commandResult.message, jobs: diagnosticJobs)
+                    let isDuplicate = !recordIntent && commandResult.status == .failed
+                        && backgroundKeepOffFailures[preset.id] == failure
+                    if recordIntent || commandResult.status == .completed {
+                        backgroundKeepOffFailures[preset.id] = nil
+                    } else if commandResult.status == .failed {
+                        backgroundKeepOffFailures[preset.id] = failure
+                    }
+                    if !isDuplicate {
+                        if commandResult.status != .rejected { message = commandResult.message }
+                        if shouldPublishReport { lifecycleReport = report }
+                        if commandResult.status == .failed {
+                            lifecycleDiagnostics.record(
+                                presetID: preset.id, action: .keepOff,
+                                backgroundEnforcement: !recordIntent, reason: diagnosticReason,
+                                jobs: diagnosticJobs, at: now()
+                            )
+                        }
+                    }
                 }
             }
             guard recordIntent || !Task.isCancelled else { return }
@@ -621,6 +669,11 @@ final class ProcessManager: ObservableObject {
                         return
                     }
                 }
+            }
+            if let refusal = preparationRefusal() {
+                commandResult = TaskScopeCommandResult(status: .rejected, message: refusal)
+                message = refusal
+                return
             }
             // Record after a clean disconnect or separately confirmed recovery,
             // while holding the gate so polling cannot race the preparation.
@@ -659,60 +712,76 @@ final class ProcessManager: ObservableObject {
                     )
             }
 
+            var resultMessage = message
             guard inventoryWasAvailable else {
-                message = disableResult.succeeded
+                resultMessage = disableResult.succeeded
                     ? "Keep Off disabled relaunch jobs, but the process list was unavailable; running processes were not signalled and enforcement will retry."
                     : "Keep Off remains enabled, but TaskScope could neither verify processes nor disable relaunch jobs."
                 diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
                 return
             }
 
             let terminationOutcomes = await terminateProcesses(for: preset, scope: .all)
             if recordIntent && preset.hasCanonicalGlobalProtectIdentity {
-                message = "Verifying GlobalProtect is off…"
+                self.message = "Verifying GlobalProtect is off…"
             }
             await lifecycle.settleAfterProcessChange()
-            let refreshed = await refreshAfterMutation()
+            let finalInventory = await refreshInventoryAfterMutation()
             guard recordIntent || !Task.isCancelled else { return }
-            let nowSnapshot = snapshot(for: preset)
+            let nowSnapshot = snapshot(for: preset, inventory: finalInventory ?? [])
+            let serviceObservation = preset.hasCanonicalGlobalProtectIdentity
+                ? await globalProtectServiceObservationProvider?() : nil
+            guard recordIntent || !Task.isCancelled else { return }
 
             if !disableResult.succeeded {
-                message = "Keep Off was requested, but stopping services failed: \(disableResult.failureSummary ?? "unknown failure")."
+                resultMessage = "Keep Off was requested, but stopping services failed: \(disableResult.failureSummary ?? "unknown failure")."
                 diagnosticReason = systemDisable.succeeded ? .userLaunchAgentFailed : .systemServiceFailed
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
             } else if terminationOutcomes.contains(.inventoryUnavailable) {
-                message = "Keep Off disabled relaunch jobs, but the process list became unavailable before app processes could be stopped."
+                resultMessage = "Keep Off disabled relaunch jobs, but the process list became unavailable before app processes could be stopped."
                 diagnosticReason = .inventoryUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
             } else if terminationOutcomes.contains(.signalRejected) {
-                message = "Keep Off disabled relaunch jobs, but a running process rejected the stop signal."
+                resultMessage = "Keep Off disabled relaunch jobs, but a running process rejected the stop signal."
                 diagnosticReason = .signalRejected
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if terminationOutcomes.contains(.escalationUnavailable) || !refreshed {
-                message = "Keep Off is enabled, but TaskScope could not verify the final process state."
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
+            } else if terminationOutcomes.contains(.escalationUnavailable) || finalInventory == nil
+                || serviceObservation?.session == .unknown || serviceObservation?.system == .unknown {
+                resultMessage = "Keep Off is enabled, but TaskScope could not verify the final process state."
                 diagnosticReason = .verificationUnavailable
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if preset.hasCanonicalGlobalProtectIdentity && !nowSnapshot.protectedRunning.isEmpty {
-                message = "Keep Off was requested, but a privileged VPN service is still running. Choose Apply Keep Off to retry with administrator approval."
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
+            } else if preset.hasCanonicalGlobalProtectIdentity
+                && (serviceObservation?.system == .running
+                    || (serviceObservation == nil && !nowSnapshot.protectedRunning.isEmpty)) {
+                resultMessage = "Keep Off was requested, but a privileged VPN service is still running. Check the service report and your organization's policy before retrying."
                 diagnosticReason = .stillRunning
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
-            } else if nowSnapshot.hasKeepOffTargets {
-                message = "Keep Off is enabled, but user-facing GlobalProtect processes may still run."
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
+            } else if recordIntent && serviceObservation?.session == .running {
+                resultMessage = "Keep Off was requested, but the login-session VPN service is still running. Choose Apply Keep Off to retry the session stop."
                 diagnosticReason = .stillRunning
-                commandResult = TaskScopeCommandResult(status: .failed, message: message)
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
+            } else if nowSnapshot.hasBackgroundKeepOffTargets
+                || (recordIntent && serviceObservation == nil && nowSnapshot.hasCurrentUserLaunchAgent) {
+                resultMessage = "Keep Off is enabled, but user-facing GlobalProtect processes may still run."
+                diagnosticReason = .stillRunning
+                commandResult = TaskScopeCommandResult(status: .failed, message: resultMessage)
             } else {
-                if preset.hasCanonicalGlobalProtectIdentity {
-                    message = "GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling."
+                if preset.hasCanonicalGlobalProtectIdentity && !recordIntent
+                    && (serviceObservation?.session == .running
+                        || (serviceObservation == nil && nowSnapshot.hasCurrentUserLaunchAgent)) {
+                    resultMessage = "Keep Off disabled relaunch jobs. The running login-session VPN service was preserved; choose Apply Keep Off for a confirmed disconnect and stop."
+                } else if preset.hasCanonicalGlobalProtectIdentity {
+                    resultMessage = "GlobalProtect is off. Its user agents and system VPN service are disabled. Choose Open to restore them without reinstalling."
                 } else if !nowSnapshot.protectedRunning.isEmpty {
-                    message = "\(preset.displayName) app is kept off. Protected system service remains available."
+                    resultMessage = "\(preset.displayName) app is kept off. Protected system service remains available."
                 } else if !nowSnapshot.unprivilegedProtectedRunning.isEmpty {
                     let names = nowSnapshot.unprivilegedProtectedRunning.joined(separator: ", ")
-                    message = "\(preset.displayName) is kept off. Its user launch agents are disabled; a per-user \(names) instance is still running and should exit as launchd finishes unloading it."
+                    resultMessage = "\(preset.displayName) is kept off. Its user launch agents are disabled; a per-user \(names) instance is still running and should exit as launchd finishes unloading it."
                 } else {
-                    message = "\(preset.displayName) is kept off. Its user launch agents are disabled."
+                    resultMessage = "\(preset.displayName) is kept off. Its user launch agents are disabled."
                 }
-                commandResult = TaskScopeCommandResult(status: .completed, message: message)
+                commandResult = TaskScopeCommandResult(status: .completed, message: resultMessage)
             }
         }
         if !recordIntent && Task.isCancelled {
@@ -787,8 +856,9 @@ final class ProcessManager: ObservableObject {
         for preset in keptOffPresetsProvider?() ?? [] {
             guard !operationGate.isMutationActive else { continue }
             if !force {
-                guard case .success(let current) = await currentSnapshot(for: preset),
-                      current.hasKeepOffTargets else {
+                guard case .success(let current) = await currentSnapshot(for: preset) else { continue }
+                guard current.hasBackgroundKeepOffTargets else {
+                    backgroundKeepOffFailures[preset.id] = nil
                     continue
                 }
             }
@@ -1193,5 +1263,7 @@ final class ProcessManager: ObservableObject {
     var processListLimitProvider: (() -> Int)?
     var keptOffPresetsProvider: (() -> [WatchedAppPreset])?
     var isPresetKeptOffProvider: ((WatchedAppPreset) -> Bool)?
+    var isKeepOffIntentWritableProvider: (() -> Bool)?
+    var globalProtectServiceObservationProvider: (() async -> GlobalProtectServiceObservation)?
     var setPresetKeptOffHandler: ((WatchedAppPreset, Bool) -> Void)?
 }

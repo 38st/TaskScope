@@ -607,11 +607,15 @@ struct SettingsView: View {
     static func presetDeletionRefusal(
         for preset: WatchedAppPreset,
         keepGlobalProtectOff: Bool,
-        isSettingsReadOnlyAfterCorruption: Bool = false
+        isSettingsReadOnlyAfterCorruption: Bool = false,
+        isGlobalProtectKeepOffPending: Bool = false
     ) -> String? {
         guard preset.id == WatchedAppPreset.globalProtectID else { return nil }
         if isSettingsReadOnlyAfterCorruption {
             return "Settings are unreadable, so Keep GlobalProtect Off may still be active. Recover settings and clear Keep Off before deleting the built-in preset."
+        }
+        if isGlobalProtectKeepOffPending {
+            return "Wait for the pending GlobalProtect Keep Off action to finish before deleting the built-in preset."
         }
         guard keepGlobalProtectOff else { return nil }
         return "Turn off Keep GlobalProtect Off (or choose Open) before deleting the built-in preset. Its user launch agents are disabled by a persistent launchd override that deleting the preset would not clear."
@@ -621,7 +625,8 @@ struct SettingsView: View {
         if let refusal = Self.presetDeletionRefusal(
             for: preset,
             keepGlobalProtectOff: settings.keepGlobalProtectOff,
-            isSettingsReadOnlyAfterCorruption: settings.isReadOnlyAfterCorruption
+            isSettingsReadOnlyAfterCorruption: settings.isReadOnlyAfterCorruption,
+            isGlobalProtectKeepOffPending: processManager.isGlobalProtectKeepOffPending
         ) {
             presetDeletionError = refusal
             return

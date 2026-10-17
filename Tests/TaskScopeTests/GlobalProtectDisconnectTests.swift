@@ -81,6 +81,18 @@ final class GlobalProtectDisconnectTests: XCTestCase {
         XCTAssertEqual(counts.reads, 5)
     }
 
+    func testConnectedObservationResetsTheDisconnectedStreak() async {
+        let runtime = FakeDisconnectRuntime(states: [
+            .connected, .disconnected, .disconnected, .disconnected, .disconnected,
+            .connected, .disconnected, .disconnected, .disconnected, .disconnected, .disconnected
+        ])
+        let result = await GlobalProtectDisconnectController.disconnect(using: runtime)
+        XCTAssertEqual(result, .disconnected)
+        let counts = await runtime.counts()
+        XCTAssertEqual(counts.reads, 11)
+        XCTAssertEqual(counts.presses, 1)
+    }
+
     func testLostPopoverCanRecoverButResetsTheIdleObservationStreak() async {
         let runtime = FakeDisconnectRuntime(states: [
             .disconnected, .disconnected, .unavailable, .unavailable,

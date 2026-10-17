@@ -225,11 +225,16 @@ struct WatchedAppSnapshot: Equatable, Sendable {
     /// signalled by name; Keep Off and Quit unload it through launchd only.
     var unprivilegedProtectedNames: Set<String> = []
     /// A supported GlobalProtect user-agent executable in the fixed bundle,
-    /// owned by this user. Unlike name-only status, this can trigger Keep Off.
+    /// owned by this user. Explicit Keep Off can unload it; polling preserves it.
     var hasCurrentUserLaunchAgent: Bool = false
 
     var hasKeepOffTargets: Bool {
         isMainRunning || hasHelpers || hasCurrentUserLaunchAgent
+    }
+
+    /// Polling can stop user-facing processes, but preserves the VPN service.
+    var hasBackgroundKeepOffTargets: Bool {
+        isMainRunning || hasHelpers
     }
 
     var isMainRunning: Bool {
