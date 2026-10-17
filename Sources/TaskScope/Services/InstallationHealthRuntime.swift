@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Darwin
 import Foundation
 import Security
 
@@ -46,11 +47,19 @@ enum InstallationHealthProbe {
 
     /// Bounded, regular-file reads also avoid blocking on a configured FIFO.
     static func readDictionary(_ url: URL, limit: Int = 2_000_000) throws -> [String: Any] {
-        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-        guard values.isRegularFile == true else { throw ReadFailure.malformed }
-        guard let size = values.fileSize, size <= limit else { throw ReadFailure.tooLarge }
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
+        // Open follows symlinks, including ENOENT for dangling targets. Inspect
+        // the descriptor we actually read so a path swap cannot turn a checked
+        // regular file into a blocking FIFO between the check and the open.
+        let descriptor = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_CLOEXEC)
+        guard descriptor >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { Darwin.close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard metadata.st_mode & S_IFMT == S_IFREG else { throw ReadFailure.malformed }
+        guard metadata.st_size >= 0, metadata.st_size <= limit else { throw ReadFailure.tooLarge }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         let data = try handle.read(upToCount: limit + 1) ?? Data()
         guard data.count <= limit else { throw ReadFailure.tooLarge }
         // App Intents extraction uses JSON; Info.plist and job plists may be binary.
@@ -81,8 +90,12 @@ enum InstallationHealthProbe {
                     throw ReadFailure.malformed
                 }
                 let path = app.appendingPathComponent("Contents/MacOS/\(executable)")
-                let values = try path.resourceValues(forKeys: [.isRegularFileKey])
-                guard values.isRegularFile == true, FileManager.default.isExecutableFile(atPath: path.path) else {
+                var metadata = stat()
+                guard stat(path.path, &metadata) == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                guard metadata.st_mode & S_IFMT == S_IFREG,
+                      FileManager.default.isExecutableFile(atPath: path.path) else {
                     throw ReadFailure.malformed
                 }
                 results.append(.init(state: .healthy, detail: "\(prefix): app bundle and executable found; launch behavior is unverified."))

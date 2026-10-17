@@ -192,7 +192,16 @@ final class InstallationHealthTests: XCTestCase {
     }
 
     func testUnbundledProbeDoesNotClaimPermissionOrInstallationReadiness() async {
-        let report = await InstallationHealthRuntime.live.collect(healthInput)
+        let runtime = InstallationHealthRuntime(
+            permissions: {
+                .init(notificationsAvailable: false, notifications: .unknown,
+                      accessibilityTrusted: false, loginItem: .notFound)
+            },
+            bundle: { InstallationHealthProbe.inspectBundle() },
+            paths: { presets in XCTAssertTrue(presets.isEmpty); return [] },
+            recoveries: { [] }
+        )
+        let report = await runtime.collect(healthInput)
         XCTAssertEqual(report[.bundleIdentity].state, .unavailable)
         XCTAssertEqual(report[.notifications].state, .unavailable)
         XCTAssertEqual(report[.loginItem].state, .unavailable)

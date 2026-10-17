@@ -6,7 +6,13 @@ struct SupportDiagnosticsView: View {
     @ObservedObject var watchedApps: WatchedAppsStore
     let processManager: ProcessManager
 
-    @State private var selectedPresetID: UUID?
+    var collector = SupportDiagnosticsCollector()
+    var collectPermissions: @MainActor (Bool?) async -> SupportDiagnosticsReport.Permissions = {
+        await SupportDiagnosticsCollector.permissions(notificationsEnabled: $0)
+    }
+    var makePreview: (SupportDiagnosticsReport) throws -> SupportDiagnosticsPreview = SupportDiagnosticsPreview.init
+
+    @State var selectedPresetID: UUID?
     @State private var preview: SupportDiagnosticsPreview?
     @State private var collectionTask: Task<Void, Never>?
     @State private var isCollecting = false
@@ -61,8 +67,9 @@ struct SupportDiagnosticsView: View {
 
     private func collect() {
         let preset = watchedApps.presets.first { $0.id == selectedPresetID }
-        let keepOff = preset?.hasSupportedGlobalProtectIdentity == true && settings.keepGlobalProtectOff
-        let notificationsEnabled = settings.enableNotifications
+        let keepOff: Bool? = settings.isReadOnlyAfterCorruption
+            ? nil : preset?.hasSupportedGlobalProtectIdentity == true && settings.keepGlobalProtectOff
+        let notificationsEnabled = settings.isReadOnlyAfterCorruption ? nil : settings.enableNotifications
         // Freeze history at the start so concurrent lifecycle activity does not
         // change what this collection includes.
         let failures = processManager.lifecycleDiagnostics.failures(for: preset?.id)
@@ -70,12 +77,10 @@ struct SupportDiagnosticsView: View {
         status = nil
         collectionTask = Task { @MainActor in
             defer { isCollecting = false }
-            let permissions = await SupportDiagnosticsCollector.permissions(
-                notificationsEnabled: notificationsEnabled
-            )
+            let permissions = await collectPermissions(notificationsEnabled)
             let inspected: SupportDiagnosticsReport.Preset?
             if let preset {
-                inspected = await SupportDiagnosticsCollector().inspectPreset(preset, keepOffRequested: keepOff)
+                inspected = await collector.inspectPreset(preset, keepOffRequested: keepOff)
             } else {
                 inspected = nil
             }
@@ -88,7 +93,7 @@ struct SupportDiagnosticsView: View {
                 recentLifecycleFailures: failures
             )
             do {
-                preview = try SupportDiagnosticsPreview(report: report)
+                preview = try makePreview(report)
             } catch {
                 status = "Could not prepare diagnostics. Nothing was exported."
             }

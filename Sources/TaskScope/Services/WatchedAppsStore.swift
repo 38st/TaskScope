@@ -84,7 +84,7 @@ final class WatchedAppsStore: ObservableObject {
             key: key
         )
         self.persistence = persistence
-        guard persistence.rawData != nil else {
+        guard persistence.hasStoredValue else {
             presets = [.globalProtect]
             allowsPersistence = true
             recoveredDecodedPayload = false
@@ -106,7 +106,10 @@ final class WatchedAppsStore: ObservableObject {
                 ) ?? (key: "\(key).rejectedMigrationBackup", isPreserved: false)
                 allowsPersistence = false
                 recoveredDecodedPayload = true
-                persistenceIssue = "Rejected \(rejectedCount) unsafe or invalid stored preset\(rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); review or export the recovered presets, then reset to commit them."
+                let guidance = presets.isEmpty
+                    ? "No presets could be recovered for export; preserve the named backup before resetting to the built-in default."
+                    : "Review or export the recovered presets, then reset to commit them. Rejected presets are excluded from export."
+                persistenceIssue = "Rejected \(rejectedCount) unsafe or invalid stored preset\(rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)). \(guidance)"
             } else {
                 allowsPersistence = true
                 recoveredDecodedPayload = false
@@ -134,7 +137,7 @@ final class WatchedAppsStore: ObservableObject {
     /// though persistence stays locked. A payload that could not be decoded has no
     /// trustworthy in-memory representation to export.
     var canExportPresets: Bool {
-        allowsPersistence || recoveredDecodedPayload
+        allowsPersistence || (recoveredDecodedPayload && !presets.isEmpty)
     }
 
     private func rejectIfReadOnly() -> Bool {
@@ -279,6 +282,7 @@ final class WatchedAppsStore: ObservableObject {
     }
 
     func encodedPresetArchive() throws -> Data {
+        guard canExportPresets else { throw PresetArchiveError.unreadable }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         return try encoder.encode(PresetArchive(presets: presets))

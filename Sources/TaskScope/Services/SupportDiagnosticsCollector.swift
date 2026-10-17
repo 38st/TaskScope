@@ -7,7 +7,7 @@ struct SupportDiagnosticsCollector {
     /// Inspects only the selected preset's configured user jobs. No inventory,
     /// privilege prompt, lifecycle mutation or log collection is performed.
     func inspectPreset(
-        _ preset: WatchedAppPreset, keepOffRequested: Bool
+        _ preset: WatchedAppPreset, keepOffRequested: Bool?
     ) async -> SupportDiagnosticsReport.Preset {
         var agents: [SupportDiagnosticsReport.LaunchAgent] = []
         for (index, job) in preset.lifecycleUserLaunchAgentJobs.enumerated() {
@@ -44,7 +44,7 @@ struct SupportDiagnosticsCollector {
     }
 
     @MainActor
-    static func permissions(notificationsEnabled: Bool) async -> SupportDiagnosticsReport.Permissions {
+    static func permissions(notificationsEnabled: Bool?) async -> SupportDiagnosticsReport.Permissions {
         let service = NotificationService.shared
         await service.refreshAuthorizationStatus()
         let notifications: SupportDiagnosticsReport.Permissions.Notification

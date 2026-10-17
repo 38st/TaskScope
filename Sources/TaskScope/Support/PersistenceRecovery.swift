@@ -17,11 +17,11 @@ enum PersistenceRecovery {
         var firstFreeKey: String?
         for slot in 1...maximumBackupSlots {
             let key = slot == 1 ? baseKey : "\(baseKey).\(slot)"
-            guard let existing = userDefaults.data(forKey: key) else {
+            guard let existing = userDefaults.object(forKey: key) else {
                 if firstFreeKey == nil { firstFreeKey = key }
                 continue
             }
-            if existing == data { return key }
+            if let existing = existing as? Data, existing == data { return key }
         }
         guard let firstFreeKey else { return nil }
         userDefaults.set(data, forKey: firstFreeKey)
@@ -76,8 +76,13 @@ struct RecoveringCodableStorage<Value: Codable> {
     func load(
         decode: (Data) throws -> Value = { try JSONDecoder().decode(Value.self, from: $0) }
     ) -> LoadOutcome {
-        guard let data = userDefaults.data(forKey: key) else {
+        guard let object = userDefaults.object(forKey: key) else {
             return LoadOutcome(value: nil, backupKey: nil, isBackupPreserved: false)
+        }
+        guard let data = object as? Data else {
+            // A present property-list object of another type is unreadable, not
+            // an absent preference. Archive its value before allowing a reset.
+            return unreadableOutcome(data: archivedPayload(object))
         }
         do {
             return LoadOutcome(
@@ -86,14 +91,22 @@ struct RecoveringCodableStorage<Value: Codable> {
                 isBackupPreserved: false
             )
         } catch {
-            let baseKey = "\(key).corruptBackup"
-            let preservedKey = PersistenceRecovery.preserveBackup(data, in: userDefaults, baseKey: baseKey)
-            return LoadOutcome(
-                value: nil,
-                backupKey: preservedKey ?? baseKey,
-                isBackupPreserved: preservedKey != nil
-            )
+            return unreadableOutcome(data: data)
         }
+    }
+
+    private func unreadableOutcome(data: Data?) -> LoadOutcome {
+        let baseKey = "\(key).corruptBackup"
+        let preservedKey = data.flatMap {
+            PersistenceRecovery.preserveBackup($0, in: userDefaults, baseKey: baseKey)
+        }
+        return LoadOutcome(value: nil, backupKey: preservedKey ?? baseKey,
+                           isBackupPreserved: preservedKey != nil)
+    }
+
+    private func archivedPayload(_ object: Any) -> Data? {
+        if let data = object as? Data { return data }
+        return try? PropertyListSerialization.data(fromPropertyList: object, format: .binary, options: 0)
     }
 
     func loadRecoveringElements<Element: Codable>() -> LoadOutcome where Value == [Element] {
@@ -136,6 +149,10 @@ struct RecoveringCodableStorage<Value: Codable> {
         return true
     }
 
+    var hasStoredValue: Bool {
+        userDefaults.object(forKey: key) != nil
+    }
+
     var rawData: Data? {
         userDefaults.data(forKey: key)
     }
@@ -148,7 +165,8 @@ struct RecoveringCodableStorage<Value: Codable> {
     }
 
     func preserveCurrentPayload(suffix: String) -> (key: String, isPreserved: Bool)? {
-        guard let data = rawData else { return nil }
+        guard let object = userDefaults.object(forKey: key),
+              let data = archivedPayload(object) else { return nil }
         let baseKey = "\(key).\(suffix)"
         let preservedKey = PersistenceRecovery.preserveBackup(data, in: userDefaults, baseKey: baseKey)
         return (preservedKey ?? baseKey, preservedKey != nil)

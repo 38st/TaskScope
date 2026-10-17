@@ -130,9 +130,16 @@ final class SavedSelectionsStore: ObservableObject {
         )
         self.persistence = persistence
         allowsPersistence = true
-        let loaded = persistence.load()
+        let loaded = persistence.loadRecoveringElements()
         selections = loaded.value ?? []
-        if let backupKey = loaded.backupKey {
+        if loaded.rejectedCount > 0 {
+            let backup = persistence.preserveCurrentPayload(suffix: "rejectedMigrationBackup")
+                ?? (key: "\(key).rejectedMigrationBackup", isPreserved: false)
+            allowsPersistence = false
+            recoveryMessage = "Rejected \(loaded.rejectedCount) invalid stored selection\(loaded.rejectedCount == 1 ? "" : "s"). "
+                + PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)
+                + "; review the recovered selections, then reset to commit them."
+        } else if let backupKey = loaded.backupKey {
             // Writing now would replace the unreadable payload with the empty
             // array we fell back to, destroying it at its primary key.
             allowsPersistence = false
@@ -154,8 +161,8 @@ final class SavedSelectionsStore: ObservableObject {
         validationError = nil
     }
 
-    /// Discards the unreadable payload and resumes durable mutations from an empty,
-    /// known-safe selection list.
+    /// Explicitly accepts the recovered selections and resumes durable mutations.
+    /// A payload with no decodable entries resumes from an empty selection list.
     func resetAfterCorruption() {
         guard !allowsPersistence else { return }
         allowsPersistence = true

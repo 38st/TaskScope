@@ -3,7 +3,7 @@ import Foundation
 /// The export boundary accepts only fixed categories, counts and validated
 /// version numbers. Never add raw messages, labels, preset names or paths here.
 struct SupportDiagnosticsReport: Encodable, Equatable, Sendable {
-    let schemaVersion = 1
+    let schemaVersion = 2
     let app = "TaskScope"
     let version: String
     let build: String
@@ -36,12 +36,26 @@ struct SupportDiagnosticsReport: Encodable, Equatable, Sendable {
             case off, on, requiresApproval, unavailable
         }
         let notifications: Notification
-        let notificationsEnabledInApp: Bool
+        let notificationsEnabledInApp: Bool?
         let accessibilityGranted: Bool
         let launchAtLogin: LoginItem
         // macOS grants administrator authorization per operation, not as a
         // persistent app permission that diagnostics can safely probe.
         let administratorAuthorization = "not queried; requested per privileged action"
+
+        private enum CodingKeys: String, CodingKey {
+            case notifications, notificationsEnabledInApp, accessibilityGranted, launchAtLogin, administratorAuthorization
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(notifications, forKey: .notifications)
+            // Keep the schema key present: nil means persisted settings are unreadable.
+            try container.encode(notificationsEnabledInApp, forKey: .notificationsEnabledInApp)
+            try container.encode(accessibilityGranted, forKey: .accessibilityGranted)
+            try container.encode(launchAtLogin, forKey: .launchAtLogin)
+            try container.encode(administratorAuthorization, forKey: .administratorAuthorization)
+        }
     }
 
     struct Preset: Encodable, Equatable, Sendable {
@@ -51,8 +65,21 @@ struct SupportDiagnosticsReport: Encodable, Equatable, Sendable {
         let reference = "selected-preset"
         let kind: Kind
         let appBundleFound: Bool
-        let keepOffRequested: Bool
+        let keepOffRequested: Bool?
         let userLaunchAgents: [LaunchAgent]
+
+        private enum CodingKeys: String, CodingKey {
+            case reference, kind, appBundleFound, keepOffRequested, userLaunchAgents
+        }
+
+        func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: CodingKeys.self)
+            try container.encode(reference, forKey: .reference)
+            try container.encode(kind, forKey: .kind)
+            try container.encode(appBundleFound, forKey: .appBundleFound)
+            try container.encode(keepOffRequested, forKey: .keepOffRequested)
+            try container.encode(userLaunchAgents, forKey: .userLaunchAgents)
+        }
     }
 
     struct LaunchAgent: Encodable, Equatable, Sendable {
@@ -91,10 +118,10 @@ struct SupportDiagnosticsReport: Encodable, Equatable, Sendable {
 }
 
 struct LifecycleDiagnosticFailure: Encodable, Equatable, Sendable {
-    enum Action: String, Encodable, Sendable {
+    enum Action: String, Encodable, CaseIterable, Sendable {
         case open, quitApp, quitHelpers, close, keepOff, allowToRun
     }
-    enum Reason: String, Encodable, Sendable {
+    enum Reason: String, Encodable, CaseIterable, Sendable {
         case disconnectFailed
         case incomplete, appBundleMissing, inventoryUnavailable
         case systemServiceFailed, userLaunchAgentFailed, launchFailed

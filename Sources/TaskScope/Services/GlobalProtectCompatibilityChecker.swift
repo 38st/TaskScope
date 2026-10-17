@@ -133,7 +133,7 @@ struct GlobalProtectCompatibilityChecker: Sendable {
             macOSVersion: Self.version(results[.macOSVersion]!),
             macOSBuild: Self.version(results[.macOSBuild]!, osBuild: true),
             taskScopeVersion: Self.safeVersion(versions.taskScope),
-            taskScopeBuild: Self.safeVersion(versions.taskScopeBuild),
+            taskScopeBuild: Self.safeBuildNumber(versions.taskScopeBuild),
             globalProtectVersion: Self.safeVersion(versions.globalProtect),
             globalProtectBuild: Self.safeVersion(versions.globalProtectBuild),
             architecture: architecture,
@@ -221,6 +221,17 @@ struct GlobalProtectCompatibilityChecker: Sendable {
         case ShellCommandRunner.cancelledExitCode: .cancelled
         default: .unavailable
         }
+    }
+
+    private static func safeBuildNumber(_ value: String?) -> String {
+        guard let value else { return "Unavailable" }
+        // TaskScope uses a positive integer build counter, not GlobalProtect's
+        // dotted/suffixed version format. Match the support report's size bound.
+        guard value.count <= 64,
+              value.range(of: #"\A[1-9][0-9]{0,63}\z"#, options: .regularExpression) != nil else {
+            return "Unavailable (unrecognized value redacted)"
+        }
+        return value
     }
 
     static func safeVersion(_ value: String?, osBuild: Bool = false) -> String {

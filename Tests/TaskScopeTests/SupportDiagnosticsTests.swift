@@ -29,6 +29,7 @@ final class SupportDiagnosticsTests: XCTestCase {
             XCTAssertFalse(preview.text.contains(secret), "Leaked private field: \(secret)")
         }
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: preview.data) as? [String: Any])
+        XCTAssertEqual(json["schemaVersion"] as? Int, 2)
         XCTAssertEqual(Set(json.keys), ["schemaVersion", "app", "version", "build", "macOS",
                                         "architecture", "capturedAt", "permissions", "selectedPreset",
                                         "recentLifecycleFailures"])
@@ -108,7 +109,7 @@ final class SupportDiagnosticsTests: XCTestCase {
         XCTAssertEqual(result.userLaunchAgents.map(\.state), [.loaded, .notLoaded, .unknown, .unknown, .unknown])
         XCTAssertEqual(result.userLaunchAgents.map(\.number), [1, 2, 3, 4, 5])
         XCTAssertEqual(result.userLaunchAgents.map(\.required), [true, false, false, false, false])
-        XCTAssertTrue(result.keepOffRequested)
+        XCTAssertEqual(result.keepOffRequested, true)
         XCTAssertFalse(result.appBundleFound)
         XCTAssertTrue(result.userLaunchAgents.allSatisfy { !$0.plistFound })
         XCTAssertEqual(harness.commands, preset.userLaunchAgentJobs.map {
@@ -186,7 +187,8 @@ final class SupportDiagnosticsTests: XCTestCase {
     func testAllLifecycleActionsRecordFailuresWithoutRawMessages() async throws {
         let preset = Self.privatePreset
         let lifecycle = DiagnosticsLifecycleService()
-        let manager = ProcessManager(processInventory: DiagnosticsInventory(), lifecycle: lifecycle,
+        let manager = ProcessManager(processInventory: DiagnosticsInventory(), verificationInventory: DiagnosticsInventory(),
+                                     processSignaler: DiagnosticsSignaler(), lifecycle: lifecycle,
                                      settleAfterProcessChange: {}, now: { self.date })
         manager.enableNotifications = false
         manager.watchedAppsProvider = { [preset] }
@@ -211,6 +213,7 @@ final class SupportDiagnosticsTests: XCTestCase {
     func testEarlyInventoryFailureDoesNotReusePreviousJobReport() async {
         let preset = Self.privatePreset
         let manager = ProcessManager(processInventory: DiagnosticsInventory(fails: true),
+                                     verificationInventory: DiagnosticsInventory(fails: true), processSignaler: DiagnosticsSignaler(),
                                      lifecycle: DiagnosticsLifecycleService(), settleAfterProcessChange: {})
         manager.enableNotifications = false
         // This action does not need inventory and leaves a failed job report.
@@ -231,7 +234,8 @@ final class SupportDiagnosticsTests: XCTestCase {
             (.init(fails: false), .launchFailed)
         ]
         for (service, expected) in cases {
-            let manager = ProcessManager(processInventory: DiagnosticsInventory(), lifecycle: service,
+            let manager = ProcessManager(processInventory: DiagnosticsInventory(), verificationInventory: DiagnosticsInventory(),
+                                         processSignaler: DiagnosticsSignaler(), lifecycle: service,
                                          settleAfterProcessChange: {})
             manager.enableNotifications = false
             await manager.openApp(preset)
@@ -243,6 +247,7 @@ final class SupportDiagnosticsTests: XCTestCase {
     func testSuccessfulAndSkippedActionsDoNotCreateFailuresAndBackgroundIsMarked() async {
         let preset = Self.privatePreset
         let manager = ProcessManager(processInventory: DiagnosticsInventory(),
+                                     verificationInventory: DiagnosticsInventory(), processSignaler: DiagnosticsSignaler(),
                                      lifecycle: DiagnosticsLifecycleService(fails: false), settleAfterProcessChange: {})
         manager.enableNotifications = false
         manager.watchedAppsProvider = { [preset] }
@@ -252,6 +257,7 @@ final class SupportDiagnosticsTests: XCTestCase {
         XCTAssertTrue(manager.lifecycleDiagnostics.failures(for: preset.id).isEmpty)
 
         let failing = ProcessManager(processInventory: DiagnosticsInventory(fails: true),
+                                     verificationInventory: DiagnosticsInventory(fails: true), processSignaler: DiagnosticsSignaler(),
                                      lifecycle: DiagnosticsLifecycleService(), settleAfterProcessChange: {})
         failing.isPresetKeptOffProvider = { _ in true }
         await failing.keepOff(preset, recordIntent: false)
@@ -289,7 +295,7 @@ private final class DiagnosticsInspectionHarness: @unchecked Sendable {
     init(results: [ShellCommandResult]) { self.results = results }
 
     var runtime: ProcessLifecycleRuntime {
-        .init(userID: 501, fileExists: { _ in false }, runCommand: { [self] command, timeout in
+        .init(userID: 501, fileExists: { _ in false }, launchAgentLabel: { _ in nil }, runCommand: { [self] command, timeout in
             XCTAssertEqual(timeout, 5)
             return lock.withLock {
                 recordedCommands.append(command)
@@ -300,10 +306,11 @@ private final class DiagnosticsInspectionHarness: @unchecked Sendable {
         }, loadProcessInventory: {
             XCTFail("Diagnostics must not read the process inventory")
             return .success([])
-        }, sendSignal: { _, _ in
+        }, executablePathForPID: { _ in nil }, sendSignal: { _, _ in
             XCTFail("Diagnostics must not signal processes")
             return false
-        }, sleep: { _ in XCTFail("Diagnostics must not run lifecycle waits") })
+        }, isProcessAlive: { _ in false }, sleep: { _ in XCTFail("Diagnostics must not run lifecycle waits") },
+        systemUptime: { 0 })
     }
 }
 
@@ -312,6 +319,14 @@ private struct DiagnosticsInventory: ProcessInventoryProviding {
     func load(fetchExtendedStats: Bool) async -> Result<[AppProcess], ProcessInventoryError> {
         fails ? .failure(.commandFailed(SupportDiagnosticsTests.secret)) : .success([])
     }
+}
+
+private struct DiagnosticsSignaler: ProcessSignaling {
+    func send(_ signal: Int32, to pid: Int32) -> Bool {
+        XCTFail("Diagnostics must not signal processes")
+        return false
+    }
+    func isAlive(_ pid: Int32) -> Bool { false }
 }
 
 private struct DiagnosticsLifecycleService: ProcessLifecycleServicing {

@@ -61,7 +61,7 @@ final class SettingsStore: ObservableObject {
         self.searchPersistenceDelay = max(0, searchPersistenceDelay)
         let result = persistence.load()
         let decoded: CodableSettings
-        if persistence.rawData == nil {
+        if !persistence.hasStoredValue {
             decoded = .defaults
             recoveryMessage = nil
             allowsPersistence = true
