@@ -47,6 +47,7 @@ struct ProcessBatchTerminationOutcome {
     var inventoryError: String?
     var shouldClearSelection: Bool
     var shouldRefresh: Bool
+    var wasCancelled = false
 }
 
 /// Revalidates a captured selection and performs one batch signal operation.
@@ -77,7 +78,7 @@ struct ProcessBatchTerminator {
     ) async -> ProcessBatchTerminationOutcome {
         let title = forceKill ? "Force Stop Results" : "Stop Results"
         let inventoryResult = await inventory.load(fetchExtendedStats: false)
-        guard case .success(let currentProcesses) = inventoryResult else {
+        guard !Task.isCancelled, case .success(let currentProcesses) = inventoryResult else {
             let error: String?
             if case .failure(let inventoryError) = inventoryResult {
                 error = inventoryError.localizedDescription
@@ -98,7 +99,8 @@ struct ProcessBatchTerminator {
                 message: "Could not verify selected processes.",
                 inventoryError: error,
                 shouldClearSelection: false,
-                shouldRefresh: false
+                shouldRefresh: false,
+                wasCancelled: Task.isCancelled || inventoryResult == .failure(.cancelled)
             )
         }
 
@@ -112,7 +114,7 @@ struct ProcessBatchTerminator {
             return ProcessTargetActionResult(
                 identity: identity,
                 name: displayName(for: identity),
-                state: .stale
+                state: currentProcesses.contains { $0.pid == identity.pid } ? .identityChanged : .stale
             )
         }
         let staleCount = targetResults.count

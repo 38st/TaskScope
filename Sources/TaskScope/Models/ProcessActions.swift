@@ -3,7 +3,10 @@ import Darwin
 enum ProcessActionResult: Equatable, Sendable {
     case stopped
     case requestedStillRunning
+    /// A successful verification found no process with the captured PID.
     case stale
+    /// The PID is present, but its start time or executable evidence changed.
+    case identityChanged
     /// Nothing was signalled for a reason that may clear on its own, such as an
     /// unreadable process list or a cancelled request. Retrying can succeed.
     case rejected

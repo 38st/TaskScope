@@ -55,10 +55,12 @@ final class AppCommandCoordinator {
 
         switch command {
         case .refresh:
-            // Report this refresh's own outcome. `processLoadError` describes the
-            // displayed process list, which a watched-status refresh does not
-            // reload, so a stale list error must not fail a refresh that worked.
+            // Any successful read clears inventory errors, but only this refresh
+            // or the equivalent read it joins determines this command's result.
             let refreshed = await processManager.refreshWatchedStatus(showMessage: true)
+            if Task.isCancelled || processManager.lastInventoryReadWasCancelled {
+                return TaskScopeCommandResult(status: .rejected, message: "Refresh was cancelled.")
+            }
             return TaskScopeCommandResult(
                 status: refreshed ? .completed : .failed,
                 message: processManager.message

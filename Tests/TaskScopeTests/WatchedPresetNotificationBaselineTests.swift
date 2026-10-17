@@ -10,6 +10,7 @@ import XCTest
 /// names against a baseline that never contained them.
 @MainActor
 final class WatchedPresetNotificationBaselineTests: XCTestCase {
+    private let presetID = UUID()
     func testAddingAPresetForAnAlreadyRunningAppDoesNotAnnounceAStart() async {
         let running = [appProcess(pid: 41, name: "Slack")]
         let manager = makeManager(inventory: StubInventory(processes: running))
@@ -112,7 +113,9 @@ final class WatchedPresetNotificationBaselineTests: XCTestCase {
     private func makeManager(inventory: any ProcessInventoryProviding) -> ProcessManager {
         let manager = ProcessManager(
             processInventory: inventory,
+            verificationInventory: inventory,
             processSignaler: InertSignaler(),
+            lifecycle: InertLifecycle(),
             settleAfterProcessChange: {}
         )
         manager.enableNotifications = true
@@ -121,6 +124,7 @@ final class WatchedPresetNotificationBaselineTests: XCTestCase {
 
     private func preset(named name: String) -> WatchedAppPreset {
         WatchedAppPreset(
+            id: presetID,
             displayName: name,
             mainProcessName: name,
             helperProcessNames: [],
@@ -163,4 +167,17 @@ private final class StubInventory: ProcessInventoryProviding, @unchecked Sendabl
 private struct InertSignaler: ProcessSignaling {
     func send(_ signal: Int32, to pid: Int32) -> Bool { false }
     func isAlive(_ pid: Int32) -> Bool { false }
+}
+
+private struct InertLifecycle: ProcessLifecycleServicing {
+    func appBundleExists(at path: String) -> Bool { false }
+    func settleAfterProcessChange() async {}
+    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .noMatchingProcesses }
+    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .noMatchingProcesses }
+    func isProcessNamedRunning(_ name: String) async -> Bool { false }
+    func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
+    func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
+    func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
+    func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool { false }
+    func openAppBundle(at path: String) async -> Bool { false }
 }

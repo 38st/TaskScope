@@ -370,7 +370,7 @@ final class ProcessManagerTests: XCTestCase {
         await manager.terminate(original)
 
         XCTAssertTrue(signaler.sent.isEmpty)
-        XCTAssertEqual(manager.message, "Original is no longer the same running process.")
+        XCTAssertEqual(manager.message, "Original's identity changed; nothing was stopped.")
     }
 
     func testTerminateRejectsExecutableChangeBeforeSignaling() async {
@@ -384,7 +384,7 @@ final class ProcessManagerTests: XCTestCase {
         await manager.terminate(original)
 
         XCTAssertTrue(signaler.sent.isEmpty)
-        XCTAssertEqual(manager.message, "Original is no longer the same running process.")
+        XCTAssertEqual(manager.message, "Original's identity changed; nothing was stopped.")
     }
 
     /// postgres backends and sshd sessions rewrite argv (and so `ps comm`) while
@@ -508,6 +508,7 @@ final class ProcessManagerTests: XCTestCase {
         let manager = ProcessManager(
             processInventory: inventory,
             processSignaler: FakeProcessSignaler(),
+            lifecycle: FakeLifecycleService(),
             settleAfterProcessChange: {}
         )
         manager.enableNotifications = false
@@ -554,6 +555,7 @@ final class ProcessManagerTests: XCTestCase {
         let manager = ProcessManager(
             processInventory: inventory,
             processSignaler: FakeProcessSignaler(),
+            lifecycle: FakeLifecycleService(),
             settleAfterProcessChange: {}
         )
         manager.enableNotifications = false
@@ -1079,6 +1081,7 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(lifecycle.calls.filter { $0 == "vpn.disconnect" }.count, 1)
         XCTAssertEqual(lifecycle.preservedVPNServices, [false, true])
         XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
+        assertFullGlobalProtectScope(lifecycle, calls: ["agents.disable", "daemon.disable"])
     }
 
     func testGlobalProtectQuitAllDisconnectsBeforePersistingAndStoppingServices() async {
@@ -1096,6 +1099,7 @@ final class ProcessManagerTests: XCTestCase {
             "vpn.disconnect", "agents.disable", "daemon.disable:true",
             "terminate:GlobalProtect", "terminate.helper:PanGPA", "settle"
         ])
+        assertFullGlobalProtectScope(lifecycle, calls: ["agents.disable", "daemon.disable"])
     }
 
     func testFailedDisconnectDoesNotPersistKeepOffOrStopAnything() async {
@@ -1141,6 +1145,7 @@ final class ProcessManagerTests: XCTestCase {
                 ["com.paloaltonetworks.gp.pangpa"],
                 "scope \(scope) must not unload the VPN service job"
             )
+            XCTAssertEqual(lifecycle.unloadedPresets.first?.lifecycleSystemLaunchDaemonJobs, [])
         }
     }
 
@@ -1167,6 +1172,7 @@ final class ProcessManagerTests: XCTestCase {
         let repeated = await manager.stopGlobalProtectAfterFailedDisconnect(failureID: failureID)
         XCTAssertEqual(repeated.status, .rejected)
         XCTAssertEqual(lifecycle.calls, previousCalls)
+        assertFullGlobalProtectScope(lifecycle, calls: ["agents.disable", "daemon.disable"])
     }
 
     func testDisconnectRecoveryRejectsUnrequestedAndSupersededFailures() async throws {
@@ -1224,7 +1230,7 @@ final class ProcessManagerTests: XCTestCase {
 
     func testGlobalProtectRestoreEnsuresSystemBeforeEnablingOverridesAndUserAgents() async {
         let lifecycle = FakeLifecycleService()
-        let running = process(pid: 42, uid: 501, name: "GlobalProtect")
+        let running = process(pid: 42, name: "GlobalProtect")
         let daemon = process(pid: 43, uid: 0, name: "PanGPS")
         let manager = makeManager(inventory: FakeProcessInventory(results: [.success([running, daemon])]), lifecycle: lifecycle)
         manager.watchedAppsProvider = { [.globalProtect] }
@@ -1235,11 +1241,12 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertEqual(opened.status, .completed)
         XCTAssertFalse(keptOff)
         XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "daemon.enable", "agents.enable", "agents.load"])
+        assertFullGlobalProtectScope(lifecycle, calls: ["daemon", "daemon.enable", "agents.enable", "agents.load"])
     }
 
     func testGlobalProtectOpenClearsOverridesEvenWhenSavedIntentWasLost() async {
         let lifecycle = FakeLifecycleService()
-        let running = process(pid: 42, uid: 501, name: "GlobalProtect")
+        let running = process(pid: 42, name: "GlobalProtect")
         let daemon = process(pid: 43, uid: 0, name: "PanGPS")
         let manager = makeManager(inventory: FakeProcessInventory(results: [.success([running, daemon])]), lifecycle: lifecycle)
         manager.watchedAppsProvider = { [.globalProtect] }
@@ -1247,11 +1254,12 @@ final class ProcessManagerTests: XCTestCase {
         let opened = await manager.openApp(.globalProtect)
         XCTAssertEqual(opened.status, .completed)
         XCTAssertEqual(lifecycle.calls, ["exists", "daemon", "daemon.enable", "agents.enable", "agents.load"])
+        assertFullGlobalProtectScope(lifecycle, calls: ["daemon", "daemon.enable", "agents.enable", "agents.load"])
     }
 
     func testOpenRecoversOrphanedGlobalProtectUIWithoutUnloadingVPNJob() async {
         let lifecycle = FakeLifecycleService()
-        let ui = process(pid: 42, uid: 501, name: "GlobalProtect")
+        let ui = process(pid: 42, name: "GlobalProtect")
         let service = process(pid: 43, uid: 0, name: "PanGPS")
         let manager = makeManager(inventory: FakeProcessInventory(results: [
             .success([ui]), .success([]), .success([ui, service])
@@ -1273,7 +1281,7 @@ final class ProcessManagerTests: XCTestCase {
 
     func testOpenDoesNotSpawnAgainIfOrphanedUIFailsToClose() async {
         let lifecycle = FakeLifecycleService()
-        let ui = process(pid: 42, uid: 501, name: "GlobalProtect")
+        let ui = process(pid: 42, name: "GlobalProtect")
         let manager = makeManager(inventory: FakeProcessInventory(results: [.success([ui])]), lifecycle: lifecycle)
 
         let result = await manager.openApp(.globalProtect)
@@ -1288,7 +1296,7 @@ final class ProcessManagerTests: XCTestCase {
         lifecycle.agentUnloadResult = LifecycleBatchResult(jobs: [
             LifecycleJobResult(label: "com.paloaltonetworks.gp.pangpa", state: .failed, detail: "Denied")
         ])
-        let ui = process(pid: 42, uid: 501, name: "GlobalProtect")
+        let ui = process(pid: 42, name: "GlobalProtect")
         let manager = makeManager(inventory: FakeProcessInventory(results: [.success([ui])]), lifecycle: lifecycle)
 
         let result = await manager.openApp(.globalProtect)
@@ -1387,7 +1395,11 @@ final class ProcessManagerTests: XCTestCase {
             manager.setPresetKeptOffHandler = { _, value in keptOff = value }
             let task = Task { await manager.openApp(.globalProtect) }
             let result = await task.value
-            XCTAssertEqual(result.status, .failed)
+            XCTAssertEqual(result.status, cancelled ? .rejected : .failed)
+            if cancelled {
+                XCTAssertTrue(result.message.contains("was cancelled"))
+                XCTAssertTrue(manager.lifecycleDiagnostics.failures(for: WatchedAppPreset.globalProtect.id).isEmpty)
+            }
             XCTAssertTrue(keptOff)
             XCTAssertFalse(lifecycle.calls.contains("open"))
         }
@@ -1751,6 +1763,31 @@ final class ProcessManagerTests: XCTestCase {
         XCTAssertFalse(manager.fetchExtendedStats)
     }
 
+    func testAllowToRunRestoresFullGlobalProtectJobScope() async {
+        let lifecycle = FakeLifecycleService()
+        let manager = makeManager(inventory: FakeProcessInventory(results: [.success([])]), lifecycle: lifecycle)
+        _ = await manager.allowToRun(.globalProtect)
+        assertFullGlobalProtectScope(lifecycle, calls: ["daemon.enable", "agents.enable"])
+    }
+
+    private func assertFullGlobalProtectScope(
+        _ lifecycle: FakeLifecycleService, calls: [String],
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        for call in calls {
+            let presets = lifecycle.presetsByCall[call] ?? []
+            XCTAssertFalse(presets.isEmpty, "Missing \(call) observation", file: file, line: line)
+            for preset in presets {
+                XCTAssertEqual(preset.lifecycleUserLaunchAgentJobs.map(\.label),
+                               ["com.paloaltonetworks.gp.pangpa", "com.paloaltonetworks.gp.pangps"],
+                               "\(call) must retain both session jobs", file: file, line: line)
+                XCTAssertEqual(preset.lifecycleSystemLaunchDaemonJobs.map(\.label),
+                               ["com.paloaltonetworks.gp.pangpsd"],
+                               "\(call) must retain the system job", file: file, line: line)
+            }
+        }
+    }
+
     private func makeManager(
         inventory: any ProcessInventoryProviding,
         signaler: FakeProcessSignaler = FakeProcessSignaler(),
@@ -1832,6 +1869,7 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     private(set) var calls: [String] = []
     private(set) var preservedPIDs: [Set<Int32>] = []
     private(set) var unloadedPresets: [WatchedAppPreset] = []
+    private(set) var presetsByCall: [String: [WatchedAppPreset]] = [:]
 
     func disconnectGlobalProtectIfNeeded() async -> GlobalProtectDisconnectResult {
         calls.append("vpn.disconnect")
@@ -1848,11 +1886,13 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     }
 
     func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
+        presetsByCall["terminate", default: []].append(preset)
         calls.append("terminate:\(preset.mainProcessName)")
         return terminationOutcome
     }
 
     func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome {
+        presetsByCall["helper", default: []].append(preset)
         calls.append("terminate.helper:\(name)")
         return terminationOutcome
     }
@@ -1863,6 +1903,7 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     }
 
     func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        presetsByCall["agents.unload", default: []].append(preset)
         unloadedPresets.append(preset)
         calls.append("agents.unload")
         return agentUnloadResult
@@ -1872,6 +1913,7 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
         for preset: WatchedAppPreset,
         preservingPIDs: Set<Int32>
     ) async -> LifecycleBatchResult {
+        presetsByCall["agents.unload", default: []].append(preset)
         unloadedPresets.append(preset)
         preservedPIDs.append(preservingPIDs)
         calls.append("agents.unload")
@@ -1879,12 +1921,14 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     }
 
     func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        presetsByCall["agents.load", default: []].append(preset)
         calls.append("agents.load")
         await agentLoadAction?()
         return agentLoadResult
     }
 
     func disableUserLaunchAgents(for preset: WatchedAppPreset, preservingVPNService: Bool) async -> LifecycleBatchResult {
+        presetsByCall["agents.disable", default: []].append(preset)
         calls.append("agents.disable")
         preservedVPNServices.append(preservingVPNService)
         await agentDisableAction?()
@@ -1892,23 +1936,32 @@ private final class FakeLifecycleService: ProcessLifecycleServicing, @unchecked 
     }
 
     func enableUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        presetsByCall["agents.enable", default: []].append(preset)
         calls.append("agents.enable")
         return agentEnableResult
     }
 
     func disableSystemLaunchDaemons(for preset: WatchedAppPreset, allowAdministratorPrompt: Bool) async -> LifecycleBatchResult {
+        presetsByCall["daemon.disable", default: []].append(preset)
         calls.append("daemon.disable:\(allowAdministratorPrompt)")
         return systemDisableResult
     }
 
     func enableSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        presetsByCall["daemon.enable", default: []].append(preset)
         calls.append("daemon.enable")
         return systemEnableResult
     }
 
     func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult {
+        presetsByCall["daemon", default: []].append(preset)
         calls.append("daemon")
         return daemonResult
+    }
+
+    func waitForMainProcess(for preset: WatchedAppPreset, timeoutSeconds: TimeInterval) async -> Bool {
+        presetsByCall["wait.main", default: []].append(preset)
+        return await waitForProcessNamed(preset.mainProcessName, timeoutSeconds: timeoutSeconds)
     }
 
     func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool {

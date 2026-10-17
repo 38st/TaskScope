@@ -423,6 +423,8 @@ final class AutoStopRulesStore: ObservableObject {
                 outcome: .stopRequested,
                 detail: "Stop requested after confirmation; waiting for the process to exit."
             )
+        } else if result == .identityChanged {
+            record(prompt, outcome: .failed, detail: "Process identity changed; nothing was stopped.")
         } else if result == .stale {
             record(prompt, outcome: .processEnded, detail: "Process ended before the stop request.")
         } else if result == .refused {
@@ -593,6 +595,9 @@ final class AutoStopRulesStore: ObservableObject {
                 outcome: .stopped,
                 detail: isRetry ? "Stopped automatically after a second stop request." : "Stopped automatically."
             )
+        case .identityChanged:
+            pendingExits[occurrence] = nil
+            record(prompt, outcome: .failed, detail: "Process identity changed; automatic stopping will not retry.")
         case .stale:
             // The verified identity is gone: the process exited after the
             // engine observed it, or after the first stop request on a retry.
@@ -645,20 +650,41 @@ final class AutoStopRulesStore: ObservableObject {
     private func pruneEndedOccurrences(_ processes: [AppProcess]) {
         let runningIdentities = Set(processes.map(\.identity))
         automaticProcesses = automaticProcesses.filter { runningIdentities.contains($0.key.processIdentity) }
-        let ended = handledOccurrences.filter { !runningIdentities.contains($0.processIdentity) }
-        reportedFailures = reportedFailures.filter { runningIdentities.contains($0.processIdentity) }
-        dismissedOccurrences = dismissedOccurrences.filter { runningIdentities.contains($0.processIdentity) }
+        let currentByPID = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
+        // A kernel path can change during one lifetime. Keep Dismiss and handled
+        // state attached to that lifetime, even when its signal identity changes.
+        func currentOccurrence(_ occurrence: AutoStopOccurrence) -> AutoStopOccurrence? {
+            guard let process = currentByPID[occurrence.processIdentity.pid],
+                  process.startTime == occurrence.processIdentity.startTime else { return nil }
+            return AutoStopOccurrence(ruleID: occurrence.ruleID, processIdentity: process.identity)
+        }
+        let changed = handledOccurrences.filter { !runningIdentities.contains($0.processIdentity) }
+        let replacementOccurrences = Set(changed.compactMap(currentOccurrence))
+        handledOccurrences = Set(handledOccurrences.compactMap(currentOccurrence))
+        reportedFailures = Set(reportedFailures.compactMap(currentOccurrence))
+        dismissedOccurrences = Set(dismissedOccurrences.compactMap(currentOccurrence))
         for (occurrence, pending) in pendingExits
         where !runningIdentities.contains(occurrence.processIdentity) {
             pendingExits[occurrence] = nil
-            record(pending.prompt, outcome: .stopped, detail: "Exited after the stop request.")
+            if currentByPID[occurrence.processIdentity.pid] != nil {
+                record(pending.prompt, outcome: .failed,
+                       detail: "Process identity changed; exit could not be confirmed and automatic stopping will not retry.")
+            } else {
+                record(pending.prompt, outcome: .stopped, detail: "Exited after the stop request.")
+            }
         }
-        guard !ended.isEmpty else { return }
-        handledOccurrences.subtract(ended)
-        for prompt in pendingPrompts where ended.contains(prompt.id) {
-            record(prompt, outcome: .processEnded, detail: "Process ended before the prompt was handled.")
+        for prompt in pendingPrompts where !runningIdentities.contains(prompt.id.processIdentity) {
+            if currentByPID[prompt.process.pid] != nil {
+                record(prompt, outcome: .failed, detail: "Process identity changed before the prompt was handled; nothing was stopped.")
+            } else {
+                record(prompt, outcome: .processEnded, detail: "Process ended before the prompt was handled.")
+            }
         }
-        pendingPrompts.removeAll { ended.contains($0.id) }
+        pendingPrompts.removeAll {
+            !runningIdentities.contains($0.id.processIdentity)
+                || replacementOccurrences.contains($0.id)
+                || dismissedOccurrences.contains($0.id)
+        }
     }
 
     @discardableResult

@@ -32,6 +32,7 @@ final class ProcessManager: ObservableObject {
     /// memoized lists on it.
     @Published private(set) var inventoryGeneration: UInt64 = 0
     @Published private(set) var processLoadError: String?
+    /// Time the inventory backing the displayed rows was last replaced.
     @Published private(set) var lastSuccessfulInventoryAt: Date?
     @Published private(set) var lifecycleReport: LifecycleReport?
     /// One explicit failed disconnect may be followed by a separately confirmed
@@ -75,6 +76,7 @@ final class ProcessManager: ObservableObject {
         set {
             listProjection = ProcessListProjection(inventory: newValue)
             inventoryGeneration &+= 1
+            lastSuccessfulInventoryAt = now()
         }
     }
     private var selectedIdentities: [Int32: ProcessIdentity] = [:]
@@ -85,6 +87,7 @@ final class ProcessManager: ObservableObject {
     private let now: () -> Date
     private var successfulInventoryReads: UInt64 = 0
     private var lastInventoryFailure: String?
+    private(set) var lastInventoryReadWasCancelled = false
 
     init(
         processInventory: any ProcessInventoryProviding = SystemProcessInventory(),
@@ -228,6 +231,7 @@ final class ProcessManager: ObservableObject {
                 requestedIdentities,
                 forceKill: forceKill
             )
+            guard !outcome.wasCancelled else { return }
             processLoadError = outcome.inventoryError
             message = outcome.message
             batchActionReport = outcome.report
@@ -241,7 +245,7 @@ final class ProcessManager: ObservableObject {
     }
 
     /// Callers do not need to say whether this refresh should re-baseline
-    /// notifications; `apply` detects a changed watched-name set on its own.
+    /// notifications; `apply` detects changed preset detection scopes on its own.
     /// Returns whether a fresh inventory was applied by this call (or by the
     /// equivalent read it joined).
     @discardableResult
@@ -259,6 +263,7 @@ final class ProcessManager: ObservableObject {
                 recordInventoryFailure(error)
             }
         }
+        guard !Task.isCancelled, !lastInventoryReadWasCancelled else { return false }
         let refreshed = appliedWatchedStatusReads != appliedBefore
         // An equivalent refresh may have been coalesced with a silent polling
         // refresh. Publish the explicit caller's message after the joined read has
@@ -290,18 +295,21 @@ final class ProcessManager: ObservableObject {
                 hasLoadedProcessList = true
                 appliedProcessListReads &+= 1
                 if includesExtendedStats { appliedExtendedProcessListReads &+= 1 }
-                if showMessage {
-                    message = "Loaded \(processes.count) of \(inventory.count) processes."
-                }
             case .failure(let error):
                 let failure = Task.isCancelled ? ProcessInventoryError.cancelled : error
                 recordInventoryFailure(failure)
-                if showMessage, failure != .cancelled {
-                    message = "Could not load processes: \(error.localizedDescription)"
-                }
             }
         }
-        return !Task.isCancelled && appliedProcessListReads != appliedBefore
+        guard !Task.isCancelled, !lastInventoryReadWasCancelled else { return false }
+        let refreshed = appliedProcessListReads != appliedBefore
+        // An explicit refresh can join a silent active or queued read. Publish
+        // its result after the gate returns, even when its closure did not run.
+        if showMessage {
+            message = refreshed
+                ? "Loaded \(processes.count) of \(fullProcessInventory.count) processes."
+                : "Could not load processes: \(lastInventoryFailure ?? "the process list could not be read")"
+        }
+        return refreshed
     }
 
     @discardableResult
@@ -310,11 +318,23 @@ final class ProcessManager: ObservableObject {
             status: .failed,
             message: "Open did not complete."
         )
-        await runAction(kind: .mutation) {
+        let ran = await runAction(kind: .mutation) {
+            let previousMessage = message
+            var cancelledRead = false
+            var mayHaveChangedState = false
             if preset.hasCanonicalGlobalProtectIdentity { globalProtectDisconnectFailureID = nil }
             var diagnosticReason: LifecycleDiagnosticFailure.Reason = .incomplete
             var diagnosticJobs: [LifecycleJobResult] = []
             defer {
+                if Task.isCancelled || cancelledRead {
+                    commandResult = TaskScopeCommandResult(
+                        status: .rejected,
+                        message: mayHaveChangedState
+                            ? "Open for \(preset.displayName) was cancelled; services or the app may already have changed."
+                            : "Open for \(preset.displayName) was cancelled."
+                    )
+                    message = mayHaveChangedState ? commandResult.message : previousMessage
+                }
                 if commandResult.status == .failed {
                     lifecycleDiagnostics.record(
                         presetID: preset.id, action: .open,
@@ -329,6 +349,7 @@ final class ProcessManager: ObservableObject {
                 // before uninstalling, or a reinstalled client cannot start.
                 let wasKeptOff = isPresetKeptOffProvider?(preset) ?? false
                 if wasKeptOff || preset.hasCanonicalGlobalProtectIdentity {
+                    mayHaveChangedState = true
                     let allowed = await clearKeepOffOverrides(preset)
                     diagnosticJobs += allowed.jobs
                     if allowed.result.succeeded {
@@ -349,13 +370,17 @@ final class ProcessManager: ObservableObject {
                 return
             }
 
-            guard case .success(let beforeServices) = await currentSnapshot(for: preset) else {
+            let initial = await currentSnapshot(for: preset)
+            if case .failure(.cancelled) = initial { cancelledRead = true; return }
+            guard !Task.isCancelled else { return }
+            guard case .success(let beforeServices) = initial else {
                 message = "Could not verify whether \(preset.displayName) is already running; nothing was opened."
                 diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
                 return
             }
 
+            mayHaveChangedState = true
             // A UI started directly while PanGPS was stopped can remain stuck
             // retrieving configuration even after the service returns. Restart
             // that orphaned UI before restoration; never unload the VPN job.
@@ -461,7 +486,10 @@ final class ProcessManager: ObservableObject {
             // (GlobalProtect's `pangpa` agent runs the main binary). Re-check with
             // a fresh inventory before opening so a second instance is never
             // launched, and fail closed when that check cannot be made.
-            guard case .success(let afterServices) = await currentSnapshot(for: preset) else {
+            let afterServiceRead = await currentSnapshot(for: preset)
+            if case .failure(.cancelled) = afterServiceRead { cancelledRead = true; return }
+            guard !Task.isCancelled else { return }
+            guard case .success(let afterServices) = afterServiceRead else {
                 message = "Could not verify whether \(preset.displayName) started with its services; nothing was opened."
                 diagnosticReason = .inventoryUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
@@ -488,7 +516,9 @@ final class ProcessManager: ObservableObject {
                     timeoutSeconds: 5
                 )
             }
+            guard !Task.isCancelled else { return }
             let finalInventory = await refreshInventoryAfterMutation()
+            if finalInventory == nil, lastInventoryReadWasCancelled { cancelledRead = true; return }
 
             if finalInventory == nil {
                 message = "\(preset.displayName) was launched, but TaskScope could not verify its final state."
@@ -505,6 +535,9 @@ final class ProcessManager: ObservableObject {
                 diagnosticReason = .verificationUnavailable
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             }
+        }
+        if !ran {
+            return TaskScopeCommandResult(status: .rejected, message: "Open for \(preset.displayName) was cancelled.")
         }
         return commandResult
     }
@@ -790,48 +823,61 @@ final class ProcessManager: ObservableObject {
 
     private func stop(_ preset: WatchedAppPreset, scope: PresetStopScope) async -> TaskScopeCommandResult {
         var result = PresetStopResult.failed(scope.incompleteMessage, reason: .incomplete)
-        await runAction(kind: .mutation) {
-            var diagnosticJobs: [LifecycleJobResult] = []
-            defer {
-                message = result.message
-                if let reason = result.failureReason {
-                    lifecycleDiagnostics.record(
-                        presetID: preset.id, action: scope.diagnosticAction,
-                        backgroundEnforcement: false, reason: reason,
-                        jobs: diagnosticJobs, at: now()
-                    )
+        var cancelled = false
+        let ran = await runAction(kind: .mutation) {
+            // Admission is the cancellation boundary for Stop. Once admitted,
+            // finish all scoped stops and verification even if its caller leaves.
+            await Task { @MainActor in
+                var diagnosticJobs: [LifecycleJobResult] = []
+                defer {
+                    if !cancelled { message = result.message }
+                    if !cancelled, let reason = result.failureReason {
+                        lifecycleDiagnostics.record(
+                            presetID: preset.id, action: scope.diagnosticAction,
+                            backgroundEnforcement: false, reason: reason,
+                            jobs: diagnosticJobs, at: now()
+                        )
+                    }
                 }
-            }
-            guard case .success(let before) = await currentSnapshot(for: preset) else {
-                result = scope.inventoryFailure(for: preset)
-                return
-            }
-            // These scopes never disconnect the VPN, so for GlobalProtect they
-            // leave its session VPN service loaded; Keep Off/Quit All stops it
-            // only after a verified disconnect.
-            let agentPreset = preset.hasSupportedGlobalProtectIdentity
-                ? preset.globalProtectInterfaceOnly
-                : preset
-            let agents: LifecycleBatchResult
-            if scope == .helpers {
-                // Unloading an agent running the main binary would also quit the app.
-                agents = await lifecycle.unloadUserLaunchAgents(
-                    for: agentPreset, preservingPIDs: before.mainProcessPIDs
+                let initial = await currentSnapshot(for: preset)
+                if case .failure(.cancelled) = initial {
+                    cancelled = true
+                    return
+                }
+                guard case .success(let before) = initial else {
+                    result = scope.inventoryFailure(for: preset)
+                    return
+                }
+                // These scopes never disconnect the VPN, so for GlobalProtect they
+                // leave its session VPN service loaded; Keep Off/Quit All stops it
+                // only after a verified disconnect.
+                let agentPreset = preset.hasSupportedGlobalProtectIdentity
+                    ? preset.globalProtectInterfaceOnly
+                    : preset
+                let agents: LifecycleBatchResult
+                if scope == .helpers {
+                    // Unloading an agent running the main binary would also quit the app.
+                    agents = await lifecycle.unloadUserLaunchAgents(
+                        for: agentPreset, preservingPIDs: before.mainProcessPIDs
+                    )
+                } else {
+                    agents = await lifecycle.unloadUserLaunchAgents(for: agentPreset)
+                }
+                diagnosticJobs = agents.jobs
+                lifecycleReport = agents.jobs.isEmpty
+                    ? nil
+                    : LifecycleReport(title: "\(preset.displayName) Relaunch Jobs", jobs: agents.jobs)
+                let terminations = await terminateProcesses(for: preset, scope: scope)
+                await lifecycle.settleAfterProcessChange()
+                let finalInventory = await refreshInventoryAfterMutation()
+                result = scope.result(
+                    before: before, after: snapshot(for: preset, inventory: finalInventory ?? []),
+                    terminations: terminations, agents: agents, refreshed: finalInventory != nil
                 )
-            } else {
-                agents = await lifecycle.unloadUserLaunchAgents(for: agentPreset)
-            }
-            diagnosticJobs = agents.jobs
-            lifecycleReport = agents.jobs.isEmpty
-                ? nil
-                : LifecycleReport(title: "\(preset.displayName) Relaunch Jobs", jobs: agents.jobs)
-            let terminations = await terminateProcesses(for: preset, scope: scope)
-            await lifecycle.settleAfterProcessChange()
-            let finalInventory = await refreshInventoryAfterMutation()
-            result = scope.result(
-                before: before, after: snapshot(for: preset, inventory: finalInventory ?? []),
-                terminations: terminations, agents: agents, refreshed: finalInventory != nil
-            )
+            }.value
+        }
+        if !ran || cancelled {
+            return TaskScopeCommandResult(status: .rejected, message: "Stop for \(preset.displayName) was cancelled.")
         }
         return result.commandResult
     }
@@ -873,6 +919,10 @@ final class ProcessManager: ObservableObject {
             // An unreadable process list says nothing about this target. Treating it
             // as an identity change both lied to the user and wiped the whole
             // selection by reconciling against an empty inventory.
+            if Task.isCancelled || verificationResult == .failure(.cancelled) {
+                message = "Stop for \(process.name) was cancelled."
+                return
+            }
             guard case .success(let currentProcesses) = verificationResult else {
                 if case .failure(let error) = verificationResult {
                     recordInventoryFailure(error)
@@ -883,9 +933,18 @@ final class ProcessManager: ObservableObject {
             }
             recordInventorySuccess()
             guard currentProcesses.contains(where: { $0.identity == process.identity }) else {
-                message = "\(process.name) is no longer the same running process."
-                reconcileSelection(with: currentProcesses)
-                result = .stale
+                let identityChanged = currentProcesses.contains { $0.pid == process.pid }
+                message = identityChanged
+                    ? "\(process.name)'s identity changed; nothing was stopped."
+                    : "\(process.name) is no longer running."
+                result = identityChanged ? .identityChanged : .stale
+                apply(snapshots(from: currentProcesses))
+                if hasLoadedProcessList {
+                    fullProcessInventory = currentProcesses
+                    publishDisplayProcesses()
+                } else {
+                    reconcileSelection(with: currentProcesses)
+                }
                 return
             }
 
@@ -992,7 +1051,7 @@ final class ProcessManager: ObservableObject {
 
     private func recordInventorySuccess() {
         processLoadError = nil
-        lastSuccessfulInventoryAt = now()
+        lastInventoryReadWasCancelled = false
         lastInventoryFailure = nil
         successfulInventoryReads &+= 1
     }
@@ -1002,6 +1061,7 @@ final class ProcessManager: ObservableObject {
     private func recordInventoryFailure(_ error: ProcessInventoryError) {
         let failure = Task.isCancelled ? ProcessInventoryError.cancelled : error
         lastInventoryFailure = failure.localizedDescription
+        lastInventoryReadWasCancelled = failure == .cancelled
         guard failure != .cancelled else { return }
         processLoadError = failure.localizedDescription
         if watchedStatusAvailability != .unknown { watchedStatusAvailability = .stale }
@@ -1087,15 +1147,14 @@ final class ProcessManager: ObservableObject {
         NotificationService.shared.prime(initialRunningNames: $0)
     }
 
-    /// The set of process names the baseline is allowed to be diffed against.
-    /// Changing it — adding or removing a preset, editing its process names, or
-    /// toggling its notification switch — invalidates the baseline.
-    private func notifiableWatchedNames(in watched: [WatchedAppSnapshot]) -> Set<String> {
-        Set(watched.filter { $0.preset.notificationsEnabled }.flatMap { $0.preset.allProcessNames })
+    /// The presets define detection scope as well as names. Bundle paths and
+    /// which preset owns a helper must invalidate the baseline too.
+    private func notifiablePresets(in watched: [WatchedAppSnapshot]) -> [WatchedAppPreset] {
+        watched.map(\.preset).filter(\.notificationsEnabled)
     }
 
     private func apply(_ watched: [WatchedAppSnapshot]) {
-        let previousWatchedNames = notifiableWatchedNames(in: snapshots)
+        let previousPresets = notifiablePresets(in: snapshots)
         snapshots = watched
         watchedStatusAvailability = .current
         status = watched.aggregateStatus
@@ -1103,12 +1162,12 @@ final class ProcessManager: ObservableObject {
         guard enableNotifications else { return }
 
         // Decide here rather than at the call site. A diff is only meaningful when
-        // the watched-name universe is unchanged; if it changed, the baseline
+        // the preset detection scopes are unchanged; if it changed, the baseline
         // predates these presets and diffing would report an already-running app as
         // newly started. Self-detecting removes any dependence on callers passing
         // the right flag, and on the order in which they run.
         let names = notifiableRunningNames(in: watched)
-        if previousWatchedNames == notifiableWatchedNames(in: watched) {
+        if previousPresets == notifiablePresets(in: watched) {
             notifyTransitions(names)
         } else {
             primeNotificationBaseline(names)

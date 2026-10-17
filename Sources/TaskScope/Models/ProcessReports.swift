@@ -4,6 +4,7 @@ enum ProcessTargetActionState: Equatable {
     case stopped
     case requestedStillRunning
     case stale
+    case identityChanged
     case signalRejected
     /// The requested identity is TaskScope itself. It is deliberately never
     /// signalled; the app's Quit action is the safe path.
@@ -19,7 +20,9 @@ enum ProcessTargetActionState: Equatable {
         case .requestedStillRunning:
             "Still running"
         case .stale:
-            "No longer matched"
+            "No longer running"
+        case .identityChanged:
+            "Identity changed"
         case .signalRejected:
             "Signal rejected"
         case .selfProcess:
