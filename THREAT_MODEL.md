@@ -76,7 +76,9 @@ Required invariants:
 - distinguish “not present,” “identity changed,” and “could not verify”;
   a present PID with changed start or executable evidence is identity-changed;
   a still-running PID/start pair with a moved or unavailable executable path
-  must not produce an Auto Stop Ended or Stopped event;
+  must not produce an Auto Stop Ended or Stopped event. A row reported as
+  `<defunct>` with no kernel executable path is already exited and must not be
+  signalled; a missing path alone does not establish exit;
 - never turn an unreadable inventory into a success or stale-target claim;
 - distinguish unobserved watched status from a verified quiet observation, mark
   retained observations stale after failures, and resolve preset card actions
@@ -95,8 +97,10 @@ Required invariants:
   cannot identify the system daemon, because a login-session PanGPS can elevate
   via setuid; readiness, automatic-disconnect gating, and final Keep Off
   verification bind PanGPS to the fixed current-user `pangps` or system `pangpsd`
-  job PID and kernel product path. Unknown attribution fails without opening
-  the vendor UI or requesting Accessibility;
+  job PID and kernel product path. A complete job listing with state but no
+  top-level PID establishes that no service process is running; it does not
+  establish that the job is unloaded or disabled. Unknown attribution fails
+  without opening the vendor UI or requesting Accessibility;
 - require a separate, explicit Force Stop confirmation for `SIGKILL`; preset
   Quit, Close, and Keep Off escalate to `SIGKILL` only after a disclosed
   graceful window (3 seconds) with the identity still present;
@@ -114,7 +118,8 @@ Required invariants:
   Auto Stop, and matching. An edit still revokes captured pre-signal authority;
 - never downgrade a path-backed saved selection to legacy command/name matching;
 - bind Activity Monitor handoff to captured UTC start time and kernel executable
-  path; verify before opening, every selection retry, and after asynchronous
+  path using local identity reads that support visible processes regardless of
+  owner; verify before opening, every selection retry, and after asynchronous
   selection before reporting success. Missing/changed evidence cannot authorize
   a successful handoff.
 
@@ -335,8 +340,8 @@ or protected from the current user.
 Required invariants:
 
 - detect an existing same-user, same-bundle instance before shared-store writes,
-  command handling, hotkey registration, or background enforcement; activate it
-  and terminate the duplicate;
+  command handling, hotkey registration, or background enforcement; request a
+  reopen of its window and terminate the duplicate;
 - isolate startup-verification stores and onboarding in fresh volatile defaults
   without reading/changing normal preferences or enforcing Keep Off;
 - decode versioned data defensively; recover valid events individually, preserve
@@ -351,6 +356,8 @@ Required invariants:
 - preserve unreadable payloads instead of overwriting them with defaults,
   including binary property-list backups of wrong-type values and non-dictionary
   hotkey settings. Keep primary values read-only until explicit reset;
+- publish no default App Intents watched-app targets when stored preset data is
+  unreadable, including wrong-type property-list values;
 - retain original partially rejected presets/rules/selections/events in
   `.rejectedMigrationBackup` slots alongside unreadable `.corruptBackup` slots;
   each family has ten non-overwriting slots (base suffix, `.2` through `.10);

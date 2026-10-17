@@ -27,6 +27,9 @@ user-selected entity from stored presets and share the app's lifecycle result
 reporting. Stop requests confirmation naming that app before stopping eligible
 watched processes, including direct App Shortcut invocation.
 
+Unreadable stored preset data, including wrong-type property-list values,
+publishes no default watched-app targets in Shortcuts.
+
 Cold intent launches, including entity pickers and confirmation, stay in the
 background without opening a window or leaving a Dock icon. Late intent signals
 suppress a launch that has had no interactive activation or explicit window

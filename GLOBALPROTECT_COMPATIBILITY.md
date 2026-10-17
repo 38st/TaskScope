@@ -288,6 +288,10 @@ an ad-hoc test bundle does not establish Developer ID or downloaded-binary QA.
 - `pangpa` is the required known user agent; `pangps` is optional. Missing an
   optional plist alone is not an incompatibility. A loaded job or persistent
   override can survive removal of a plist, so all three states are independent.
+- For automatic disconnect and final Keep Off process attribution, a complete
+  job listing with state but no top-level PID means no service process is
+  running. It does not prove that the job is unloaded or disabled; malformed
+  output remains unknown.
 - Explicit enabled/disabled overrides differ from **No override**. The latter
   defers to the installed plist's `Disabled` default. If the plist is missing,
   unreadable, or has a different label, that effective default is unverified.

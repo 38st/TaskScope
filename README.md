@@ -70,8 +70,9 @@ app before replacement. Before opening or debugging another bundle path, the
 scripts check for a running copy with the same identifier and ask you to quit
 that copy; the launch check does not stop it. This also applies to `--logs`,
 `--telemetry`, and installer launches. If a duplicate same-user, same-identifier
-app starts outside the scripts, it activates the existing instance and exits
-before commands or background enforcement.
+app starts outside the scripts, it requests that the existing instance reopen
+its window, including after a quiet login-item launch, and exits before commands
+or background enforcement.
 
 `--telemetry` only displays local macOS Unified Logs; it uploads nothing.
 `BUILD_CONFIGURATION=debug` or `release` overrides the build configuration where
@@ -133,6 +134,11 @@ Quit, Close, and Keep Off wait up to three seconds before force stopping eligibl
 processes, as disclosed in confirmation. Read the [preset guide](docs/USING_TASKSCOPE.md#watched-app-presets)
 before importing configuration.
 
+The stale watched-status banner reports the last successful watched observation,
+independently of the process-list update time, and includes the date for
+observations before today. Stale single-process stops preserve displayed
+Net/Disk readings.
+
 ### Auto-stop rules and saved selections
 
 Start with Prompt or Log Only while checking a rule. All three rule actions
@@ -141,7 +147,11 @@ Auto Stop additionally requires a trusted executable path. Saved selections
 use executable paths and show a recall preview; a path-backed entry never falls
 back to name-only matching. See [rules](docs/USING_TASKSCOPE.md#runtime-rules)
 and [saved selections](docs/USING_TASKSCOPE.md#saved-selections) for matching,
-retry, migration, and retention details.
+retry, migration, and retention details. An unanswered name-only prompt follows
+a still-matching process when its executable moves; an explicit Dismiss remains
+attached to that lifetime. Editing a rule cancels its unsignalled automatic stop
+without recording a failure. Edits that keep Auto Stop enabled and matching
+preserve an accepted request's retry budget.
 
 ### Shortcuts and URLs
 

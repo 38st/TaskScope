@@ -15,7 +15,10 @@ never target TaskScope itself, launchd, the kernel task, or process groups.
 Captured identities are revalidated immediately before signals. Missing PIDs,
 changed identities, and unavailable verification produce different results.
 A changed executable path is not proof that a still-running process exited.
-A stale single-stop target is replaced with the verified inventory.
+A `<defunct>` row with no kernel executable path is treated as already exited
+and is not signalled during manual, batch, or automatic stops; a missing path
+alone does not establish exit. A stale single-stop target is replaced with the
+verified inventory while preserving displayed Net/Disk readings.
 
 Process start evidence uses UTC and names preserve UTF-8. Shared inventory cache
 age and ordering use monotonic elapsed time, including sleep; wall-clock changes
@@ -30,7 +33,9 @@ cancels. Open remains cancellable; readiness waits stop polling and the result
 acknowledges possible earlier app or service changes. Cancelled Open and commands
 cancelled before execution are not retained as lifecycle failures.
 
-The displayed-list update time changes when its rows change. Explicit refresh
+The displayed-list update time changes when its backing inventory is replaced.
+The stale watched-status banner tracks the last successful watched observation
+separately and includes the date for observations before today. Explicit refresh
 reports its own result even when joining a silent read. Presets remain visible
 before the first watched observation and after read failures; Unknown and Stale
 status and Retry distinguish missing evidence from a quiet app.
@@ -43,7 +48,8 @@ classification does not authorize a signal or establish a launchd service identi
 
 Process details can copy a command or request exact selection in Activity Monitor.
 The row's UTC start time and kernel executable path must match before opening,
-on each selection retry, and after selection before success is reported. If
+on each selection retry, and after selection before success is reported. These
+identity checks also support visible root-owned and other-user processes. If
 Accessibility access is not granted, Activity Monitor can still open; this status
 does not imply the user denied a request. Temporary search, scope, or PID-column
 changes are restored after the handoff. Consecutive handoffs retain the original
@@ -96,11 +102,14 @@ legacy rules; the sheet and save message disclose this. Other disabled rules
 remain disabled. A quick rule cannot silently overwrite another same-name rule.
 
 Prompt alerts show a PID and are presented anew when the queued target changes.
+An unanswered name-only prompt follows a still-matching process when its
+executable moves within the same lifetime.
 Dismissal survives rule toggles and executable moves for that process occurrence;
 changing the rule action to Auto Stop or Log Only allows it to act again.
-Rule edits revoke captured pre-signal authority. Edits that keep Auto Stop
-enabled and matching retain the occurrence's handled state and single-retry
-budget, including after delivery. A retry waits at least one engine cadence
+Rule edits revoke captured pre-signal authority without adding a failure event
+for the cancelled automatic stop. Edits that keep Auto Stop enabled and matching
+retain the occurrence's handled state and single-retry budget, including after
+delivery. A retry waits at least one engine cadence
 measured by a monotonic clock. Delivered requests remain in history even if
 the rule is later edited, disabled, or deleted. An accepted request is shown as
 Stop requested until exit is observed; a changed or unreadable executable path

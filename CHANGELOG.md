@@ -36,13 +36,23 @@ All notable changes to TaskScope are documented in this file. The project uses
 
 ### Fixed
 
+- Allow identity-verified Activity Monitor handoffs for visible root-owned and other-user processes.
+- Reopen the existing TaskScope window when rejecting a duplicate launch, including quiet login-item instances.
+- Suppress default App Intents watched-app targets when stored preset preferences have an unreadable property-list type.
 - Retry shell child reaping after early exit notifications and command stops, including timeouts, so completed commands do not hang lifecycle actions.
 - Stop shell output reads at EOF, handle interrupted reads, and preserve cancellation/exit results without leaking running children.
 - Use monotonic time including sleep for shared inventory freshness and ordering, and bound Open polling with a monotonic deadline and attempt limit.
 - Align watched status, the Watched filter, and preset stops with current-user ownership and main/helper executable-directory boundaries.
 - Preserve UTC start evidence and UTF-8 names, parse padded timestamps, and reject incomplete, empty, or duplicate-PID inventories safely.
 - Distinguish changed process identities from absent PIDs; executable moves cannot falsely produce Auto Stop Ended/Stopped events or revive dismissed prompts.
-- Publish verified inventory after a stale single-process stop and update displayed-list timestamps only when rows change.
+- Publish verified inventory after a stale single-process stop, preserve extended Net/Disk readings, and update the displayed-list timestamp only when its backing inventory is replaced.
+- Track watched-snapshot freshness separately and include the date for stale observations before today.
+- Treat defunct processes without kernel executable paths as already exited across manual, batch, and automatic stops, without signalling them.
+- Preserve unanswered name-only prompts after executable moves while keeping explicit dismissals attached to the process lifetime.
+- Avoid failure events for automatic stops cancelled before signalling by a rule edit; retain accepted-request retry budgets across edits that keep Auto Stop enabled and matching.
+- Report definitive user-agent bootout refusals after one verification read while retaining bounded waits for in-progress or uncertain replies.
+- Treat complete GlobalProtect job listings with state but no top-level PID as non-running while retaining unknown attribution for malformed output.
+- Strengthen inventory-failure regressions to require unverified targets and the current verification-failure messages.
 - Report explicit refresh results when joining silent reads, without treating cancellation or an unrelated prior error as the refresh result.
 - Reject queued cancellations without failure diagnostics; finish admitted preset Stops and keep Open readiness cancellable with truthful partial-change messages.
 - Verify Quit App, Quit Helpers, and Close against the captured preset even if its stored definition changes or is deleted.

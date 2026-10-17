@@ -40,6 +40,13 @@ guards, and delivered fake signals in missing-plist tests. It also covers
 cancellation after fake SIGTERM with continued Stop escalation/helpers,
 cancelled Open readiness, changed executable evidence, notification path edits,
 joined refreshes, self-PID refusal, and complete GlobalProtect job scopes.
+Additional fake-runtime coverage checks separate watched freshness dates,
+extended metrics after stale stops, defunct-process exit reporting, unsignalled
+rule-edit cancellation, unanswered prompts after executable moves, prompt
+reporting of definitive bootout refusals, and loaded GlobalProtect jobs without
+running PIDs.
+Malformed job output remains unknown. Inventory-failure regressions require
+unverified targets and exact verification-failure messages and results.
 These checks do not establish live clock-change, launchctl error, App Intent
 cancellation, Fast User Switching, or managed GlobalProtect compatibility.
 
@@ -114,10 +121,12 @@ Record evidence for every locally testable item:
 - saved-selection recall read failure, background inventory failure/recovery,
   per-user Services badges, and TaskScope self-stop menu/Return protection;
 - corrupt settings, presets, rules/events, and saved-selection recovery/reset;
+  wrong-type preset values publish no fallback watched-app targets in Shortcuts;
 - notification not-determined, allowed, denied, revoked, and recovery states;
 - Accessibility not-granted/granted messaging and Activity Monitor identity
-  handoff, including PID reuse, changed/unreadable kernel paths, identity changes
-  during opening/retries/selection, and consecutive handoffs before restoration;
+  handoff, including root-owned and other-user processes, PID reuse,
+  changed/unreadable kernel paths, identity changes during opening/retries/selection,
+  and consecutive handoffs before restoration;
 - Launch at Login registration, required approval, and UI-driven removal/error
   recovery in Requires Approval and Unavailable states;
 - hotkey conflict, previous-shortcut restoration, separate recording errors, and
@@ -131,7 +140,8 @@ Record evidence for every locally testable item:
   grace period, late intents, and intents in an already-interactive app;
 - Stop confirmation and cancellation from Shortcuts, Siri, Spotlight, and App Shortcuts;
 - installed/staged duplicate same-identifier launch handoff before background
-  enforcement; startup verification leaves normal preferences untouched;
+  enforcement, reopening the existing window after quiet login-item launches or
+  window closure; startup verification leaves normal preferences untouched;
 - graceful SIGTERM cleanup with a pending search save or temporary Activity
   Monitor handoff, using an appropriate test environment;
 - About/onboarding use the packaged icon; changing the watched-status interval

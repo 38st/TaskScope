@@ -11,8 +11,10 @@ management policies remains unverified.
 the full shutdown path after confirmation. TaskScope attributes PanGPS to the
 fixed current-user `pangps` or system `pangpsd` launchd job using the job PID,
 ownership, and kernel executable path. Root ownership alone is insufficient:
-a session service can run as root through setuid. Unknown attribution fails
-before opening the vendor UI or requesting Accessibility.
+a session service can run as root through setuid. A complete job listing with
+state but no top-level PID establishes that no service process is running, not
+that the job is unloaded or disabled. Malformed output remains unknown; unknown
+attribution fails before opening the vendor UI or requesting Accessibility.
 
 When needed, TaskScope requests Accessibility to press the fixed vendor app's
 Disconnect control and waits for five consecutive disconnected observations.

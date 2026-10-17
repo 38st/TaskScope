@@ -180,9 +180,11 @@ These steps do not make the app Developer ID-signed or notarized.
 TaskScope relies on local macOS process tools. The Presets section keeps
 configured apps visible, shows read errors, and offers Retry. The header shows
 Unknown before a successful watched observation and Stale after a later read
-failure. If inventory remains unavailable, record the exact in-app error rather
-than assuming that no process is running. Extended network/disk counters can be
-unavailable independently of the basic process list.
+failure. The stale banner reports the last successful watched observation,
+separately from the process-list update time, and includes the date for
+observations before today. If inventory remains unavailable, record the exact
+in-app error rather than assuming that no process is running. Extended
+network/disk counters can be unavailable independently of the basic process list.
 
 ### Activity Monitor opens but does not select the PID
 
@@ -193,7 +195,8 @@ Activity Monitor search, process scope, or PID column, TaskScope restores the
 prior state after a short handoff delay. A message that access is not granted
 can also appear on the first request; it does not mean you denied access. If
 TaskScope cannot verify the row's start time and kernel executable path, refresh
-the process list and retry from a current row.
+the process list and retry from a current row. These identity checks support
+visible root-owned and other-user processes too.
 
 ### Notifications do not appear
 
@@ -221,6 +224,9 @@ type is archived as binary property-list data. Affected stores cannot overwrite
 primary data until explicit reset. Occupied backup slots are never replaced;
 if all ten slots are full, the banner explains that the original remains only
 at its primary key. Preserve that value before resetting.
+
+Unreadable preset data, including wrong-type property-list values, publishes
+no default watched-app targets in Shortcuts.
 
 Partially decoded or validation-rejected presets, rules, saved selections, and
 auto-stop events use a second family: `.rejectedMigrationBackup`, then `.2`
@@ -258,9 +264,11 @@ intended absolute executable path before enabling automatic stopping.
 
 Read the per-job lifecycle report. Healthy GlobalProtect Open reports no service
 restoration and shows no service sheet when all jobs were already enabled and
-loaded. User-agent stops wait for verified removal even if bootout returned an
-error; a final unreadable or still-loaded state remains a failure. Partial stop
-messages distinguish observed completion from an unverified outcome.
+loaded. User-agent stops verify removal even if bootout returned an error.
+A definitive refusal gets one verification read; successful, in-progress, or
+uncertain replies retain bounded waits. A final unreadable or still-loaded
+state remains a failure. Partial stop messages distinguish observed completion
+from an unverified outcome.
 Missing app/plist paths and user launch-agent failures apply to custom presets. Administrator denial and managed-service
 policy apply only to the immutable built-in GlobalProtect system-service
 path. Do not repeat that privileged operation blindly; use the organization's

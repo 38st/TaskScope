@@ -83,7 +83,11 @@ preferences directories and remove that test domain and its plists at cleanup.
 A temporary `CFFIXED_USER_HOME` alone does not isolate preferences.
 
 The process-history chart keeps at most 60 samples in memory and does not
-persist them. Pending prompts and current process inventory are also transient.
+persist them. Pending prompts, current process inventory, and separate watched
+and displayed-list observation timestamps are also transient. Rule edits that
+cancel an automatic stop before signalling do not add a failure event. Accepted
+requests retain their event history; edits that keep Auto Stop enabled and
+matching also retain their retry budget.
 Shared inventory cache freshness uses monotonic elapsed time, including sleep;
 clock changes do not extend reuse. The Watched filter limits main/helper rows to
 the current user's configured bundle boundaries; protected names retain display
@@ -153,8 +157,10 @@ screenshot to a public issue.
 - **Notifications:** requested only after the user opts in. macOS controls
   delivery and stores displayed notifications.
 - **Accessibility:** requested for exact PID selection in Activity Monitor.
-  TaskScope does not need it for ordinary process monitoring. When selection
-  requires a temporary search, process-scope, or PID-column change, TaskScope
+  TaskScope does not need it for ordinary process monitoring. Handoff identity
+  checks read local kernel start-time and executable-path evidence for visible
+  processes, including processes owned by other users. When selection requires
+  a temporary search, process-scope, or PID-column change, TaskScope
   restores the prior Activity Monitor state after the handoff delay.
   Explicit GlobalProtect Quit All and Keep Off actions also use Accessibility
   to read the fixed vendor app's connection status and press Disconnect.
