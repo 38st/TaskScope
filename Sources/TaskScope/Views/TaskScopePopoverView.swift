@@ -887,8 +887,9 @@ struct TaskScopePopoverView: View {
         }
 
         let hasSearch = !settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        let count = processManager.inventorySnapshot.lazy.filter(listQuery.matches).count
-        let shown = filteredProcesses.count
+        let list = processManager.displayList(for: listQuery)
+        let count = list.matchCount
+        let shown = list.processes.count
         let noun = hasSearch ? "matches" : "processes"
         return shown < count ? "Showing \(shown) of \(count) \(noun)" : "\(shown) \(noun)"
     }

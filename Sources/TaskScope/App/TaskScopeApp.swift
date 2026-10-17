@@ -11,37 +11,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     var willTerminate: (() -> Void)?
     /// Shows the main window. Installed once the runtime is bootstrapped.
     var showMainWindow: (() -> Void)?
-    private let previouslyFrontmostApplication: NSRunningApplication?
-    private let launchSession = TaskScopeLaunchSession.shared
-    private let terminationHandler = TaskScopeTerminationHandler.system { NSApp.terminate(nil) }
+    private let launchSession: TaskScopeLaunchSession
+    private let terminationHandler: TaskScopeTerminationHandler
+    private let runtime: Runtime
+
+    /// AppKit effects are injected so delegate lifecycle callbacks can be tested
+    /// without registering system handlers or presenting application windows.
+    @MainActor
+    struct Runtime {
+        var launchSignal: () -> TaskScopeLaunchSignal
+        var isActive: () -> Bool
+        var setActivationPolicy: (NSApplication.ActivationPolicy) -> Void
+        var registerURLHandler: (@escaping () -> Void) -> Void
+        var configureAccessibility: () -> Void
+        var registerHotkey: () -> Void
+        var hideAutomaticWindows: () -> Void
+        var restorePreviousApplication: () -> Void
+        var presentMainWindow: () -> Void
+        var waitForInteractiveLaunch: () async -> Void
+
+        static var system: Runtime {
+            let previous = NSWorkspace.shared.frontmostApplication
+            return Runtime(
+                launchSignal: {
+                    let event = NSAppleEventManager.shared().currentAppleEvent
+                    let loginDescriptor = event?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))
+                    return TaskScopeLaunchSignal(
+                        arguments: ProcessInfo.processInfo.arguments,
+                        launchedAsLoginItem: loginDescriptor?.booleanValue ?? false,
+                        receivedOpenURL: event?.eventClass == AEEventClass(kInternetEventClass)
+                            && event?.eventID == AEEventID(kAEGetURL)
+                    )
+                },
+                isActive: { NSApp.isActive },
+                setActivationPolicy: { NSApp.setActivationPolicy($0) },
+                registerURLHandler: { callback in URLSchemeHandler.shared.register { _ in callback() } },
+                configureAccessibility: { AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2) },
+                registerHotkey: { HotkeyManager.shared.register() },
+                hideAutomaticWindows: {
+                    NSApp.windows.filter { automaticWindowTitles.contains($0.title) }.forEach { $0.orderOut(nil) }
+                },
+                restorePreviousApplication: {
+                    NSApp.deactivate()
+                    if let previous, previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                        previous.activate()
+                    }
+                },
+                presentMainWindow: {
+                    DispatchQueue.main.async {
+                        NSApp.windows.first { $0.title == "TaskScope" || $0.title == "TaskScope Processes" }?
+                            .makeKeyAndOrderFront(nil)
+                    }
+                },
+                waitForInteractiveLaunch: { try? await Task.sleep(nanoseconds: 500_000_000) }
+            )
+        }
+    }
     private var hasInteractiveSignal = false
-    private var launchPhase = TaskScopeLaunchPhase.starting
+    private(set) var launchPhase = TaskScopeLaunchPhase.starting
     private var interactiveLaunchTask: Task<Void, Never>?
     private var automaticWindowSuppressionTask: Task<Void, Never>?
 
-    override init() {
+    override convenience init() {
+        self.init(launchSession: .shared, commandBus: .shared,
+                  terminationHandler: .system { NSApp.terminate(nil) }, runtime: .system)
+    }
+
+    init(launchSession: TaskScopeLaunchSession, commandBus: AppCommandBus,
+         terminationHandler: TaskScopeTerminationHandler, runtime: Runtime) {
+        self.launchSession = launchSession
+        self.terminationHandler = terminationHandler
+        self.runtime = runtime
         launchContext = .pending
         windowPresentationAllowed = false
-        previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
         super.init()
         if launchSession.allowsRuntime {
-            AppCommandBus.shared.onIntentExecution = { [weak self] in
+            commandBus.onIntentExecution = { [weak self] in
                 self?.prepareForIncomingAutomationCommand()
             }
         }
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
-        terminationHandler.start()
         guard launchSession.continueLaunching() else { return }
+        terminationHandler.start()
         resolveLaunchContext(finalizeInteractiveLaunch: false)
-        URLSchemeHandler.shared.register { [weak self] _ in
+        runtime.registerURLHandler { [weak self] in
             self?.prepareForIncomingAutomationCommand()
         }
         if launchContext.suppressesAutomaticWindowPresentation {
-            NSApp.setActivationPolicy(.accessory)
+            runtime.setActivationPolicy(.accessory)
         } else {
-            NSApp.setActivationPolicy(.regular)
+            runtime.setActivationPolicy(.regular)
         }
         NotificationCenter.default.addObserver(
             self,
@@ -57,10 +118,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Bound every Accessibility request this process makes (GlobalProtect
         // disconnect, Activity Monitor handoff). The default is about six
         // seconds per call, which an unresponsive app multiplies per element.
-        AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2)
+        runtime.configureAccessibility()
 
         if launchSession.allowsRuntime {
-            HotkeyManager.shared.register()
+            runtime.registerHotkey()
         }
         if launchContext.suppressesAutomaticWindowPresentation {
             finalizeBackgroundLaunch()
@@ -74,6 +135,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         willTerminate?()
         launchSession.cleanUp()
         terminationHandler.stop()
+        interactiveLaunchTask?.cancel()
+        automaticWindowSuppressionTask?.cancel()
+        NotificationCenter.default.removeObserver(self)
     }
 
     /// Opening the running app again (Finder, Dock, Spotlight, Launchpad) is
@@ -126,14 +190,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // Launch Services delivers a cold-open URL after did-finish. Keep
             // restored/default windows suppressed until that launch event has
             // had a chance to reach the handler registered during will-finish.
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            await self?.runtime.waitForInteractiveLaunch()
             guard let self, !Task.isCancelled, self.launchPhase == .starting else {
                 return
             }
 
             self.launchPhase = .running
             self.interactiveLaunchTask = nil
-            switch TaskScopeLaunchPresentation.resolve(context: self.launchContext, isActive: NSApp.isActive) {
+            switch TaskScopeLaunchPresentation.resolve(context: self.launchContext, isActive: self.runtime.isActive()) {
             case .background:
                 self.finalizeBackgroundLaunch()
             case .presentNow:
@@ -145,17 +209,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func resolveLaunchContext(finalizeInteractiveLaunch: Bool) {
-        let event = NSAppleEventManager.shared().currentAppleEvent
-        let loginDescriptor = event?
-            .paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))
         launchContext = TaskScopeLaunchContext.resolve(
             current: launchContext,
-            signal: TaskScopeLaunchSignal(
-                arguments: ProcessInfo.processInfo.arguments,
-                launchedAsLoginItem: loginDescriptor?.booleanValue ?? false,
-                receivedOpenURL: event?.eventClass == AEEventClass(kInternetEventClass)
-                    && event?.eventID == AEEventID(kAEGetURL)
-            ),
+            signal: runtime.launchSignal(),
             finalizeInteractiveLaunch: finalizeInteractiveLaunch
         )
     }
@@ -164,24 +220,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func windowDidBecomeVisible(_ notification: Notification) {
         guard !windowPresentationAllowed,
               let window = notification.object as? NSWindow,
-              automaticWindowTitles.contains(window.title) else {
+              Self.automaticWindowTitles.contains(window.title) else {
             return
         }
         window.orderOut(nil)
     }
 
     private func hideAutomaticWindows() {
-        NSApp.windows
-            .filter { automaticWindowTitles.contains($0.title) }
-            .forEach { $0.orderOut(nil) }
+        runtime.hideAutomaticWindows()
     }
 
-    private var automaticWindowTitles: Set<String> {
-        ["TaskScope", "TaskScope Processes", "Onboarding", "About TaskScope"]
-    }
+    private static let automaticWindowTitles: Set<String> = [
+        "TaskScope", "TaskScope Processes", "Onboarding", "About TaskScope"
+    ]
 
     private func finalizeBackgroundLaunch() {
-        NSApp.setActivationPolicy(.accessory)
+        runtime.setActivationPolicy(.accessory)
         suppressAutomaticWindowPresentation()
         startAutomaticWindowSuppression()
     }
@@ -195,7 +249,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func finalizeInactiveInteractiveLaunch() {
         // will-finish ran while the context was still pending and made the app
         // an accessory; an interactive launch keeps its Dock presence.
-        NSApp.setActivationPolicy(.regular)
+        runtime.setActivationPolicy(.regular)
         hideAutomaticWindows()
         startAutomaticWindowSuppression()
     }
@@ -225,14 +279,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         automaticWindowSuppressionTask = nil
         launchContext = .interactive
         windowPresentationAllowed = true
-        NSApp.setActivationPolicy(.regular)
-        DispatchQueue.main.async {
-            if let window = NSApp.windows.first(where: {
-                $0.title == "TaskScope" || $0.title == "TaskScope Processes"
-            }) {
-                window.makeKeyAndOrderFront(nil)
-            }
-        }
+        runtime.setActivationPolicy(.regular)
+        runtime.presentMainWindow()
     }
 
     func suppressAutomaticWindowPresentation() {
@@ -241,11 +289,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return
         }
         hideAutomaticWindows()
-        NSApp.deactivate()
-        if let previous = previouslyFrontmostApplication,
-           previous.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-            previous.activate()
-        }
+        runtime.restorePreviousApplication()
     }
 
     func permitWindowPresentation() {
@@ -257,7 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         automaticWindowSuppressionTask = nil
         launchPhase = .running
         windowPresentationAllowed = true
-        NSApp.setActivationPolicy(.regular)
+        runtime.setActivationPolicy(.regular)
     }
 }
 
@@ -323,10 +367,8 @@ struct TaskScopeApp: App {
             guard preset.id == WatchedAppPreset.globalProtectID else { return }
             settings.keepGlobalProtectOff = keptOff
         }
-        if launchSession.allowsRuntime {
-            AppCommandBus.shared.install { command in
-                await coordinator.perform(command)
-            }
+        launchSession.installCommandHandler(on: .shared) { command in
+            await coordinator.perform(command)
         }
 
         _processManager = StateObject(wrappedValue: processManager)

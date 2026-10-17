@@ -45,7 +45,7 @@ struct WatchedPresetCatalog: Sendable {
         if let data = userDefaults.data(forKey: key),
            let decoded = try? JSONDecoder().decode(PartiallyDecodedArray<WatchedAppPreset>.self, from: data) {
             presets = WatchedAppsStore.validatedPresets(decoded.elements).presets
-        } else if userDefaults.data(forKey: key) == nil {
+        } else if userDefaults.object(forKey: key) == nil {
             presets = [.globalProtect]
         } else {
             // Match WatchedAppsStore's corruption policy: do not silently replace

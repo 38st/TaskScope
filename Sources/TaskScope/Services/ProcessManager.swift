@@ -217,6 +217,12 @@ final class ProcessManager: ObservableObject {
         )
     }
 
+    func displayList(for query: ProcessListQuery) -> ProcessListProjection.DisplayList {
+        listProjection.displayList(
+            for: query, sortKey: sortKey, limit: processListLimitProvider?() ?? 80
+        )
+    }
+
     /// Tree roots give every displayed match its ancestor context from the full
     /// inventory, including ancestors outside the display limit.
     func treeRoots(for query: ProcessListQuery) -> [ProcessTreeNode] {

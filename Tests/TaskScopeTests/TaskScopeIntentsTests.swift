@@ -89,7 +89,7 @@ final class TaskScopeIntentsTests: XCTestCase {
         )
     }
 
-    private let suiteName = "TaskScope.TaskScopeIntentsTests"
+    private let suiteName = "TaskScope.TaskScopeIntentsTests.\(UUID().uuidString)"
     private let key = "watched-presets-intent-tests"
     private var defaults: UserDefaults!
 
@@ -109,8 +109,10 @@ final class TaskScopeIntentsTests: XCTestCase {
         let catalog = WatchedPresetCatalog(suiteName: suiteName, key: key)
         XCTAssertEqual(catalog.entities().map(\.displayName), ["GlobalProtect"])
 
-        defaults.set(Data([0xFE, 0xED]), forKey: key)
-        XCTAssertTrue(catalog.entities().isEmpty)
+        for payload: Any in [Data([0xFE, 0xED]), "unreadable", ["unexpected": "dictionary"]] {
+            defaults.set(payload, forKey: key)
+            XCTAssertTrue(catalog.entities().isEmpty)
+        }
     }
 
     @MainActor

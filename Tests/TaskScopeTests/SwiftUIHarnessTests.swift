@@ -198,13 +198,16 @@ final class SwiftUIHarnessTests: XCTestCase {
         ])
         defer { fixture.stores.cleanup() }
         fixture.manager.processListLimitProvider = { 1 }
-        let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
-        XCTAssertNoThrow(try view.inspect().find(text: "Showing 1 of 3 processes"))
-        fixture.stores.settings.searchText = "Worker"
-        XCTAssertNoThrow(try view.inspect().find(text: "Showing 1 of 2 matches"))
-        fixture.stores.settings.searchText = "WorkerA"
-        XCTAssertNoThrow(try view.inspect().find(text: "1 matches"))
-        XCTAssertThrowsError(try view.inspect().find(text: "Showing 1 of 1 matches"))
+        for style in [TaskScopePresentationStyle.expandedWindow, .menuBarCompact] {
+            fixture.stores.settings.searchText = ""
+            let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState(), presentationStyle: style)
+            XCTAssertNoThrow(try view.inspect().find(text: "Showing 1 of 3 processes"))
+            fixture.stores.settings.searchText = "Worker"
+            XCTAssertNoThrow(try view.inspect().find(text: "Showing 1 of 2 matches"))
+            fixture.stores.settings.searchText = "WorkerA"
+            XCTAssertNoThrow(try view.inspect().find(text: "1 matches"))
+            XCTAssertThrowsError(try view.inspect().find(text: "Showing 1 of 1 matches"))
+        }
     }
 
     func testUserProtectedProcessBadgeMatchesServicesHeader() throws {
@@ -912,7 +915,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         let confirmation = ProcessConfirmationState()
         confirmation.requestPresetAction(.quitAll, preset: .globalProtect)
         var windowRequests = 0
-        let view = makePopover(fixture: fixture, confirmationState: confirmation, openFullWindow: { windowRequests += 1 })
+        let view = makePopover(fixture: fixture, confirmationState: confirmation, openFullWindow: { windowRequests += 1 }, presentationStyle: .menuBarCompact)
         let previousMessage = fixture.manager.message
         try view.inspect().find(ViewType.ConfirmationDialog.self).actions().find(button: "Cancel").tap()
         await settle()

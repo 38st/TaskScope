@@ -235,12 +235,18 @@ struct SystemActivityMonitorProcessChecker: ActivityMonitorProcessChecking {
     }
 
     private static func startTime(for pid: Int32) -> (seconds: UInt64, microseconds: UInt64)? {
-        var info = proc_bsdinfo()
-        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size,
-              info.pbi_pid == UInt32(pid), info.pbi_status != UInt32(SZOMB),
-              info.pbi_start_tvsec > 0 else { return nil }
-        return (info.pbi_start_tvsec, info.pbi_start_tvusec)
+        // Unlike PROC_PIDTBSDINFO, KERN_PROC_PID exposes the same start-time
+        // evidence as ps for visible processes owned by other users too.
+        guard pid > 0 else { return nil }
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.size
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0,
+              size == MemoryLayout<kinfo_proc>.size,
+              info.kp_proc.p_pid == pid, info.kp_proc.p_stat != UInt8(SZOMB) else { return nil }
+        let start = info.kp_proc.p_starttime
+        guard start.tv_sec > 0, start.tv_usec >= 0 else { return nil }
+        return (UInt64(start.tv_sec), UInt64(start.tv_usec))
     }
 
     func processExists(pid: Int32) -> Bool {

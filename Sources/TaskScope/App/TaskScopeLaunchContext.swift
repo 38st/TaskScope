@@ -124,7 +124,7 @@ final class TaskScopeLaunchSession {
         var processID: pid_t
         var userID: uid_t
         var runningInstances: @MainActor () -> [Instance]
-        var activate: @MainActor (pid_t) -> Void
+        var reopen: @MainActor (pid_t) -> Void
         var terminate: @MainActor () -> Void
 
         static var system: Runtime {
@@ -149,7 +149,7 @@ final class TaskScopeLaunchSession {
                             )
                         }
                 },
-                activate: { NSRunningApplication(processIdentifier: $0)?.activate() },
+                reopen: { TaskScopeInstanceHandoff.system.perform(processID: $0) },
                 terminate: { NSApp.terminate(nil) }
             )
         }
@@ -193,10 +193,18 @@ final class TaskScopeLaunchSession {
         guard let otherInstance else { return true }
         if !didHandOff {
             didHandOff = true
-            runtime.activate(otherInstance.processID)
+            runtime.reopen(otherInstance.processID)
             runtime.terminate()
         }
         return false
+    }
+
+    func installCommandHandler(
+        on bus: AppCommandBus,
+        handler: @escaping @MainActor @Sendable (TaskScopeCommand) async -> TaskScopeCommandResult
+    ) {
+        guard allowsRuntime else { return }
+        bus.install(handler: handler)
     }
 
     func cleanUp() {
@@ -298,5 +306,38 @@ private final class TaskScopeVolatileDefaults: UserDefaults {
 
     override func removeObject(forKey defaultName: String) {
         set(nil as Any?, forKey: defaultName)
+    }
+}
+
+/// The duplicate's handoff uses the running copy's bundle, not the new copy.
+@MainActor
+struct TaskScopeInstanceHandoff {
+    var applicationURL: (pid_t) -> URL?
+    var yieldActivation: (pid_t) -> Void
+    var openApplication: (URL, NSWorkspace.OpenConfiguration) -> Void
+
+    static var system: TaskScopeInstanceHandoff {
+        TaskScopeInstanceHandoff(
+            applicationURL: { NSRunningApplication(processIdentifier: $0)?.bundleURL },
+            yieldActivation: {
+                if let application = NSRunningApplication(processIdentifier: $0) {
+                    NSApp.yieldActivation(to: application)
+                }
+            },
+            openApplication: { url, configuration in
+                NSWorkspace.shared.openApplication(at: url, configuration: configuration)
+            }
+        )
+    }
+
+    func perform(processID: pid_t) {
+        guard let url = applicationURL(processID) else { return }
+        yieldActivation(processID)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        // Launch Services sends a reopen event to the existing instance,
+        // including an accessory instance whose windows were suppressed.
+        configuration.createsNewApplicationInstance = false
+        openApplication(url, configuration)
     }
 }

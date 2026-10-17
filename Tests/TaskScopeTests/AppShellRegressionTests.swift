@@ -22,7 +22,7 @@ final class AppShellRegressionTests: XCTestCase {
     }
 
     @MainActor
-    func testDuplicateLaunchHandsOffBeforeRuntimeOrPreferences() {
+    func testDuplicateLaunchHandsOffBeforeRuntimeOrPreferences() async {
         for context in [TaskScopeLaunchContext.interactive, .loginItem, .automation, .urlAutomation] {
             var events: [String] = []
             let session = TaskScopeLaunchSession(
@@ -37,11 +37,25 @@ final class AppShellRegressionTests: XCTestCase {
             )
             defer { session.cleanUp() }
 
+            let bus = AppCommandBus()
+            bus.install { _ in .init(status: .completed, message: "original handler") }
+            session.installCommandHandler(on: bus) { _ in
+                XCTFail("A duplicate must not install its command handler")
+                return .init(status: .failed, message: "duplicate handler")
+            }
+            let delegate = makeDelegate(session: session, bus: bus, event: { events.append($0) })
+            let notification = Notification(name: NSApplication.willFinishLaunchingNotification)
+            defer { delegate.applicationWillTerminate(notification) }
+            delegate.applicationWillFinishLaunching(notification)
+            delegate.applicationDidFinishLaunching(notification)
+            XCTAssertNil(bus.onIntentExecution, "A duplicate must not install an intent observer")
+            let result = await bus.submit(.refresh)
+            XCTAssertEqual(result.message, "original handler")
             XCTAssertFalse(session.continueLaunching(), "A duplicate must not continue launching")
             XCTAssertFalse(session.allowsRuntime, "A duplicate must not start polling or accept commands")
-            XCTAssertEqual(events, ["activate 42", "terminate"], "Handoff must not read shared preferences")
+            XCTAssertEqual(events, ["reopen 42", "terminate"], "Handoff must not read shared preferences")
             XCTAssertFalse(session.continueLaunching())
-            XCTAssertEqual(events, ["activate 42", "terminate"], "Handoff occurs only once")
+            XCTAssertEqual(events, ["reopen 42", "terminate"], "Handoff occurs only once")
         }
     }
 
@@ -85,6 +99,16 @@ final class AppShellRegressionTests: XCTestCase {
         )
         defer { session.cleanUp() }
         let stores = TaskScopeLaunchStores(session: session, inventory: AppShellInventory())
+        var events: [String] = []
+        let bus = AppCommandBus()
+        let delegate = makeDelegate(session: session, bus: bus, arguments: ["TaskScope", "--verify-startup"],
+                                    event: { events.append($0) })
+        let notification = Notification(name: NSApplication.willFinishLaunchingNotification)
+        delegate.applicationWillFinishLaunching(notification)
+        delegate.applicationDidFinishLaunching(notification)
+        defer { delegate.applicationWillTerminate(notification) }
+        XCTAssertNil(bus.onIntentExecution)
+        XCTAssertFalse(events.contains("register hotkey"), "Verification must not register a hotkey")
 
         XCTAssertTrue(session.continueLaunching())
         XCTAssertFalse(session.allowsRuntime)
@@ -118,13 +142,18 @@ final class AppShellRegressionTests: XCTestCase {
             },
             terminate: { terminations += 1 }
         )
-        handler.start()
-        handler.start()
+        let session = TaskScopeLaunchSession(context: .interactive,
+            runtime: runtime(instances: []) { _ in XCTFail("Unexpected handoff") },
+            standardDefaults: { self.defaults })
+        let delegate = makeDelegate(session: session, bus: AppCommandBus(), terminationHandler: handler)
+        let notification = Notification(name: NSApplication.willFinishLaunchingNotification)
+        delegate.applicationWillFinishLaunching(notification)
+        delegate.applicationWillFinishLaunching(notification)
         signalHandler?()
         XCTAssertEqual(installs, 1, "SIGTERM handling must be installed once")
         XCTAssertEqual(terminations, 1, "SIGTERM must request the normal application termination path")
-        handler.stop()
-        handler.stop()
+        delegate.applicationWillTerminate(notification)
+        delegate.applicationWillTerminate(notification)
         XCTAssertEqual(cancellations, 1)
     }
 
@@ -154,32 +183,77 @@ final class AppShellRegressionTests: XCTestCase {
 
     @MainActor
     func testLateIntentDemotesOnlyLaunchWithoutInteractiveSignal() async throws {
-        let bus = AppCommandBus()
-        var context = TaskScopeLaunchContext.interactive
-        var hasInteractiveSignal = false
-        bus.onIntentExecution = {
-            context = TaskScopeLaunchContext.receivingAutomation(
-                current: context, phase: .running, hasInteractiveSignal: hasInteractiveSignal
-            )
+        for interactiveSignal in ["none", "activation", "reopen"] {
+            let session = TaskScopeLaunchSession(context: .interactive,
+                runtime: runtime(instances: []) { _ in XCTFail("Unexpected handoff") },
+                standardDefaults: { self.defaults })
+            let bus = AppCommandBus()
+            session.installCommandHandler(on: bus) { _ in .init(status: .completed, message: "refreshed") }
+            var events: [String] = []
+            let delegate = makeDelegate(session: session, bus: bus, event: { events.append($0) })
+            let notification = Notification(name: NSApplication.willFinishLaunchingNotification)
+            defer { delegate.applicationWillTerminate(notification) }
+            delegate.applicationWillFinishLaunching(notification)
+            // Record the real activation callback while windows are still suppressed.
+            if interactiveSignal == "activation" { delegate.applicationDidBecomeActive(notification) }
+            delegate.applicationDidFinishLaunching(notification)
+            XCTAssertEqual(events.filter { $0 == "register hotkey" }.count, 1)
+            for _ in 0..<100 where delegate.launchPhase != .running { await Task.yield() }
+            XCTAssertEqual(delegate.launchPhase, .running)
+            XCTAssertFalse(delegate.windowPresentationAllowed)
+            if interactiveSignal == "reopen" {
+                var shown = 0
+                delegate.showMainWindow = { shown += 1 }
+                XCTAssertFalse(delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false))
+                XCTAssertEqual(shown, 1)
+            }
+            _ = try await TaskScopeIntentExecution.perform(.refresh, bus: bus)
+            let expected: TaskScopeLaunchContext = interactiveSignal == "none" ? .urlAutomation : .interactive
+            XCTAssertEqual(delegate.launchContext, expected)
+            let query = WatchedPresetEntityQuery(catalog: WatchedPresetCatalog(suiteName: suiteName),
+                                                prepareForIntent: { bus.prepareForIntentExecution() })
+            _ = try await query.suggestedEntities()
+            XCTAssertEqual(delegate.launchContext, expected)
         }
-        bus.install { _ in .init(status: .completed, message: "refreshed") }
-        _ = try await TaskScopeIntentExecution.perform(.refresh, bus: bus)
-        XCTAssertEqual(context, .urlAutomation, "A late intent must suppress a never-activated launch")
+    }
 
-        context = .interactive
-        hasInteractiveSignal = true
-        _ = try await TaskScopeIntentExecution.perform(.refresh, bus: bus)
-        XCTAssertEqual(context, .interactive, "An app the user already opened must remain interactive")
-
-        let query = WatchedPresetEntityQuery(
-            catalog: WatchedPresetCatalog(suiteName: suiteName),
-            prepareForIntent: { bus.prepareForIntentExecution() }
+    @MainActor
+    func testDuplicateReopenShowsQuietRunningInstanceBeforeExiting() {
+        let runningSession = TaskScopeLaunchSession(context: .loginItem,
+            runtime: runtime(instances: []) { _ in XCTFail("Unexpected handoff") },
+            standardDefaults: { self.defaults })
+        let runningDelegate = makeDelegate(session: runningSession, bus: AppCommandBus(), launchedAsLoginItem: true)
+        let notification = Notification(name: NSApplication.willFinishLaunchingNotification)
+        runningDelegate.applicationWillFinishLaunching(notification)
+        runningDelegate.applicationDidFinishLaunching(notification)
+        defer { runningDelegate.applicationWillTerminate(notification) }
+        XCTAssertFalse(runningDelegate.windowPresentationAllowed)
+        XCTAssertEqual(runningDelegate.launchContext, .loginItem)
+        var events: [String] = []
+        runningDelegate.showMainWindow = { [weak runningDelegate] in
+            events.append("show window")
+            runningDelegate?.permitWindowPresentation()
+        }
+        let runningURL = URL(fileURLWithPath: "/Applications/RunningCopy.app")
+        let handoff = TaskScopeInstanceHandoff(
+            applicationURL: { pid in XCTAssertEqual(pid, 42); return runningURL },
+            yieldActivation: { pid in XCTAssertEqual(pid, 42); events.append("yield activation") },
+            openApplication: { url, configuration in
+                XCTAssertEqual(url, runningURL)
+                XCTAssertTrue(configuration.activates)
+                XCTAssertFalse(configuration.createsNewApplicationInstance)
+                events.append("reopen")
+                XCTAssertFalse(runningDelegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false))
+            }
         )
-        _ = try await query.suggestedEntities()
-        XCTAssertEqual(context, .interactive)
-        hasInteractiveSignal = false
-        _ = try await query.suggestedEntities()
-        XCTAssertEqual(context, .urlAutomation, "A late query alone must suppress a never-activated launch")
+        var duplicateRuntime = runtime(instances: [instance(pid: 42)]) { events.append($0) }
+        duplicateRuntime.reopen = { handoff.perform(processID: $0) }
+        let duplicate = TaskScopeLaunchSession(context: .interactive, runtime: duplicateRuntime,
+            standardDefaults: { XCTFail("A duplicate must not read preferences"); return self.defaults })
+        defer { duplicate.cleanUp() }
+        XCTAssertFalse(duplicate.continueLaunching())
+        XCTAssertTrue(runningDelegate.windowPresentationAllowed)
+        XCTAssertEqual(events, ["yield activation", "reopen", "show window", "terminate"])
     }
 
     @MainActor
@@ -232,6 +306,31 @@ final class AppShellRegressionTests: XCTestCase {
     }
 
     @MainActor
+    private func makeDelegate(
+        session: TaskScopeLaunchSession,
+        bus: AppCommandBus,
+        arguments: [String] = ["TaskScope"],
+        launchedAsLoginItem: Bool = false,
+        terminationHandler: TaskScopeTerminationHandler? = nil,
+        event: @escaping (String) -> Void = { _ in }
+    ) -> AppDelegate {
+        AppDelegate(
+            launchSession: session, commandBus: bus,
+            terminationHandler: terminationHandler ?? TaskScopeTerminationHandler(
+                install: { _ in event("install termination handler"); return {} }, terminate: {}),
+            runtime: .init(
+                launchSignal: { .init(arguments: arguments, launchedAsLoginItem: launchedAsLoginItem, receivedOpenURL: false) },
+                isActive: { false }, setActivationPolicy: { _ in },
+                registerURLHandler: { _ in event("register URL handler") },
+                configureAccessibility: { event("configure Accessibility") },
+                registerHotkey: { event("register hotkey") },
+                hideAutomaticWindows: {}, restorePreviousApplication: {}, presentMainWindow: {},
+                waitForInteractiveLaunch: {}
+            )
+        )
+    }
+
+    @MainActor
     private func runtime(
         instances: [TaskScopeLaunchSession.Instance],
         event: @escaping (String) -> Void
@@ -241,7 +340,7 @@ final class AppShellRegressionTests: XCTestCase {
             processID: 10,
             userID: 501,
             runningInstances: { instances },
-            activate: { event("activate \($0)") },
+            reopen: { event("reopen \($0)") },
             terminate: { event("terminate") }
         )
     }
