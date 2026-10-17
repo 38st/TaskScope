@@ -221,21 +221,47 @@ final class ShellCommandRunnerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
+    /// On a loaded machine the 0.25 s timeout can kill the shell before it
+    /// reports its descendant, or before it starts one. Such an attempt must
+    /// still time out promptly and leave nothing in the shell's process group,
+    /// but it has no reported descendant to check, so it is retried.
     func testTimeoutTerminatesDescendantsThatIgnoreTermAndHoldPipesOpen() async throws {
-        let marker = FileManager.default.temporaryDirectory
-            .appendingPathComponent("taskscope-timeout-group-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: marker) }
+        let attempts = 10
+        for _ in 0..<attempts {
+            let marker = FileManager.default.temporaryDirectory
+                .appendingPathComponent("taskscope-timeout-group-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: marker) }
+            let probe = RecordingChildWaitProbe()
 
-        let started = Date()
-        let result = await ShellCommandRunner.run(
-            descendantHoldingPipesCommand(marker: marker),
-            timeout: 0.25
-        )
-        let pids = try processIdentifiers(from: marker)
-        XCTAssertEqual(result.exitCode, -3)
-        XCTAssertTrue(result.stderr.contains("timed out"))
-        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
-        await assertProcessDisappears(pids.descendant)
+            let started = Date()
+            let result = await ShellCommandRunner.run(
+                descendantHoldingPipesCommand(marker: marker),
+                timeout: 0.25,
+                waitForChild: { probe.wait($0, $1, $2) }
+            )
+            XCTAssertEqual(result.exitCode, -3)
+            XCTAssertTrue(result.stderr.contains("timed out"))
+            XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+            // Take the shell's PID from the waitpid seam. The shell leads its
+            // own process group, so an empty group also rules out a descendant
+            // the shell started but never reported.
+            guard let shell = probe.childPID, shell > 0 else {
+                return XCTFail("The runner must probe exactly one child PID")
+            }
+            await assertProcessDisappears(-shell)
+
+            // `>` creates the marker before printf writes to it, and with the
+            // group gone nothing can write to it any more. A missing or empty
+            // marker means the timeout killed the shell before it reported.
+            guard let report = try? String(contentsOf: marker, encoding: .utf8), !report.isEmpty else {
+                continue
+            }
+            let pids = try processIdentifiers(in: report)
+            XCTAssertEqual(pids.group, shell, "The shell must report its own PID")
+            await assertProcessDisappears(pids.descendant)
+            return
+        }
+        XCTFail("None of \(attempts) attempts reported a descendant before the timeout")
     }
 
     func testCancellationTerminatesDescendantsThatIgnoreTermAndHoldPipesOpen() async throws {
@@ -374,7 +400,10 @@ final class ShellCommandRunnerTests: XCTestCase {
     }
 
     private func processIdentifiers(from marker: URL) throws -> (group: Int32, descendant: Int32) {
-        let contents = try String(contentsOf: marker, encoding: .utf8)
+        try processIdentifiers(in: String(contentsOf: marker, encoding: .utf8))
+    }
+
+    private func processIdentifiers(in contents: String) throws -> (group: Int32, descendant: Int32) {
         let components = contents.split(separator: ":")
         guard components.count == 2,
               let group = Int32(components[0]),
@@ -435,6 +464,7 @@ final class ShellCommandRunnerTests: XCTestCase {
             + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
     }
 
+    /// A negative `pid` names a process group, as it does for `kill`.
     private func assertProcessDisappears(
         _ pid: Int32,
         file: StaticString = #filePath,
@@ -447,7 +477,8 @@ final class ShellCommandRunnerTests: XCTestCase {
             }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-        XCTFail("Descendant PID \(pid) survived command termination.", file: file, line: line)
+        let survivor = pid < 0 ? "A process in group \(-pid)" : "Descendant PID \(pid)"
+        XCTFail("\(survivor) survived command termination.", file: file, line: line)
     }
 }
 
