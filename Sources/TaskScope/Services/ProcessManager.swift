@@ -889,7 +889,7 @@ final class ProcessManager: ObservableObject {
         return await quitAllKillable(preset)
     }
 
-    /// Existing URL and Shortcuts commands retain their user-process scope.
+    /// Shortcuts Stop retains its user-process scope; URLs accept refresh only.
     /// The full VPN stop is requested by the explicitly confirmed in-app action.
     @discardableResult
     func quitAllKillable(_ preset: WatchedAppPreset) async -> TaskScopeCommandResult {

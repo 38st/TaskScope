@@ -22,7 +22,7 @@ DerivedData/
 
 # Local tooling
 .codex/
-.claude/settings.local.json
+.claude/
 
 # Local configuration and signing material
 .env

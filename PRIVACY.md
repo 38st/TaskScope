@@ -24,6 +24,9 @@ TaskScope can read local information exposed by macOS process tools, including:
 
 Some values can be unavailable because of macOS permissions or tool behavior.
 TaskScope should represent them as unavailable rather than inventing a value.
+Watched-read freshness is held in memory, and truncated-result totals are
+computed from the local process inventory. These indicators introduce no new
+persistent data or transmission.
 
 **Settings > Health** additionally reads local app-bundle metadata, bounded App
 Intents metadata, code-signature integrity and running/on-disk code identity,
@@ -55,19 +58,44 @@ TaskScope uses standard macOS preferences for:
 - auto-stop rules, including an optional executable path (required for enabled
   automatic stopping), and up to 200 recent event records, which can include
   process name, PID, time, outcome, and result detail;
-- global hotkey and onboarding state;
-- preserved `.corruptBackup` payloads created when stored data cannot be read.
+- global hotkey and onboarding state, including a pending hotkey migration
+  notice retained until dismissal or successful shortcut recording;
+- preserved `.corruptBackup` payloads for unreadable stored data and
+  `.rejectedMigrationBackup` payloads for partially rejected presets, rules,
+  saved selections, and events. Each family has ten slots: the base suffix,
+  then `.2` through `.10`. They can retain full names, paths, labels, and history.
+  Malformed Data retains its bytes; wrong-type values are archived as binary
+  property lists. A non-dictionary hotkey value is preserved this way and stays
+  untouched at its primary key until explicit reset in Settings > Hotkey.
+  Recovery disables the hotkey; reset enables the default shortcut.
 
 Preferences are not encrypted by TaskScope. Other software running with the
 same user's access may be able to read or modify them.
 
+Startup verification and rejected duplicate launches use fresh volatile defaults
+for settings, presets, rules/events, saved selections, and onboarding. These
+values are discarded at exit; those launches do not read or update normal stored
+values or enforce the stored Keep Off preference.
+
+Packaging tests use a unique test bundle identifier per run. They reject
+startup-verification preference plists in the user's normal or host-specific
+preferences directories and remove that test domain and its plists at cleanup.
+A temporary `CFFIXED_USER_HOME` alone does not isolate preferences.
+
 The process-history chart keeps at most 60 samples in memory and does not
 persist them. Pending prompts and current process inventory are also transient.
+Shared inventory cache freshness uses monotonic elapsed time, including sleep;
+clock changes do not extend reuse. The Watched filter limits main/helper rows to
+the current user's configured bundle boundaries; protected names retain display
+classification across users. All continues to show process rows exposed by macOS.
 Support diagnostics keep at most 20 recent failed lifecycle actions in memory
 across all presets. Entries contain only a local preset UUID for filtering,
 time, action/reason categories, a background-enforcement flag, and failed/missing
 job counts. Raw job labels and error text are discarded at capture. This
 history disappears on app exit or when cleared in Settings > Support.
+Cancelled Open and commands cancelled before execution are not retained as
+lifecycle failures. An admitted preset Stop completes and retains only actual
+failures under the existing policy.
 
 ## Exports, notifications, and logs
 
@@ -75,15 +103,18 @@ history disappears on app exit or when cleared in Settings > Support.
 preview. Only an explicit **Copy JSON** or **Save JSON…** exports its contents;
 both use the exact frozen preview. The report contains TaskScope version/build,
 numeric macOS version and binary architecture, UTC collection/event timestamps,
-permission/login-item status, anonymous selected-preset identity, file-found
-booleans, configured user launch-agent status, and recent lifecycle failure
-categories/counts for that preset. The canonical built-in preset is identified
-as GlobalProtect; custom display names and saved preset UUIDs are excluded.
+permission/login-item status, the app notification toggle and saved Keep Off
+intent, anonymous selected-preset identity, file-found booleans, configured
+user launch-agent status, and recent lifecycle failure categories/counts for
+that preset (including `disconnectFailed`). In schema version 2, the app
+notification toggle and Keep Off intent are `null` when persisted settings
+are unreadable; unreadable preference contents are not exported. The canonical
+built-in preset is identified as GlobalProtect; custom display names and saved preset UUIDs are excluded.
 
 Diagnostics exclude usernames, commands, organization identifiers, process
 lists/names/PIDs, raw preset paths, job labels, raw errors, logs, signing/team
-identifiers, preferences, and corruption backups. They do not request
-permissions, run lifecycle actions, or upload anything. The picker itself shows
+identifiers, raw preference payloads, and both recovery-backup families. They do
+not request permissions, run lifecycle actions, or upload anything. The picker itself shows
 local preset names, so screenshots of it are not redacted. See
 [SUPPORT.md](SUPPORT.md#preview-and-export-support-diagnostics) for the exact
 field inventory, status limitations, export behavior, and deletion steps.
@@ -136,55 +167,76 @@ screenshot to a public issue.
 - **Administrator authorization:** requested to stop, re-enable, or restore the fixed system
   daemon in the immutable built-in GlobalProtect definition. Custom presets
   cannot add privileged daemon jobs, and TaskScope does not store the password.
-- **Launch at Login:** optional and controlled in TaskScope Settings and macOS
-  Login Items.
+- **Launch at Login:** optional and controlled in the Presets section of the
+  main window and menu-bar popover, and in macOS Login Items. Requires Approval
+  and Unavailable states offer **Turn Off Launch at Login** to remove the
+  registration.
 
 Keep GlobalProtect Off stores launchd disable overrides for the fixed user-agent
 labels and, after explicit administrator approval, the fixed system VPN service.
 Turning it off performs the same service and app restoration as Open. Both
 preserve the unused system-daemon override when the installed session agent
 provides the VPN service. Background enforcement never requests
-administrator authorization. No new preferences, credentials, network data, or
-export fields are introduced by system service control.
+administrator authorization. Fixed local launchd job PID and kernel executable
+path checks attribute VPN services before automatic disconnect and final Keep Off
+verification. These observations and duplicate-failure state stay in memory;
+no new preferences, credentials, network data, or export fields are introduced.
 
 Revoking a permission in System Settings can limit the related feature without
 deleting TaskScope's preferences.
 
 ## Retention and deletion
 
-- Auto-stop events retain the newest 200 records.
+- Auto-stop events retain the newest 200 records. Mixed arrays retain valid
+  events and preserve the original payload in a `.rejectedMigrationBackup`
+  slot. The store stays read-only until explicit reset commits recovered events
+  and retained session history, and resumes durable logging.
 - Process chart history retains the newest 60 in-memory samples and disappears
-  when the app exits.
+  when the app exits. Changing the cadence reschedules the next sample without
+  adding an immediate sample.
 - Other preferences remain until changed, reset, or deleted by the user.
-- Corruption backups remain until the preferences domain is removed or they are
-  deliberately deleted during recovery.
+- Both recovery-backup families and their numbered slots remain until the
+  preferences domain is removed or they are deliberately deleted. Reset does
+  not erase them. Wrong-type values use binary property-list archives; partially
+  rejected arrays preserve the original payload bytes. These copies stay local
+  and are excluded from support diagnostics. Reset commits recovered entries;
+  preset reset supplies the built-in default if no presets remain. See
+  [recovery details](SUPPORT.md#stored-data-is-unreadable).
 - Preset export files remain wherever the user saved them.
 - Support diagnostics history retains the latest 20 failures in memory until
   cleared in Settings > Support or the app exits. Saved diagnostics files and
   clipboard copies remain under the user's control; clearing history does not
   erase them or alter an already-open preview.
-- The Keep GlobalProtect Off launchd override lives in launchd's user and system
-  databases, not in TaskScope's preferences. It remains until the control is
-  turned off, Open is chosen, or it is cleared manually with
-  `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangpa` and
-  `launchctl enable gui/$UID/com.paloaltonetworks.gp.pangps`, plus
-  `sudo launchctl enable system/com.paloaltonetworks.gp.pangpsd`.
+- Keep GlobalProtect Off overrides live in launchd's user and system databases,
+  not TaskScope's preferences. Open can recover required overrides without saved
+  intent or the app bundle. Open and toggle-off on login-session installations
+  deliberately retain the separate system daemon's disable override. That
+  override persists until explicitly enabled; deleting preferences does not
+  clear it.
 
 To remove the current development build and its stored data:
 
-1. Turn off Keep GlobalProtect Off (or choose Open) so the launchd override is
-   cleared; `defaults delete` does not clear it.
-2. Disable Launch at Login.
-3. Quit and delete the app.
-4. Run:
+1. Choose Open or turn Keep Off off to restore required services. Whenever Keep
+   Off was used, also clear the system override with
+   `sudo launchctl enable system/com.paloaltonetworks.gp.pangpsd`, regardless of
+   layout. If TaskScope is already gone, run all three enable commands in
+   [Support](SUPPORT.md#uninstall-and-erase-local-data), including the system
+   command. Resolve reported restoration errors before removing the app.
+2. Disable Launch at Login in Presets in the window or menu-bar popover. For
+   Requires Approval or Unavailable, choose **Turn Off Launch at Login** and
+   resolve any reported error.
+3. Quit and delete the app; remove its Accessibility and notification entries
+   in System Settings if desired.
+4. To erase local development preferences, run:
 
-```bash
-defaults delete com.local.TaskScope
-```
+   ```bash
+   defaults delete com.local.TaskScope
+   ```
 
-This is destructive and also removes corruption backups. A future production
-bundle identifier will use a different preference domain; follow that release's
-uninstall instructions instead of assuming this command applies.
+The last step permanently removes settings, presets, rules, saved selections,
+event history, and all `.corruptBackup` and `.rejectedMigrationBackup` slots.
+A future production identifier uses a different preference domain; follow that
+release's uninstall instructions.
 
 ## Network behavior
 

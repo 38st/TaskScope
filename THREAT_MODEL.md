@@ -14,9 +14,9 @@ In scope:
 - auto-stop rules and saved selections;
 - watched-app presets, imports, and lifecycle actions;
 - custom user launch-agent jobs and the immutable built-in GlobalProtect
-  system-daemon restoration path;
+  system-daemon stop and restoration paths;
 - custom URLs, App Intents/Shortcuts, login items, and notifications;
-- preferences, corruption backups, local logs, and preset exports;
+- preferences, recovery backups, local logs, and preset exports;
 - bundle identity, local packaging, signing, installation, and upgrades.
 
 The security of macOS, Xcode, SwiftPM, Apple signing/notarization services,
@@ -74,12 +74,29 @@ Required invariants:
   evidence uses UTC to survive time-zone changes. Executable paths remain part
   of equality because start-time evidence has only second precision;
 - distinguish “not present,” “identity changed,” and “could not verify”;
+  a present PID with changed start or executable evidence is identity-changed;
+  a still-running PID/start pair with a moved or unavailable executable path
+  must not produce an Auto Stop Ended or Stopped event;
 - never turn an unreadable inventory into a success or stale-target claim;
+- distinguish unobserved watched status from a verified quiet observation, mark
+  retained observations stale after failures, and resolve preset card actions
+  against current configuration;
+- measure shared inventory cache age and ordering with monotonic time including
+  sleep; expire negative ages and use uncached inventory for destructive checks;
+- retry shell child reaping after early exit notifications or stop requests
+  until reaped, including after command timeout;
+- judge preset Quit and Close against the captured preset and fresh final
+  inventory even if the stored preset changes or is deleted;
+- partial stop failures must not claim every target stopped or no target
+  received a stop request;
 - never signal TaskScope itself, launchd (pid 1), the kernel task, or a process
   group; the parser drops such rows and every signal path refuses them;
 - distinguish privileged processes from launchd domains: root ownership alone
   cannot identify the system daemon, because a login-session PanGPS can elevate
-  via setuid; lifecycle readiness binds the PID to the actual job;
+  via setuid; readiness, automatic-disconnect gating, and final Keep Off
+  verification bind PanGPS to the fixed current-user `pangps` or system `pangpsd`
+  job PID and kernel product path. Unknown attribution fails without opening
+  the vendor UI or requesting Accessibility;
 - require a separate, explicit Force Stop confirmation for `SIGKILL`; preset
   Quit, Close, and Keep Off escalate to `SIGKILL` only after a disclosed
   graceful window (3 seconds) with the identity still present;
@@ -89,8 +106,17 @@ Required invariants:
   alerts show the PID and use a new presentation identity when the queue head
   changes; actions from a retired alert cannot claim the replacement prompt.
 - require enabled automatic-stop authority to include a trusted executable path
-  and match that path again in the final inventory immediately before signal.
-- never downgrade a path-backed saved selection to legacy command/name matching.
+  and match that path again in the final inventory immediately before signal;
+- limit Prompt, Auto Stop, and Log Only candidates to current-user processes,
+  excluding TaskScope and unsignalable PIDs;
+- wait at least one engine cadence on a monotonic clock before the single
+  automatic retry, retaining its budget across edits that remain enabled,
+  Auto Stop, and matching. An edit still revokes captured pre-signal authority;
+- never downgrade a path-backed saved selection to legacy command/name matching;
+- bind Activity Monitor handoff to captured UTC start time and kernel executable
+  path; verify before opening, every selection retry, and after asynchronous
+  selection before reporting success. Missing/changed evidence cannot authorize
+  a successful handoff.
 
 ### Watched presets and imported configuration
 
@@ -103,8 +129,11 @@ them.
 
 Required invariants:
 
-- scope main/helper detection to the current user, preserving protected-service
-  classification across users;
+- scope main/helper detection and the Watched filter to the current user, with
+  main executables in Contents/MacOS and helpers in Contents, preserving
+  protected-service classification across users for display;
+- validate every quick-preset process against the resulting main/helper name,
+  owner, and executable-directory boundaries before saving;
 - importing parses and validates data but performs no lifecycle action;
 - bound imported file size, recognize an explicit archive schema version, and
   show every lifecycle field plus rejection reason before import is committed;
@@ -120,12 +149,12 @@ Required invariants:
   not authority to alter arbitrary protected processes;
 - keep protected process names out of the normal killable-name set.
 
-Keep Off polling also recognizes the optional per-user PanGPS executable when
-the preset has the fixed supported GlobalProtect identity, the kernel executable
-path is inside that bundle, and the non-root UID matches the current user.
-A bare name, unknown UID, another user's process, or the root daemon cannot
-trigger this additional enforcement path. Enforcement still disables/unloads
-only the fixed user launch-agent labels; it never signals PanGPS directly.
+Keep Off polling is triggered only by current-user main/helper processes.
+Preserved PanGPS services, including non-root session instances, do not trigger
+enforcement or count as failed background session stops. Startup enforcement
+disables both fixed user jobs, unloads only `pangpa`, and preserves `pangps`.
+Unchanged background failures do not republish reports, replace status messages,
+or duplicate diagnostics. PanGPS is never signalled directly.
 
 Residual risk: a syntactically valid custom preset can intentionally point at
 the wrong local app or user launch agent. The mandatory import preview exposes
@@ -143,8 +172,11 @@ their confirmation discloses the persistent stop and restoration path.
 
 Required invariants:
 
-- only an explicit Keep Off or in-app GlobalProtect Quit All action may request a system stop; background
-  enforcement and startup may verify system state but never prompt or mutate it;
+- only explicit in-app Keep Off / Apply Keep Off, GlobalProtect Quit All, or the
+  separately confirmed Stop Services Anyway recovery may request a system stop;
+  background enforcement and startup may verify system state but never prompt
+  or mutate it. Open, toggle-off, and Open Watched App may request fixed system
+  enable/bootstrap when the installed layout requires it;
 - automatic disconnect uses Accessibility only for the fixed GlobalProtect
   executable, rechecking its kernel path before inspection/actions. Only the
   normal Disconnect control is pressed; credentials and management challenges
@@ -152,7 +184,11 @@ Required invariants:
   a lost popover gets bounded retries. Unknown state, denial, timeout, or a
   failed press aborts the normal attempt before writing new Keep Off intent or
   changing launch jobs. AX reads run on a
-  bounded worker queue; consecutive disconnected observations precede shutdown.
+  bounded worker queue. Five consecutive disconnected observations precede
+  shutdown; Connected, busy, or unavailable resets the streak. Up to 60
+  observations with 0.5-second waits give about 30 seconds of observation time
+  plus reads, inside a 90-second overall deadline that also bounds AX requests;
+  timeouts leave services running.
   An Error tooltip counts as disconnected only with the same vendor window's
   Connection Failed text, enabled Connect control, and no Disconnect control;
   Error alone, contradictory controls, and unreadable state still abort;
@@ -161,8 +197,8 @@ Required invariants:
   Open as the recovery path. It uses the same fixed service operations and
   administrator authorization, but skips the connection-state prerequisite.
   The recovery is bound to the current failure by a one-use in-memory ID,
-  checked inside the mutation gate. Retry, Open, and allow-to-run invalidate
-  older failures. No URL, Shortcut, background tick, or persisted preference
+  checked inside the mutation gate. Retry and Open (including toggle-off)
+  invalidate older failures. No URL, Shortcut, background tick, or stored preference
   can authorize this exception;
 - validate the complete built-in identity and fixed job fields before privileged
   commands; require the installed matching plist before introducing a disable
@@ -225,8 +261,9 @@ verify a disconnected tunnel. It re-checks intent inside the operation gate so q
 enforcement cannot undo Open. It never repeatedly prompts for system approval
 or automatically fights a system service restored by management. Automatic
 disconnect UI control runs only during an explicit action, never polling. The UI shows
-that service running and offers a confirmed retry. No destructive URL route is
-added; ordinary process stop and Auto Stop retain their existing boundaries.
+that service running and offers a confirmed explicit action; a loaded separate
+system daemon on a session layout remains preserved even on retry. No destructive
+URL route is added; ordinary process stop and Auto Stop retain their existing boundaries.
 
 ### URL, Shortcut, and login automation
 
@@ -242,19 +279,27 @@ Required invariants:
 - discard cancelled queued commands before dispatch and carry cancellation into
   a command waiting for the process-operation gate; cancelling one submission
   must not cancel its neighbors or imply that completed mutations were undone;
+- finish an admitted preset Stop despite caller cancellation; keep Open readiness
+  cancellable and report possible prior changes without retaining cancellation
+  as an inventory or lifecycle failure;
 - route App Intent actions through the same identity validation and truthful
   result reporting as the app; Stop Watched App must request system confirmation
   naming the app before submitting a stop command, including direct App Shortcuts;
-- keep cold intent launches in the background, including while awaiting confirmation;
+- keep cold intent launches in the background, including entity queries and
+  confirmation; late intent signals suppress a launch with no interactive
+  activation or explicit window request, without demoting an app already in use;
 - do not treat local/development signing as proof of production artifact
   identity;
-- make Launch at Login optional and recover visibly from macOS approval states.
+- make Launch at Login optional and recover visibly from macOS approval states;
+  provide an explicit unregister action in Requires Approval and Unavailable
+  states and report removal errors.
 
 ### Preferences, exports, and recovery
 
 Settings > Health has a separate read-only probe surface with no lifecycle,
 permission-request, registration, or preference writer. It checks local signing
-integrity with network access disabled, bounded regular-file metadata, and
+integrity with network access disabled, bounded regular-file metadata read
+through symlink targets with descriptor type checks and nonblocking opens, and
 running/on-disk identity without reporting signature integrity as notarization,
 distribution trust, or Shortcuts execution. Unknown access remains unverified;
 inaccessible files do not become missing files. Optional paths and corrupt-store
@@ -262,12 +307,17 @@ fallbacks retain their distinct meaning. Expired observations and canceled
 collections cannot authorize recovery. Recovery only navigates to verified local
 destinations, rechecks the target on click, and never silently resets TCC,
 registers login items, reinstalls/re-signs an app, or executes a Shortcut.
-Findings stay in memory and do not extend the support export schema.
+Results stay in memory and do not extend the support export schema.
 
 Support diagnostics are a separate export boundary from preset backups. The
 report model accepts fixed status/action/reason categories, booleans, counts,
-timestamps, and strictly numeric version metadata. It never serializes raw
-presets, command results, inventory, logs, or error strings. Custom preset UUIDs
+timestamps, and strictly numeric version metadata. Schema version 2 encodes
+unreadable saved Keep Off and notification settings as `null`, never default or
+unsaved in-memory booleans. Shipped lifecycle entry points record `open`,
+`quitApp`, `quitHelpers`, `close`, or `keepOff`; automatic disconnect failure
+uses `disconnectFailed`. Toggle-off maps to `open`, GlobalProtect Quit All and
+Stop Services Anyway to `keepOff`, and Shortcuts Stop to `close`.
+It never serializes raw presets, command results, inventory, logs, or error strings. Custom preset UUIDs
 are used only for in-memory filtering and replaced with a report-local reference;
 only a verified built-in identity receives the fixed GlobalProtect kind.
 Lifecycle failure retention is bounded to 20 session entries and raw job data is
@@ -279,22 +329,40 @@ spoofing, retention, and equality of preview/file contents. This does not redact
 ordinary lifecycle sheets, preset exports, picker screenshots, or local logs.
 
 Standard preferences store settings, preset/rule data, saved process matching
-fields, event history, and corruption backups. They are local but not encrypted
+fields, event history, and recovery backups. They are local but not encrypted
 or protected from the current user.
 
 Required invariants:
 
-- decode versioned data defensively;
+- detect an existing same-user, same-bundle instance before shared-store writes,
+  command handling, hotkey registration, or background enforcement; activate it
+  and terminate the duplicate;
+- isolate startup-verification stores and onboarding in fresh volatile defaults
+  without reading/changing normal preferences or enforcing Keep Off;
+- decode versioned data defensively; recover valid events individually, preserve
+  mixed payloads in rejectedMigrationBackup slots, and require explicit reset
+  before committing recovered events or resuming durable logging;
 - preserve unknown stored JSON fields and non-string event outcomes on retained
   entries, including automatic preset normalization and event trimming;
 - disable and lock rules with unknown fields rather than enforce a rule whose
   newer restrictions are not understood;
 - keep normalized settings fallbacks in memory without replacing newer stored
   values during unrelated saves;
-- preserve the first unreadable payload instead of overwriting it with defaults;
+- preserve unreadable payloads instead of overwriting them with defaults,
+  including binary property-list backups of wrong-type values and non-dictionary
+  hotkey settings. Keep primary values read-only until explicit reset;
+- retain original partially rejected presets/rules/selections/events in
+  `.rejectedMigrationBackup` slots alongside unreadable `.corruptBackup` slots;
+  each family has ten non-overwriting slots (base suffix, `.2` through `.10);
+- recover valid saved selections independently, preserve their unknown fields,
+  and require explicit reset to commit recovered entries;
 - block persistence that would silently destroy unreadable primary data;
-- refuse deletion of the built-in GlobalProtect preset when settings recovery
-  makes the persistent Keep Off state unknown;
+- refuse all Keep Off intent writers while settings are unreadable, including
+  GlobalProtect Quit All and confirmed Stop Services Anyway;
+- refuse built-in preset deletion when settings recovery makes Keep Off unknown,
+  Keep Off is enabled, or an explicit action is queued/running; recheck preset
+  existence and settings writability after disconnect before writing intent
+  or disabling services;
 - preserve optional launch-job requirements through normalization and migration
   so valid built-in presets round-trip without entering corruption recovery;
 - require an explicit destructive reset to resume writes;
@@ -314,6 +382,8 @@ Required invariants:
 - do not log full process command lines or imported lifecycle payloads;
 - use private log interpolation unless a field is demonstrably nonsensitive;
 - notify only after opt-in and avoid false transitions during reconfiguration;
+  re-baseline when preset identities, app paths, process-name assignments, or
+  notification settings change;
 - tell users to sanitize screenshots, logs, exports, and bug reports.
 
 ### Build and distribution
@@ -328,7 +398,12 @@ Required invariants:
 
 - keep bundle identifier, version, build, architecture, and signature claims
   consistent with the artifact;
-- verify the bundle after copying and after installation;
+- verify the bundle after copying and installation, including identifier,
+  version, and build;
+- hold the packaging lock throughout static/startup verification and through
+  validation and copying for installation;
+- check for running same-identifier bundles before opening or debugging another
+  path; refuse known conflicts without stopping that other copy;
 - replace an installed bundle transactionally and restore it on failure;
 - do not publish a local staged app as a production binary;
 - require Developer ID signing, hardened runtime review, notarization, stapling,
@@ -345,7 +420,7 @@ Required invariants:
 | Process inventory fails | Report verification failure; do not claim stopped or stale. |
 | Imported custom preset contains a relative plist path or any system-daemon job | Reject that preset without executing it. |
 | Valid-looking custom preset points at an unintended user launch agent | Show the field and later-operation summary before import; require the user to reject an unintended path. |
-| Preferences contain malformed JSON | Preserve backup, enter read-only recovery state, require explicit reset. |
+| Preferences contain malformed JSON or a wrong property-list type | Preserve backup, enter read-only recovery state, require explicit reset. |
 | Privileged bootstrap fails or is denied | Report failure and leave the managed files intact. |
 | Ad-hoc bundle is presented as a production binary | Release gate rejects the claim and artifact. |
 

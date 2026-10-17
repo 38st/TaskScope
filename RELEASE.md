@@ -24,11 +24,24 @@ source release as a production binary. GitHub's generated source archives are
 the only release artifacts within this scope unless the credential-gated
 pipeline and full binary gate below complete with real Apple credentials.
 
-Unreleased process fixes scope watched main/helpers and preset signals to the
-current user, pin start-time evidence to UTC, preserve UTF-8 names, and stop
-cancelled Open readiness polling. Executable-path identity checks remain in
-place. Regression tests use injected inventories for ownership and cancellation;
-this does not establish live Fast User Switching or GlobalProtect compatibility.
+Process fixes scope watched main/helpers, the Watched filter, and preset signals
+to the current user; main detection uses Contents/MacOS and helpers use Contents.
+Start evidence uses UTC and names preserve UTF-8. Shared inventory freshness
+uses monotonic time including sleep; Open polling has a monotonic deadline and
+attempt bound. Shell completion retries early child-reaping probes, including
+after timeout. Executable-path identity checks remain required.
+
+Regression coverage uses injected clocks/inventories, owned child processes with
+injected transient reap results, and fake lifecycle commands/signals. It checks
+captured-preset verdicts, nonzero bootout followed by verified removal,
+missing-bundle override recovery without saved intent, truthful restoration
+reports, PID reuse during escalation, privileged script ordering/short-circuit
+guards, and delivered fake signals in missing-plist tests. It also covers
+cancellation after fake SIGTERM with continued Stop escalation/helpers,
+cancelled Open readiness, changed executable evidence, notification path edits,
+joined refreshes, self-PID refusal, and complete GlobalProtect job scopes.
+These checks do not establish live clock-change, launchctl error, App Intent
+cancellation, Fast User Switching, or managed GlobalProtect compatibility.
 
 ## Release inputs
 
@@ -37,6 +50,9 @@ Before starting:
 1. Confirm the release scope and whether any prior build reached users.
 2. Confirm `VERSION`, `BUILD_NUMBER`, and changelog date/notes. Build numbers
    must increase monotonically for every distributed artifact of a version.
+   Compatibility Self-Check accepts positive integer TaskScope builds up to 64
+   digits independently of GlobalProtect version syntax. Retained evidence
+   must identify the exact candidate build.
 3. Confirm the working branch is the default branch, its upstream is known, and
    the worktree contains no unrelated changes.
 4. Fetch the remote and stop if history has diverged or the branch is behind in
@@ -52,11 +68,11 @@ Before starting:
 Run from the repository root on a clean checkout with Xcode 26 or newer:
 
 ```bash
-for f in script/*.sh; do bash -n "$f" || exit 1; done
+( for f in script/*.sh; do bash -n "$f" || exit 1; done )
 swift build -c debug -Xswiftc -warnings-as-errors
 swift test
 swift test --enable-code-coverage
-swift test --scratch-path /tmp/taskscope-release-strict \
+swift test --scratch-path .build/strict \
   -Xswiftc -warnings-as-errors \
   -Xswiftc -warn-concurrency \
   -Xswiftc -enable-actor-data-race-checks
@@ -64,6 +80,11 @@ swift build -c release
 ./script/test_packaging.sh
 git diff --check
 ```
+
+`script/test_packaging.sh` launches the staged app. It uses a unique test bundle
+identifier, rejects test preference plists outside its temporary directory, and
+cleans up that domain and its plists. Startup verification uses volatile defaults;
+a temporary `CFFIXED_USER_HOME` alone does not isolate preferences.
 
 Record the toolchain (`sw_vers`, `swift --version`, and `xcodebuild -version`)
 and the pass/fail result of every command. Do not dismiss a failure as
@@ -81,23 +102,46 @@ Record evidence for every locally testable item:
 - bundle-ID migration behavior where the identifier changes;
 - Stop, Force Stop, process exit, PID reuse, selection, and batch reporting;
 - watched-app open/close success, absent files, partial failures, and denial;
-- Prompt, Auto Stop, and Log Only rules, including queue-head replacement while
-  an alert is visible and quick-sheet repair of migration-disabled rules;
+- Prompt, Auto Stop, and Log Only ownership/self exclusion, queue-head
+  replacement, and quick-sheet disclosure when supplying a path enables a
+  disabled name-only Auto Stop rule;
+- automatic retry timing after unrelated and still-matching in-flight edits;
+  automated coverage uses a fake monotonic clock;
+- quick presets reject unmatched main/helper owners, names, and paths, including
+  non-bundled tools and extensions/XPC services selected as mains;
+- mixed auto-stop event recovery preserves valid entries and the original
+  payload, remains read-only, and commits recovered history only on reset;
 - saved-selection recall read failure, background inventory failure/recovery,
   per-user Services badges, and TaskScope self-stop menu/Return protection;
 - corrupt settings, presets, rules/events, and saved-selection recovery/reset;
 - notification not-determined, allowed, denied, revoked, and recovery states;
-- Accessibility denial/grant and exact Activity Monitor PID handoff, including
-  consecutive handoffs to different processes before table-state restoration;
-- Launch at Login registration, required approval, disable, and recovery;
-- hotkey conflict, previous-shortcut restoration, and reserved saved-shortcut
-  migration to ⌃⌥⌘T with a Settings notice;
+- Accessibility not-granted/granted messaging and Activity Monitor identity
+  handoff, including PID reuse, changed/unreadable kernel paths, identity changes
+  during opening/retries/selection, and consecutive handoffs before restoration;
+- Launch at Login registration, required approval, and UI-driven removal/error
+  recovery in Requires Approval and Unavailable states;
+- hotkey conflict, previous-shortcut restoration, separate recording errors, and
+  invalid saved-shortcut migration to ⌃⌥⌘T with a reason that survives relaunch
+  until dismissal or successful recording;
+- wrong-type hotkey backup, read-only recovery, reset, full backup slots, and
+  preservation of unknown dictionary fields;
 - cold and warm `taskscope://refresh`, plus rejection of every other URL route;
-- Shortcuts cold launch without an unintended window or Dock icon, using a real
-  eligible signature; Stop confirmation and cancellation from Shortcuts, Siri,
-  Spotlight, and App Shortcuts;
+- Shortcuts cold launch with an eligible signature, without unintended window
+  or Dock icon; query-only parameter pickers, pickers open beyond the launch
+  grace period, late intents, and intents in an already-interactive app;
+- Stop confirmation and cancellation from Shortcuts, Siri, Spotlight, and App Shortcuts;
+- installed/staged duplicate same-identifier launch handoff before background
+  enforcement; startup verification leaves normal preferences untouched;
+- graceful SIGTERM cleanup with a pending search save or temporary Activity
+  Monitor handoff, using an appropriate test environment;
+- About/onboarding use the packaged icon; changing the watched-status interval
+  preserves history without immediate samples;
 - light/dark appearance, keyboard operation, VoiceOver labels, and destructive
-  confirmations.
+  confirmations. In tree mode, focus search, click the highlighted row again,
+  and verify arrows, Return, and Escape; repeat with a child row. Verify Cancel
+  and normal/force single and batch confirmations in window and menu bar using
+  safe test targets. Automated confirmation checks assert exact SIGTERM/SIGKILL
+  delivery and settled Cancel behavior, with mutation checks.
 
 GlobalProtect restoration requires an appropriate managed test machine. If one
 is unavailable, test only safe simulations and document the missing external
@@ -124,11 +168,15 @@ of a passing parser test or a single snapshot. If no managed lifecycle test was
 performed, release notes must explicitly say **GlobalProtect lifecycle
 compatibility unverified** and retain the existing source/development scope.
 
-The lifecycle audit fixes have fixture coverage only: background polling preserves
-loaded session VPN services, session layouts preserve loaded system daemons and
-their overrides with an incomplete-stop report, shutdown/readiness waits use
-bounded deadlines, failed agent restoration retains Keep Off intent, and polling
-cancellation produces no failure report. Validate these cases on an authorized
+Recent lifecycle changes have fixture coverage only: background polling preserves
+session VPN services and ignores them as enforcement triggers; unchanged failures
+are not republished. Session layouts preserve loaded system daemons with matching
+incomplete-stop advice. Recovery-mode intent, deletion during queued actions or
+disconnect, captured-preset verification, PanGPS job/PID attribution, and five
+consecutive idle observations after a Connected reset have fake-runtime tests.
+Shutdown/readiness waits are bounded, failed user-agent restoration retains Keep
+Off intent, and polling cancellation produces no failure report. Validate these
+cases, including Fast User Switching and vendor UI routing, on an authorized
 managed test machine before claiming live compatibility.
 
 Both public-binary modes of `script/release.sh` enforce the
@@ -155,7 +203,13 @@ must review their contents and keep compatibility claims within that coverage.
 
 Stage and verify the current-architecture bundle. Staging stops verified running
 copies of the staged app before replacement, including when invoked by the
-installer, release pipeline, or packaging tests:
+installer, release pipeline, or packaging tests. Static and startup verification
+hold the packaging lock for the full check. Installation holds it through
+validation/copying and rechecks the copied identifier, version, and build before
+replacement and after installation. Another running copy with the same bundle
+identifier must be quit before a script opens/debugs a different bundle path.
+Startup verification launches with fresh volatile store/onboarding preferences
+and no normal background enforcement:
 
 ```bash
 ./script/build_and_run.sh --stage
@@ -298,7 +352,11 @@ install:
    for newer behavior. Deleted entries and events beyond the history limit are
    still removed. Preset archives retain their existing schema-version gate.
    Do not downgrade preferences across an incompatible schema unless migration
-   tests prove it safe.
+   tests prove it safe. Validate mixed valid/invalid selection recovery,
+   wrong-type preference backups, and explicit-reset persistence. Diagnostics
+   schema version 2 must encode unreadable saved notification/Keep Off settings
+   as `null`. Recovery with no valid presets must refuse export; partial exports
+   exclude rejected entries.
 5. Reverify signature, version/build, startup, URL refresh, Shortcuts, and
    permissions.
 

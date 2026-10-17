@@ -2,7 +2,7 @@
 
 **GlobalProtect lifecycle compatibility unverified across login/reboot and
 management policies.** An authorized live stop/restore cycle passed on the
-specific Mac described below, including a subsequent Connected status. The
+specific configuration recorded below, including a subsequent Connected status. The
 self-check alone provides read-only installation/state evidence and does not
 establish lifecycle or VPN connectivity results.
 
@@ -33,14 +33,15 @@ state before changing launch jobs: Not Connected, or Error accompanied by
 Connection Failed, an enabled Connect control, and no Disconnect control in
 the same vendor window. The UI adapter currently recognizes the
 English status/control labels; unsupported layouts or states fail without
-stopping services. URL Close and Shortcuts Stop retain their existing scope.
+stopping services. Ordinary Quit and Shortcuts Stop can unload only the `pangpa`
+interface agent and preserve the session VPN service and system daemon.
 Shortcuts Stop requests confirmation naming the watched app before executing,
 including when invoked through Siri, Spotlight, or App Shortcuts.
 After a failed attempt, **Stop Services Anyway…** offers a separately confirmed
 exception that skips the idle-state prerequisite, discloses stale-DNS risk, and
 uses the same fixed service controls. The [October 1 recovery check](Evidence/GlobalProtect/2026-10-01-disconnect-recovery.md)
 verifies failure/result visibility, cancellation, and the confirmed recovery
-with an unresponsive vendor UI on this Mac.
+with an unresponsive vendor UI on the recorded configuration.
 The [automatic Quit All test](Evidence/GlobalProtect/2026-09-28-quit-all.md)
 records two connected-to-off cycles with public HTTPS working afterward and
 the final installed build's unchanged menu-bar frame.
@@ -66,45 +67,47 @@ The vendor also documents a related
 when pre-logon is disabled. This reference does not establish that every vendor
 build shares the same bug or behavior.
 
-The built-in preset cannot be deleted while Keep Off is enabled or settings are
-unreadable: a fallback `false` cannot prove persistent disable overrides are
-cleared. Recover settings and clear Keep Off before deleting the preset.
+The built-in preset cannot be deleted while Keep Off is enabled, an explicit
+Keep Off action is queued/running, or settings are unreadable: a fallback `false`
+cannot prove overrides cleared. Stale confirmation or removal during disconnect
+is rejected before writing intent or overrides. Recover settings and clear Keep
+Off before deletion. Unreadable settings also disable Quit All, Apply Keep Off,
+the Keep Off switch, and Stop Services Anyway with a reset-settings explanation.
 
 Main/helper status, Open readiness, and direct preset stops require current-user
 ownership. Another logged-in user's GlobalProtect UI or PanGPA helper does not
-trigger Keep Off enforcement. Protected-service classification is unchanged;
-root-owned PanGPS readiness still depends on the launch-job identity described
-above. These ownership boundaries are covered by fake inventories, not a live
-Fast User Switching test.
+trigger Keep Off enforcement. Preserved PanGPS alone does not trigger polling
+stops, and unchanged background failures are not repeatedly reported. Protected
+names remain classified for display; automatic disconnect and final Keep Off
+instead require attribution to this user's `pangps` or system `pangpsd` job via
+launchd PID, ownership, and kernel executable path. Unknown attribution fails
+without opening vendor UI. These boundaries have fake-runtime coverage; Fast
+User Switching and vendor UI routing between sessions remain unverified.
+See [GlobalProtect behavior](docs/GLOBALPROTECT.md) for action and recovery details.
 
 ## Evidence collected
 
 | Kind / date | macOS / architecture | GlobalProtect / TaskScope | Result | Limits |
 | --- | --- | --- | --- | --- |
 | Deterministic fixtures, 2026-09-12 | Host-independent data on macOS test runner | Simulated layouts and tool responses | Optional/missing agents, both disabled-output formats, unknown/error states, process ownership, protected PID validation, version handling, and redaction covered by `GlobalProtectCompatibilityTests` | No installed-product lifecycle actions |
-| Live read-only observation, 2026-09-12 19:59 UTC | 26.6.2 (25G83), arm64 process | GlobalProtect 6.3.3-1121; TaskScope self-check working tree based on `059de91`, included in this change | [Redacted report](Evidence/GlobalProtect/2026-09-12-macos-26.6.2-gp-6.3.3-1121.txt): both user plists installed, disabled overrides, neither loaded; system plist installed, enabled override, not loaded; no matching processes observed | XCTest execution, no TaskScope app bundle version or Keep Off preference read; GlobalProtect build metadata unavailable; protected process not verified; no lifecycle or policy test |
+| Live read-only observation, 2026-09-12 19:59 UTC | 26.6.2 (25G83), arm64 process | GlobalProtect 6.3.3-1121; TaskScope self-check based on `059de91` | [Redacted report](Evidence/GlobalProtect/2026-09-12-macos-26.6.2-gp-6.3.3-1121.txt): both user plists installed, disabled overrides, neither loaded; system plist installed, enabled override, not loaded; no matching processes observed | XCTest execution, no TaskScope app bundle version or Keep Off preference read; GlobalProtect build metadata unavailable; protected process not verified; no lifecycle or policy test |
 | Authorized live lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope 1.0.0 (3), local development build | [Redacted stop/restore record](Evidence/GlobalProtect/2026-09-28-live-stop-restore.md): fixed user and system jobs disabled/unloaded; Open re-enabled them and restored the session service and UI; VPN reported Connected | Initial reconnect required retry. Stale VPN DNS remained after some stops, even following Disconnect; Open recovered DNS and a subsequent idle stop preserved it. Login/reboot, private-resource reachability, and management-policy interference not tested |
 | Passwordless session lifecycle, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope source `3c8d401` | [Follow-up record](Evidence/GlobalProtect/2026-09-28-passwordless.md): Open restored the session service with the system job still disabled; VPN reached Connected; Keep Off stopped all processes; no administrator window during these actions; public HTTPS worked afterward | Initial system-disable approval was required. Other layouts, pre-login, logout/reboot, policy changes, and private-resource connectivity remain untested; earlier DNS limitation is not fixed |
 | Automatic Quit All, 2026-09-28 | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope 1.0.0 (3), final executable `0742281e…` | [Live record](Evidence/GlobalProtect/2026-09-28-quit-all.md): TaskScope pressed Disconnect, verified Not Connected, disabled/unloaded all known jobs and stopped all processes; public HTTPS worked; final menu-bar frame unchanged | One-time Accessibility authorization required. English UI exercised; other layouts, policies, login/reboot, and private-resource connectivity untested |
 | Restore regression, 2026-09-29 UTC | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope executable `35383249…` | [Follow-up](Evidence/GlobalProtect/2026-09-29-restore.md): toggle-off restored service and one UI; healthy Open preserved PIDs and connection; final state Connected with public HTTPS working | Orphan recovery and direct-UI duplicate prevention unit-tested; exact orphan setup on final binary aborted because clean disconnect was not confirmed. Other layouts, policy, login/reboot and private resources untested |
 | Menu-bar Quit All, 2026-09-29 UTC | 26.6.2 (25G83), arm64 | GlobalProtect 6.3.3-1121; TaskScope executable `81e7ae1f…` | [Follow-up](Evidence/GlobalProtect/2026-09-29-menu-quit-all.md): two final menu-bar full stops from Connection Failed; visible progress and one result sheet; zero vendor processes; Open restored one UI and service; public HTTPS 200 | Portal connection attempts reported unreachable/unresponsive, so no new connected-to-off cycle; translated UI, other layouts, policy and reboot untested |
 
-The September 12 live report describes the Mac's existing state. The check did not create
+The September 12 live report describes the recorded environment's existing state. The check did not create
 that state and no repair was attempted. In particular, the absent protected
 daemon is a coverage gap, not a successful protected-service validation. The
 observation used Swift 6.3.3 and Xcode 26.6 (17F113). The test runner's own bundle
 version is deliberately excluded from the TaskScope version fields.
 
-Validation on the same macOS/toolchain, in an isolated checkout of this change:
-12 focused fixture/UI checks passed; the live read-only probe passed separately.
-The full suite passed 378 tests with zero failures and one opt-in live-test skip,
-with coverage, warnings-as-errors, concurrency warnings, and actor race checks
-enabled. The release build, packaging tests, shell syntax checks, and diff
-whitespace checks also passed. These automated results do not replace the
-untested lifecycle steps.
-
-After integration with the support-diagnostics commit `1a37598`, the full strict
-suite passed 391 tests with zero failures and the same one opt-in live-test skip.
+Historical automated checks for the September 12 implementation passed on the
+recorded macOS/toolchain, including focused fixtures, a separate read-only probe,
+strict tests, release build, packaging, and shell syntax. These results apply to
+that revision; they do not replace untested lifecycle steps or validate later
+source changes. Current release candidates must run the [release gate](RELEASE.md).
 
 macOS 14/15, other macOS releases, Intel, other GlobalProtect versions, and other
 installed layouts remain untested for this feature. An arm64 process value
@@ -176,7 +179,9 @@ Use a separate manifest for each persistence event if claiming both logout/login
 and reboot coverage.
 
 Each record is a literal `key=value` line. Values are case-sensitive, nonempty,
-and contain no whitespace. Blank lines and lines beginning with `#` are allowed.
+and contain no whitespace. Empty or whitespace-only lines and lines beginning
+with `#` are allowed; indented comments are not. Use LF line endings and UTF-8
+without a BOM. CRLF and leading BOMs fail with explicit diagnostics.
 Duplicate or unknown keys, malformed lines, missing fields, and unsupported
 schema versions fail. These are data files; they are never sourced as shell
 code. There is no environment override or skip switch for this gate.
@@ -204,9 +209,9 @@ code. There is no environment override or skip switch for this gate.
 The nine exact step names are `baseline`, `keep_off`, `relaunch`, `persistence`,
 `keep_off_disabled`, `open`, `protected_service`, `vpn`, and `managed_policy`.
 The first six correspond to baseline and the five after-action exports in the
-authorized lifecycle procedure. `keep_off_disabled` means turning Keep Off off
-without implying an app launch. `protected_service` records the baseline/later
-comparison and verified identity; `vpn` records restoration checked through the
+authorized lifecycle procedure. `keep_off_disabled` records turning Keep Off off
+through the full Open restoration, including the required service and app launch.
+`protected_service` records the baseline/later comparison and verified identity; `vpn` records restoration checked through the
 organization's supported method; `managed_policy` records whether management
 interfered throughout the sequence. Absence is required after Keep Off; a verified running service in the
 installed launchd domain is required at baseline and after Open.

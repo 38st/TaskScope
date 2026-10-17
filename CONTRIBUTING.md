@@ -30,11 +30,11 @@ a successful cross-build.
 4. Run the complete local quality gate from the repository root:
 
    ```bash
-   for f in script/*.sh; do bash -n "$f" || exit 1; done
+   ( for f in script/*.sh; do bash -n "$f" || exit 1; done )
    swift build -c debug -Xswiftc -warnings-as-errors
    swift test
    swift test --enable-code-coverage
-   swift test --scratch-path /tmp/taskscope-release-strict \
+   swift test --scratch-path .build/strict \
      -Xswiftc -warnings-as-errors \
      -Xswiftc -warn-concurrency \
      -Xswiftc -enable-actor-data-race-checks
@@ -45,8 +45,11 @@ a successful cross-build.
 
 5. Open a pull request using the repository template.
 
-The packaging test requires macOS and Xcode 26. If a contributor cannot run a
-platform-specific gate, say exactly which command was not run and why; do not
+The packaging test requires macOS and Xcode 26 and launches the staged app.
+It uses a unique test bundle identifier and checks for leaked test preferences;
+startup verification uses volatile defaults without normal background enforcement.
+Run it only in an environment where launching the test app is appropriate.
+If a contributor cannot run a platform-specific gate, say exactly which command was not run and why; do not
 report it as passing. A maintainer must run every release gate before tagging.
 
 ## Security-sensitive changes
