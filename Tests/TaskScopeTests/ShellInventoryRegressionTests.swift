@@ -7,21 +7,28 @@ final class ShellInventoryRegressionTests: XCTestCase {
         let completed = expectation(description: "timed-out children finish and are reaped")
         let probe = DeferredStopWaitProbe()
         let task = Task {
-            await withTaskGroup(of: ShellCommandResult.self) { group in
-                for _ in 0..<24 {
+            await withTaskGroup(of: (Int, ShellCommandResult).self) { group in
+                for index in 0..<24 {
                     group.addTask {
-                        await ShellCommandRunner.run(
+                        let result = await ShellCommandRunner.run(
                             "printf '%s' $$; exec /bin/sleep 5", timeout: 0.1,
-                            waitForChild: { probe.wait($0, $1, $2) }
+                            waitForChild: { probe.wait(for: index, $0, $1, $2) }
                         )
+                        return (index, result)
                     }
                 }
-                for await result in group {
+                for await (index, result) in group {
                     XCTAssertEqual(result.exitCode, ShellCommandRunner.timedOutExitCode, result.stderr)
-                    guard let pid = Int32(result.stdout), pid > 1 else {
-                        XCTFail("Child did not report its PID")
+                    // Take the PID from the waitpid seam: on a loaded machine the
+                    // timeout can stop the shell before it prints `$$`.
+                    guard let pid = probe.childPID(of: index) else {
+                        XCTFail("Each command must probe exactly one child PID")
                         continue
                     }
+                    if !result.stdout.isEmpty {
+                        XCTAssertEqual(result.stdout, String(pid), "The probed PID must be the shell's own")
+                    }
+                    XCTAssertTrue(probe.didReap(pid), "The runner must reap its child through the seam")
                     var status: Int32 = 0
                     errno = 0
                     XCTAssertEqual(Darwin.waitpid(pid, &status, WNOHANG), -1)
@@ -182,19 +189,36 @@ final class ShellInventoryRegressionTests: XCTestCase {
     }
 }
 
+/// Defers each child's first eight probes, as when NOTE_EXIT precedes waitpid
+/// readiness. Records the PIDs each command probes and the ones really reaped,
+/// so the test never depends on the child printing before its timeout.
 private final class DeferredStopWaitProbe: @unchecked Sendable {
     private let lock = NSLock()
     private var counts: [pid_t: Int] = [:]
+    private var probedPIDs: [Int: Set<pid_t>] = [:]
+    private var reapedPIDs: Set<pid_t> = []
     private var released = false
 
-    func wait(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>, _ options: Int32) -> pid_t {
+    func wait(
+        for index: Int, _ pid: pid_t, _ status: UnsafeMutablePointer<Int32>, _ options: Int32
+    ) -> pid_t {
         let deferProbe = lock.withLock {
+            probedPIDs[index, default: []].insert(pid)
             counts[pid, default: 0] += 1
             return !released && counts[pid, default: 0] <= 8
         }
-        return deferProbe ? 0 : Darwin.waitpid(pid, status, options)
+        guard !deferProbe else { return 0 }
+        let waitedPID = Darwin.waitpid(pid, status, options)
+        if waitedPID == pid { lock.withLock { _ = reapedPIDs.insert(pid) } }
+        return waitedPID
     }
 
+    /// The command's child, or nil unless it probed exactly one PID.
+    func childPID(of index: Int) -> pid_t? {
+        lock.withLock { probedPIDs[index].flatMap { $0.count == 1 ? $0.first : nil } }
+    }
+
+    func didReap(_ pid: pid_t) -> Bool { lock.withLock { reapedPIDs.contains(pid) } }
     func release() { lock.withLock { released = true } }
 }
 
