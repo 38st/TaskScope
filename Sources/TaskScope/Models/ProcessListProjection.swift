@@ -12,7 +12,7 @@ struct ProcessListProjection {
     }
 
     private var sortedInventoryCache: (sortKey: ProcessSortKey, processes: [AppProcess])?
-    private var displayListCache: [DisplayListKey: [AppProcess]] = [:]
+    private var displayListCache: [DisplayListKey: DisplayList] = [:]
     private var treeRootsCache: [DisplayListKey: [ProcessTreeNode]] = [:]
 
     init(inventory: [AppProcess] = []) {
@@ -36,13 +36,27 @@ struct ProcessListProjection {
         sortKey: ProcessSortKey,
         limit: Int
     ) -> [AppProcess] {
+        displayList(for: query, sortKey: sortKey, limit: limit).processes
+    }
+
+    struct DisplayList {
+        var processes: [AppProcess]
+        var matchCount: Int
+    }
+
+    mutating func displayList(
+        for query: ProcessListQuery,
+        sortKey: ProcessSortKey,
+        limit: Int
+    ) -> DisplayList {
         let key = DisplayListKey(query: query, limit: limit, sortKey: sortKey)
         if let cached = displayListCache[key] {
             return cached
         }
-        let list = displayProcesses(sortKey: sortKey, limit: limit, matching: query.matches)
-        displayListCache[key] = list
-        return list
+        let matches = sortedInventory(by: sortKey).filter(query.matches)
+        let result = DisplayList(processes: Array(matches.prefix(max(0, limit))), matchCount: matches.count)
+        displayListCache[key] = result
+        return result
     }
 
     mutating func treeRoots(

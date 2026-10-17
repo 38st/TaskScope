@@ -466,7 +466,10 @@ struct TaskScopePopoverView: View {
 
     private var header: some View {
         TaskScopeHeaderView(
-            status: processManager.status,
+            status: processManager.snapshots.filter { watchedApps.presets.contains($0.preset) }.aggregateStatus,
+            watchedStatusAvailability: processManager.watchedStatusAvailability.forPresets(
+                watchedApps.presets, snapshots: processManager.snapshots
+            ),
             samples: history.samples,
             samplingState: history.state,
             showsMetrics: isExpandedWindow,
@@ -724,6 +727,7 @@ struct TaskScopePopoverView: View {
                                         pendingTermination: pendingTerminationBinding,
                                         expandedPids: $expandedTreePids,
                                         showsExpandedMetrics: isExpandedWindow,
+                                        requestListFocus: { processListFocused = true },
                                         contextMenuContent: { process in
                                             processContextMenu(for: process)
                                         }
@@ -837,6 +841,7 @@ struct TaskScopePopoverView: View {
             processManager: processManager,
             loginItemManager: loginItemManager,
             settings: settings,
+            watchedApps: watchedApps,
             confirmationState: confirmationState
         )
     }
@@ -856,7 +861,7 @@ struct TaskScopePopoverView: View {
         ProcessListQuery(
             searchText: settings.searchText,
             filterMode: filterMode,
-            watchedScopes: processManager.snapshots.map { WatchedProcessScope(preset: $0.preset) },
+            watchedScopes: watchedApps.presets.map { WatchedProcessScope(preset: $0) },
             cpuHighlightThreshold: settings.cpuHighlightThreshold,
             memoryHighlightThresholdMB: settings.memHighlightThresholdMB
         )
@@ -874,7 +879,10 @@ struct TaskScopePopoverView: View {
         }
 
         let hasSearch = !settings.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return hasSearch ? "\(filteredProcesses.count) matches" : "\(filteredProcesses.count) processes"
+        let count = processManager.inventorySnapshot.lazy.filter(listQuery.matches).count
+        let shown = filteredProcesses.count
+        let noun = hasSearch ? "matches" : "processes"
+        return shown < count ? "Showing \(shown) of \(count) \(noun)" : "\(shown) \(noun)"
     }
 
     private func refreshVisibleSection() {
@@ -1082,9 +1090,11 @@ struct TaskScopePopoverView: View {
         Button("Create Auto-Stop Rule...") {
             quickAutoStopProcess = process
         }
+        .disabled(processManager.isCurrentProcess(process))
         Button("Watch This Process...") {
             quickPresetDraft = QuickWatchedPresetDraft(processes: [process])
         }
+        .disabled(processManager.isCurrentProcess(process))
         if !processManager.selectedPids.isEmpty {
             Button("Save Selection as Preset...") {
                 quickPresetDraft = QuickWatchedPresetDraft(processes: selectedProcessesForPreset())

@@ -9,6 +9,7 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
     @Binding var pendingTermination: AppProcess?
     @Binding var expandedPids: Set<Int32>
     var showsExpandedMetrics: Bool
+    var requestListFocus: () -> Void = {}
     @ViewBuilder var contextMenuContent: (AppProcess) -> ContextMenuContent
 
     var body: some View {
@@ -65,6 +66,7 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 keyboardSelectedPid = node.process.pid
+                requestListFocus()
             }
             .id(node.process.pid)
             .contextMenu {
@@ -82,6 +84,7 @@ struct ProcessTreeRow<ContextMenuContent: View>: View {
                         pendingTermination: $pendingTermination,
                         expandedPids: $expandedPids,
                         showsExpandedMetrics: showsExpandedMetrics,
+                        requestListFocus: requestListFocus,
                         contextMenuContent: contextMenuContent
                     )
                 }

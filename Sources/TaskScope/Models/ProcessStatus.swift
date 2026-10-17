@@ -61,3 +61,33 @@ enum ProcessSortKey: String, CaseIterable, Identifiable, Sendable {
         }
     }
 }
+
+/// Whether the last displayed watched snapshots can describe current state.
+enum WatchedStatusAvailability: Equatable, Sendable {
+    case unknown
+    case current
+    case stale
+
+    var title: String? {
+        switch self {
+        case .unknown: "Unknown"
+        case .current: nil
+        case .stale: "Stale"
+        }
+    }
+
+    var detail: String? {
+        switch self {
+        case .unknown: "Watched status has not been verified"
+        case .current: nil
+        case .stale: "Last observed status; refresh failed"
+        }
+    }
+
+    func forPresets(_ presets: [WatchedAppPreset], snapshots: [WatchedAppSnapshot]) -> Self {
+        guard presets.allSatisfy({ preset in snapshots.contains { $0.preset == preset } }) else {
+            return .unknown
+        }
+        return self
+    }
+}

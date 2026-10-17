@@ -100,6 +100,113 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertThrowsError(try view.inspect().find(text: "Process list is stale"))
     }
 
+    func testConfiguredPresetsAndUnknownHeaderAppearBeforeTheFirstRead() async throws {
+        let fixture = await makeFixture(inventory: UIInventory(processes: []), loadList: false)
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { fixture.stores.watchedApps.presets }
+        for style in [TaskScopePresentationStyle.expandedWindow, .menuBarCompact] {
+            let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState(), presentationStyle: style)
+            let inspected = try view.inspect()
+            XCTAssertEqual(inspected.findAll(PresetCard.self).count, fixture.stores.watchedApps.presets.count)
+            XCTAssertNoThrow(try inspected.find(TaskScopeHeaderView.self).find(text: "Unknown"))
+            XCTAssertThrowsError(try inspected.find(TaskScopeHeaderView.self).find(text: "Quiet"))
+            XCTAssertThrowsError(try inspected.find(text: "No watched apps configured. Add presets in Settings."))
+        }
+    }
+
+    func testFirstWatchedReadFailureOffersRetryAndClearsUnknownAfterSuccess() async throws {
+        let fixture = await makeFixture(inventory: UIScriptedInventory(results: [
+            .failure(.commandFailed("ps unavailable")), .success([])
+        ]), loadList: false)
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { fixture.stores.watchedApps.presets }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
+        XCTAssertEqual(try view.inspect().findAll(PresetCard.self).count, 1)
+        XCTAssertNoThrow(try view.inspect().find(text: "ps unavailable"))
+        XCTAssertNoThrow(try view.inspect().find(TaskScopeHeaderView.self).find(text: "Unknown"))
+        try view.inspect().find(button: "Retry").tap()
+        await settle()
+        XCTAssertNil(fixture.manager.processLoadError)
+        XCTAssertNoThrow(try view.inspect().find(TaskScopeHeaderView.self).find(text: "Quiet"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Retry"))
+    }
+
+    func testFailedWatchedRefreshMarksLastObservationStale() async throws {
+        let fixture = await makeFixture(inventory: UIScriptedInventory(results: [
+            .success([]), .failure(.commandFailed("later read failed")), .success([])
+        ]), loadList: false)
+        defer { fixture.stores.cleanup() }
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { fixture.stores.watchedApps.presets }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
+        XCTAssertNoThrow(try view.inspect().find(TaskScopeHeaderView.self).find(text: "Stale"))
+        XCTAssertNoThrow(try view.inspect().find(text: "Watched status is stale"))
+        XCTAssertNoThrow(try view.inspect().find(text: "later read failed"))
+        XCTAssertEqual(try view.inspect().findAll(PresetCard.self).count, 1)
+        try view.inspect().find(button: "Retry").tap()
+        await settle()
+        XCTAssertNoThrow(try view.inspect().find(TaskScopeHeaderView.self).find(text: "Quiet"))
+        XCTAssertThrowsError(try view.inspect().find(text: "Watched status is stale"))
+    }
+
+    func testPresetCardsFollowEditsAndDeletionWhenRefreshFails() async throws {
+        let fixture = await makeFixture(inventory: UIScriptedInventory(results: [
+            .success([]), .failure(.commandFailed("ps unavailable"))
+        ]), loadList: false)
+        defer { fixture.stores.cleanup() }
+        let store = fixture.stores.watchedApps
+        var preset = WatchedAppPreset(displayName: "Before", mainProcessName: "Before",
+                                      helperProcessNames: [], protectedProcessNames: [], appPath: "/Applications/Before.app")
+        XCTAssertTrue(store.add(preset))
+        fixture.stores.settings.selectedSectionRaw = TaskScopeSection.presets.rawValue
+        fixture.manager.watchedAppsProvider = { store.presets }
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        let confirmation = ProcessConfirmationState()
+        let view = makePopover(fixture: fixture, confirmationState: confirmation)
+        let oldCard = try XCTUnwrap(view.inspect().findAll(PresetCard.self).first {
+            try $0.actualView().snapshot.preset.id == preset.id
+        }).actualView()
+        preset.displayName = "After"
+        preset.mainProcessName = "After"
+        preset.appPath = "/Applications/After.app"
+        XCTAssertTrue(store.update(preset))
+        await fixture.manager.refreshWatchedStatus(showMessage: false)
+        XCTAssertNoThrow(try view.inspect().find(text: "After"))
+        XCTAssertThrowsError(try view.inspect().find(text: "Before"))
+        oldCard.onQuitApp()
+        XCTAssertEqual(confirmation.pendingPresetAction?.preset, preset)
+        confirmation.clearPresetAction()
+        oldCard.onQuitHelpers()
+        XCTAssertEqual(confirmation.pendingPresetAction?.preset, preset)
+        confirmation.clearPresetAction()
+        XCTAssertTrue(store.remove(preset))
+        XCTAssertThrowsError(try view.inspect().find(text: "After"))
+        oldCard.onQuitAll()
+        XCTAssertNil(confirmation.pendingPresetAction)
+    }
+
+    func testProcessCountRevealsTruncationWithAndWithoutSearch() async throws {
+        let fixture = await makeFixture(processes: [
+            process(pid: 81, parentPID: 1, name: "WorkerA"),
+            process(pid: 82, parentPID: 1, name: "WorkerB"),
+            process(pid: 83, parentPID: 1, name: "Other")
+        ])
+        defer { fixture.stores.cleanup() }
+        fixture.manager.processListLimitProvider = { 1 }
+        let view = makePopover(fixture: fixture, confirmationState: ProcessConfirmationState())
+        XCTAssertNoThrow(try view.inspect().find(text: "Showing 1 of 3 processes"))
+        fixture.stores.settings.searchText = "Worker"
+        XCTAssertNoThrow(try view.inspect().find(text: "Showing 1 of 2 matches"))
+        fixture.stores.settings.searchText = "WorkerA"
+        XCTAssertNoThrow(try view.inspect().find(text: "1 matches"))
+        XCTAssertThrowsError(try view.inspect().find(text: "Showing 1 of 1 matches"))
+    }
+
     func testUserProtectedProcessBadgeMatchesServicesHeader() throws {
         let snapshot = WatchedAppSnapshot(preset: .globalProtect, runningNames: [],
                                           unprivilegedProtectedNames: ["PanGPS"])
@@ -119,7 +226,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         defer { fixture.stores.cleanup() }
         let confirmation = ProcessConfirmationState()
         let view = makePopover(fixture: fixture, confirmationState: confirmation)
-        for title in ["Stop", "Force Stop"] {
+        for title in ["Stop", "Force Stop", "Create Auto-Stop Rule...", "Watch This Process..."] {
             XCTAssertTrue(try view.processContextMenu(for: own).inspect().find(button: title).isDisabled())
             XCTAssertFalse(try view.processContextMenu(for: other).inspect().find(button: title).isDisabled())
         }
@@ -521,7 +628,141 @@ final class SwiftUIHarnessTests: XCTestCase {
         )
 
         try presented.find(button: "Cancel").tap()
+        await settle()
         XCTAssertNil(confirmation.pendingTermination)
+        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+    }
+
+    func testWindowCancelNeverSignalsForSingleOrBatchNormalOrForce() async throws {
+        try await assertCancelledStops(menuBar: false)
+    }
+
+    func testMenuBarCancelNeverSignalsForSingleOrBatchNormalOrForce() async throws {
+        try await assertCancelledStops(menuBar: true)
+    }
+
+    private func assertCancelledStops(menuBar: Bool) async throws {
+        for mode in [ProcessConfirmationState.TerminationMode.normal, .force] {
+            for batch in [false, true] {
+                let target = process(pid: 75, parentPID: 1, name: "CancelledTarget")
+                let fixture = await makeFixture(processes: [target])
+                defer { fixture.stores.cleanup() }
+                let confirmation = ProcessConfirmationState()
+                let presenter = menuBar ? UIMenuBarConfirmation(answer: false) : nil
+                let view = makePopover(fixture: fixture, confirmationState: confirmation, menuBarConfirmation: presenter)
+                if batch {
+                    confirmation.requestBatch([target.identity], mode: mode)
+                } else {
+                    confirmation.requestTermination(target, mode: mode)
+                }
+                if menuBar {
+                    if batch {
+                        try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingBatchTermination)
+                    } else {
+                        try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingTermination)
+                    }
+                } else {
+                    try view.inspect().find(button: "Cancel").tap()
+                }
+                await settle()
+                XCTAssertNil(confirmation.pendingTermination)
+                XCTAssertNil(confirmation.pendingBatchTermination)
+                XCTAssertTrue(fixture.signaler.sent.isEmpty, "Cancel must not signal: menuBar=\(menuBar), batch=\(batch), mode=\(mode)")
+            }
+        }
+    }
+
+    func testWindowConfirmsNormalProcessStopWithSIGTERM() async throws {
+        try await assertConfirmedStop(mode: .normal, batch: false, menuBar: false)
+    }
+
+    func testWindowConfirmsForceProcessStopWithSIGKILL() async throws {
+        try await assertConfirmedStop(mode: .force, batch: false, menuBar: false)
+    }
+
+    func testWindowConfirmsNormalBatchStopWithSIGTERM() async throws {
+        try await assertConfirmedStop(mode: .normal, batch: true, menuBar: false)
+    }
+
+    func testWindowConfirmsForceBatchStopWithSIGKILL() async throws {
+        try await assertConfirmedStop(mode: .force, batch: true, menuBar: false)
+    }
+
+    func testMenuBarConfirmsNormalProcessStopWithSIGTERM() async throws {
+        try await assertConfirmedStop(mode: .normal, batch: false, menuBar: true)
+    }
+
+    func testMenuBarConfirmsForceProcessStopWithSIGKILL() async throws {
+        try await assertConfirmedStop(mode: .force, batch: false, menuBar: true)
+    }
+
+    func testMenuBarConfirmsNormalBatchStopWithSIGTERM() async throws {
+        try await assertConfirmedStop(mode: .normal, batch: true, menuBar: true)
+    }
+
+    func testMenuBarConfirmsForceBatchStopWithSIGKILL() async throws {
+        try await assertConfirmedStop(mode: .force, batch: true, menuBar: true)
+    }
+
+    private func assertConfirmedStop(
+        mode: ProcessConfirmationState.TerminationMode,
+        batch: Bool,
+        menuBar: Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        let target = process(pid: 75, parentPID: 1, name: "ConfirmedTarget")
+        let fixture = await makeFixture(processes: [target])
+        defer { fixture.stores.cleanup() }
+        let confirmation = ProcessConfirmationState()
+        let presenter = menuBar ? UIMenuBarConfirmation(answer: true) : nil
+        let view = makePopover(fixture: fixture, confirmationState: confirmation, menuBarConfirmation: presenter)
+        let title: String
+        if batch {
+            confirmation.requestBatch([target.identity], mode: mode)
+            title = try XCTUnwrap(confirmation.pendingBatchTermination).confirmTitle
+        } else {
+            confirmation.requestTermination(target, mode: mode)
+            title = try XCTUnwrap(confirmation.pendingTermination).confirmTitle
+        }
+        XCTAssertTrue(fixture.signaler.sent.isEmpty, file: file, line: line)
+        if menuBar {
+            if batch {
+                try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingBatchTermination)
+            } else {
+                try view.inspect().vStack().callOnChange(oldValue: nil, newValue: confirmation.pendingTermination)
+            }
+        } else {
+            try view.inspect().find(button: title).tap()
+        }
+        await settle()
+        XCTAssertNil(confirmation.pendingTermination, file: file, line: line)
+        XCTAssertNil(confirmation.pendingBatchTermination, file: file, line: line)
+        if let presenter {
+            XCTAssertEqual(presenter.requests.map(\.confirmTitle), [title], file: file, line: line)
+        }
+        XCTAssertEqual(
+            fixture.signaler.sent,
+            [.init(signal: mode == .force ? SIGKILL : SIGTERM, pid: target.pid)],
+            file: file, line: line
+        )
+    }
+
+    func testConfirmedWindowPresetActionShowsOnlyTheCompletedResult() async throws {
+        let fixture = await makeFixture(processes: [])
+        defer { fixture.stores.cleanup() }
+        let confirmation = ProcessConfirmationState()
+        confirmation.requestPresetAction(.quitAll, preset: .globalProtect)
+        var windowRequests = 0
+        let view = makePopover(fixture: fixture, confirmationState: confirmation, openFullWindow: {
+            XCTAssertNil(confirmation.pendingPresetAction)
+            XCTAssertEqual(fixture.manager.message, "Automatic GlobalProtect disconnect is unavailable. Its services were left running.")
+            windowRequests += 1
+        })
+        try view.inspect().find(ViewType.ConfirmationDialog.self).actions().find(button: "Quit All").tap()
+        await settle()
+        XCTAssertEqual(windowRequests, 1)
+        XCTAssertNil(confirmation.pendingPresetAction)
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
     }
 
@@ -582,6 +823,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNoThrow(try presented.find(text: confirmation.batchMessage))
 
         try presented.find(button: "Cancel").tap()
+        await settle()
         XCTAssertNil(confirmation.pendingBatchTermination)
         XCTAssertTrue(fixture.signaler.sent.isEmpty)
 
@@ -633,9 +875,11 @@ final class SwiftUIHarnessTests: XCTestCase {
             )
         )
 
+        let previousMessage = fixture.manager.message
         try presented.find(button: "Cancel").tap()
+        await settle()
         XCTAssertNil(confirmation.pendingPresetAction)
-        XCTAssertTrue(fixture.signaler.sent.isEmpty)
+        XCTAssertEqual(fixture.manager.message, previousMessage)
     }
 
     func testConfirmedMenuBarFullStopOpensPersistentWindowAndRetainsFailure() async throws {
@@ -650,7 +894,7 @@ final class SwiftUIHarnessTests: XCTestCase {
                 XCTAssertNil(confirmation.pendingPresetAction)
                 XCTAssertFalse(fixture.manager.isWorking, "Present before disconnect can dismiss the menu")
                 windowRequests += 1
-            })
+            }, presentationStyle: .menuBarCompact)
             try view.inspect().find(ViewType.ConfirmationDialog.self).actions().find(button: confirmation.pendingPresetAction!.title).tap()
             await settle()
             XCTAssertEqual(windowRequests, 2, "Show progress before the menu closes and return focus to the result")
@@ -755,7 +999,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         await settle()
         XCTAssertEqual(presenter.requests.last?.confirmTitle, "Force Stop Selected")
         XCTAssertNil(confirmation.pendingBatchTermination)
-        XCTAssertEqual(fixture.signaler.sent.map(\.pid), [75])
+        XCTAssertEqual(fixture.signaler.sent, [.init(signal: SIGKILL, pid: 75)])
     }
 
     func testReportsWaitForTheirWindowSoTheDockIconDoesNotBounce() {
@@ -1143,6 +1387,32 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertEqual(selectionAttempts, 0)
     }
 
+    func testTreeRowTapsRequestFocusEvenWhenSelectionIsUnchangedIncludingChildren() async throws {
+        let parent = process(pid: 81, parentPID: 1, name: "Parent")
+        let child = process(pid: 82, parentPID: parent.pid, name: "Child")
+        let fixture = await makeFixture(processes: [parent, child])
+        defer { fixture.stores.cleanup() }
+        var requests = 0
+        let row = ProcessTreeRow(
+            node: ProcessTreeNode(process: parent, children: [ProcessTreeNode(process: child, children: [])]),
+            depth: 0,
+            settings: fixture.stores.settings,
+            processManager: fixture.manager,
+            keyboardSelectedPid: .constant(parent.pid),
+            pendingTermination: .constant(nil),
+            expandedPids: .constant([parent.pid]),
+            showsExpandedMetrics: false,
+            requestListFocus: { requests += 1 },
+            contextMenuContent: { _ in EmptyView() }
+        )
+        try row.inspect().vStack().zStack(0).callOnTapGesture()
+        try row.inspect().vStack().zStack(0).callOnTapGesture()
+        XCTAssertEqual(requests, 2, "Every tap must request focus even with an unchanged highlighted PID")
+        let nested = try row.inspect().vStack().forEach(1).view(ProcessTreeRow<EmptyView>.self, 0)
+        try nested.vStack().zStack(0).callOnTapGesture()
+        XCTAssertEqual(requests, 3, "Recursive children must receive the same focus request")
+    }
+
     func testTreeDisclosureControlsRenderedChildVisibility() async throws {
         let parent = process(pid: 81, parentPID: 1, name: "Parent")
         let child = process(pid: 82, parentPID: parent.pid, name: "Child")
@@ -1245,7 +1515,13 @@ final class SwiftUIHarnessTests: XCTestCase {
                 eventsKey: "events",
                 inventory: UIInventory(processes: [])
             ),
-            processManager: ProcessManager(processInventory: UIInventory(processes: []))
+            processManager: ProcessManager(
+                processInventory: UIInventory(processes: []),
+                verificationInventory: UIInventory(processes: []),
+                processSignaler: UIRecordingSignaler(),
+                lifecycle: UILifecycle(),
+                settleAfterProcessChange: {}
+            )
         )
         let inspected = try view.inspect()
 
@@ -1296,8 +1572,10 @@ final class SwiftUIHarnessTests: XCTestCase {
         let signaler = UIRecordingSignaler()
         let manager = ProcessManager(
             processInventory: inventory,
+            verificationInventory: inventory,
             processSignaler: signaler,
-            lifecycle: UILifecycle()
+            lifecycle: UILifecycle(),
+            settleAfterProcessChange: {}
         )
         manager.enableNotifications = false
 
@@ -1315,7 +1593,8 @@ final class SwiftUIHarnessTests: XCTestCase {
         fixture: UIFixture,
         confirmationState: ProcessConfirmationState,
         openFullWindow: (() -> Void)? = nil,
-        menuBarConfirmation: (any MenuBarConfirming)? = nil
+        menuBarConfirmation: (any MenuBarConfirming)? = nil,
+        presentationStyle: TaskScopePresentationStyle = .expandedWindow
     ) -> TaskScopePopoverView {
         TaskScopePopoverView(
             processManager: fixture.manager,
@@ -1325,7 +1604,7 @@ final class SwiftUIHarnessTests: XCTestCase {
             savedSelections: fixture.stores.savedSelections,
             autoStopRules: fixture.stores.autoStopRules,
             history: fixture.stores.history,
-            presentationStyle: .menuBarCompact,
+            presentationStyle: menuBarConfirmation == nil ? presentationStyle : .menuBarCompact,
             openFullWindow: openFullWindow,
             confirmationState: confirmationState,
             activityMonitor: UIActivityMonitor(),

@@ -2,6 +2,7 @@ import SwiftUI
 
 struct TaskScopeHeaderView: View {
     var status: ProcessStatus
+    var watchedStatusAvailability: WatchedStatusAvailability = .current
     var samples: [ProcessHistory.Sample]
     var samplingState: ProcessHistory.SamplingState
     var showsMetrics: Bool
@@ -25,7 +26,7 @@ struct TaskScopeHeaderView: View {
                 Text("TaskScope")
                     .font(.headline)
 
-                Text(status.subtitle)
+                Text(watchedStatusAvailability.detail ?? status.subtitle)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -94,7 +95,7 @@ struct TaskScopeHeaderView: View {
                 .fill(statusColor)
                 .frame(width: 8, height: 8)
 
-            Text(status.title)
+            Text(watchedStatusAvailability.title ?? status.title)
                 .font(.caption)
                 .fontWeight(.medium)
         }
@@ -102,19 +103,21 @@ struct TaskScopeHeaderView: View {
         .padding(.vertical, 4)
         .background(.quaternary, in: Capsule())
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Status: \(status.title)")
+        .accessibilityLabel("Status: \(watchedStatusAvailability.title ?? status.title)")
     }
 
     private var statusColor: Color {
+        if watchedStatusAvailability == .unknown { return .secondary }
+        if watchedStatusAvailability == .stale { return .orange }
         switch status {
         case .idle:
-            .green
+            return .green
         case .helpersOnly:
-            .yellow
+            return .yellow
         case .protectedOnly:
-            .orange
+            return .orange
         case .watchedRunning:
-            .red
+            return .red
         }
     }
 

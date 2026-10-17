@@ -6,6 +6,7 @@ import Combine
 final class ProcessManager: ObservableObject {
     @Published private(set) var status: ProcessStatus = .idle
     @Published private(set) var snapshots: [WatchedAppSnapshot] = []
+    @Published private(set) var watchedStatusAvailability: WatchedStatusAvailability = .unknown
     @Published private(set) var processes: [AppProcess] = []
     @Published private(set) var hasLoadedProcessList = false
     @Published private(set) var hasAttemptedProcessListLoad = false
@@ -995,6 +996,7 @@ final class ProcessManager: ObservableObject {
         lastInventoryFailure = failure.localizedDescription
         guard failure != .cancelled else { return }
         processLoadError = failure.localizedDescription
+        if watchedStatusAvailability != .unknown { watchedStatusAvailability = .stale }
     }
 
     private func snapshots(from inventory: [AppProcess]) -> [WatchedAppSnapshot] {
@@ -1087,6 +1089,7 @@ final class ProcessManager: ObservableObject {
     private func apply(_ watched: [WatchedAppSnapshot]) {
         let previousWatchedNames = notifiableWatchedNames(in: snapshots)
         snapshots = watched
+        watchedStatusAvailability = .current
         status = watched.aggregateStatus
 
         guard enableNotifications else { return }

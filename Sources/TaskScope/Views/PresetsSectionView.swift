@@ -4,12 +4,35 @@ struct PresetsSectionView: View {
     @ObservedObject var processManager: ProcessManager
     @ObservedObject var loginItemManager: LoginItemManager
     @ObservedObject var settings: SettingsStore
+    @ObservedObject var watchedApps: WatchedAppsStore
     @ObservedObject var confirmationState: ProcessConfirmationState
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                ForEach(processManager.snapshots) { snapshot in
+                if let error = processManager.processLoadError {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(processManager.watchedStatusAvailability == .unknown
+                             ? "Watched status is unavailable" : "Watched status is stale")
+                            .font(.caption).fontWeight(.semibold)
+                        Text(error)
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let lastRead = processManager.lastSuccessfulInventoryAt {
+                            Text("Last successful inventory: \(lastRead.formatted(date: .omitted, time: .standard))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        Button("Retry") {
+                            Task { await processManager.refreshWatchedStatus() }
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                }
+
+                ForEach(watchedApps.presets) { preset in
+                    let snapshot = processManager.snapshots.first { $0.preset == preset }
+                        ?? WatchedAppSnapshot(preset: preset, runningNames: [])
                     PresetCard(
                         snapshot: snapshot,
                         onOpen: {
@@ -26,13 +49,13 @@ struct PresetsSectionView: View {
                             }
                         },
                         onQuitApp: {
-                            confirmationState.requestPresetAction(.quitApp, preset: snapshot.preset)
+                            requestPresetAction(.quitApp, id: snapshot.preset.id)
                         },
                         onQuitHelpers: {
-                            confirmationState.requestPresetAction(.quitHelpers, preset: snapshot.preset)
+                            requestPresetAction(.quitHelpers, id: snapshot.preset.id)
                         },
                         onQuitAll: {
-                            confirmationState.requestPresetAction(.quitAll, preset: snapshot.preset)
+                            requestPresetAction(.quitAll, id: snapshot.preset.id)
                         },
                         isKeptOff: snapshot.preset.id == WatchedAppPreset.globalProtectID
                             && settings.keepGlobalProtectOff,
@@ -56,9 +79,12 @@ struct PresetsSectionView: View {
                         },
                         onStopWithoutDisconnect: stopRecoveryAction(for: snapshot.preset)
                     )
+                    .environment(\.watchedStatusAvailability, processManager.watchedStatusAvailability.forPresets(
+                        [preset], snapshots: processManager.snapshots
+                    ))
                 }
 
-                if processManager.snapshots.isEmpty {
+                if watchedApps.presets.isEmpty {
                     Text("No watched apps configured. Add presets in Settings.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -90,11 +116,27 @@ struct PresetsSectionView: View {
         }
     }
 
+    private func requestPresetAction(_ action: ProcessConfirmationState.PresetAction, id: UUID) {
+        guard let preset = watchedApps.presets.first(where: { $0.id == id }) else { return }
+        confirmationState.requestPresetAction(action, preset: preset)
+    }
+
     private func stopRecoveryAction(for preset: WatchedAppPreset) -> (() -> Void)? {
         guard preset.hasCanonicalGlobalProtectIdentity,
               let failureID = processManager.globalProtectDisconnectFailureID else { return nil }
         return {
             confirmationState.requestPresetAction(.stopServices, preset: preset, disconnectFailureID: failureID)
         }
+    }
+}
+
+private struct WatchedStatusAvailabilityKey: EnvironmentKey {
+    static let defaultValue: WatchedStatusAvailability = .current
+}
+
+extension EnvironmentValues {
+    var watchedStatusAvailability: WatchedStatusAvailability {
+        get { self[WatchedStatusAvailabilityKey.self] }
+        set { self[WatchedStatusAvailabilityKey.self] = newValue }
     }
 }
