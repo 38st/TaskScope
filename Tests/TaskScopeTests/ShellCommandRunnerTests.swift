@@ -342,14 +342,23 @@ final class ShellCommandRunnerTests: XCTestCase {
     }
 
     func testTimedOutProcessIsTerminatedAndReapedBeforeReturn() async {
+        let probe = RecordingChildWaitProbe()
         let result = await ShellCommandRunner.run(
             "/usr/bin/printf $$; exec /bin/sleep 5",
-            timeout: 0.1
+            timeout: 0.1,
+            waitForChild: { probe.wait($0, $1, $2) }
         )
-        let pid = Int32(result.stdout) ?? 0
 
         XCTAssertEqual(result.exitCode, -3)
-        XCTAssertGreaterThan(pid, 0)
+        // Take the PID from the waitpid seam: on a loaded machine the timeout
+        // can kill the shell before `/usr/bin/printf` prints `$$`.
+        guard let pid = probe.childPID, pid > 0 else {
+            return XCTFail("The runner must probe exactly one child PID")
+        }
+        if !result.stdout.isEmpty {
+            XCTAssertEqual(result.stdout, String(pid), "The probed PID must be the shell's own")
+        }
+        XCTAssertTrue(probe.didReap(pid), "The runner must reap its child through the seam")
         errno = 0
         XCTAssertEqual(Darwin.kill(pid, 0), -1)
         XCTAssertEqual(errno, ESRCH)
@@ -458,4 +467,24 @@ private final class DeferredChildWaitProbe: @unchecked Sendable {
         }
         return deferProbe ? 0 : Darwin.waitpid(pid, status, options)
     }
+}
+
+/// Records the PIDs the runner probes and the ones the real waitpid reaps, so
+/// a test never depends on the child printing its PID before a timeout.
+private final class RecordingChildWaitProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var probedPIDs: Set<pid_t> = []
+    private var reapedPIDs: Set<pid_t> = []
+
+    func wait(_ pid: pid_t, _ status: UnsafeMutablePointer<Int32>, _ options: Int32) -> pid_t {
+        lock.withLock { _ = probedPIDs.insert(pid) }
+        let waitedPID = Darwin.waitpid(pid, status, options)
+        if waitedPID == pid { lock.withLock { _ = reapedPIDs.insert(pid) } }
+        return waitedPID
+    }
+
+    /// The command's child, or nil unless exactly one PID was probed.
+    var childPID: pid_t? { lock.withLock { probedPIDs.count == 1 ? probedPIDs.first : nil } }
+
+    func didReap(_ pid: pid_t) -> Bool { lock.withLock { reapedPIDs.contains(pid) } }
 }
