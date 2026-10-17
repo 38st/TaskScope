@@ -105,10 +105,14 @@ final class ShellCommandRunnerTests: XCTestCase {
     }
 
     func testCommandThatExitedBeforeCancellationReportsItsRealExit() async {
+        let probe = RecordingChildWaitProbe()
         let task = Task {
-            await ShellCommandRunner.run("exit 3", timeout: 5)
+            await ShellCommandRunner.run("exit 3", timeout: 10, waitForChild: { probe.wait($0, $1, $2) })
         }
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        // Cancel once the runner has reaped the child, not after a fixed
+        // delay: on a loaded machine the shell may not even have started.
+        let reaped = await waitUntil { probe.childPID.map { probe.didReap($0) } ?? false }
+        XCTAssertTrue(reaped, "The shell never exited")
         task.cancel()
 
         let result = await task.value
@@ -221,10 +225,11 @@ final class ShellCommandRunnerTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(started), 2)
     }
 
-    /// On a loaded machine the 0.25 s timeout can kill the shell before it
-    /// reports its descendant, or before it starts one. Such an attempt must
-    /// still time out promptly and leave nothing in the shell's process group,
-    /// but it has no reported descendant to check, so it is retried.
+    /// On a loaded machine the 0.25 s timeout can arrive before the descendant
+    /// has started, ignored TERM, and reported. Such an attempt must still time
+    /// out promptly and leave nothing in the shell's process group, but it does
+    /// not prove that SIGKILL reached a TERM-ignoring descendant, so it is
+    /// retried.
     func testTimeoutTerminatesDescendantsThatIgnoreTermAndHoldPipesOpen() async throws {
         let attempts = 10
         for _ in 0..<attempts {
@@ -244,7 +249,7 @@ final class ShellCommandRunnerTests: XCTestCase {
             XCTAssertLessThan(Date().timeIntervalSince(started), 2)
             // Take the shell's PID from the waitpid seam. The shell leads its
             // own process group, so an empty group also rules out a descendant
-            // the shell started but never reported.
+            // that never reported.
             guard let shell = probe.childPID, shell > 0 else {
                 return XCTFail("The runner must probe exactly one child PID")
             }
@@ -252,12 +257,12 @@ final class ShellCommandRunnerTests: XCTestCase {
 
             // `>` creates the marker before printf writes to it, and with the
             // group gone nothing can write to it any more. A missing or empty
-            // marker means the timeout killed the shell before it reported.
+            // marker means the stop came before the report.
             guard let report = try? String(contentsOf: marker, encoding: .utf8), !report.isEmpty else {
                 continue
             }
             let pids = try processIdentifiers(in: report)
-            XCTAssertEqual(pids.group, shell, "The shell must report its own PID")
+            XCTAssertEqual(pids.group, shell, "The descendant must report the shell as its parent")
             await assertProcessDisappears(pids.descendant)
             return
         }
@@ -269,19 +274,22 @@ final class ShellCommandRunnerTests: XCTestCase {
             .appendingPathComponent("taskscope-cancel-group-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: marker) }
 
-        let started = Date()
         let command = descendantHoldingPipesCommand(marker: marker)
         let task = Task {
             await ShellCommandRunner.run(command, timeout: 10)
         }
 
         let pids = try await waitForProcessIdentifiers(from: marker)
+        // Time the cancellation alone: on a loaded machine the handshake
+        // before it can take seconds.
+        let cancelled = Date()
         task.cancel()
         let result = await task.value
 
         XCTAssertEqual(result.exitCode, -2)
         XCTAssertTrue(result.stderr.hasSuffix("Command cancelled."))
-        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        XCTAssertLessThan(Date().timeIntervalSince(cancelled), 2)
+        await assertProcessDisappears(-pids.group)
         await assertProcessDisappears(pids.descendant)
     }
 
@@ -290,7 +298,11 @@ final class ShellCommandRunnerTests: XCTestCase {
             .appendingPathComponent("taskscope-pre-run-\(UUID().uuidString)")
         let command = "/usr/bin/touch \(ShellCommandRunner.shellQuoted(marker.path))"
         let task = Task {
-            await ShellCommandRunner.run(command, timeout: 10)
+            // Sleep until cancelled, so `run` always starts cancelled even if
+            // this task runs first. A cancel racing the spawn is covered by
+            // testCancellationRacingStartNeverLeavesTheChildRunningUnreported.
+            try? await Task.sleep(nanoseconds: 60_000_000_000)
+            return await ShellCommandRunner.run(command, timeout: 10)
         }
 
         task.cancel()
@@ -315,14 +327,8 @@ final class ShellCommandRunnerTests: XCTestCase {
                 timeout: 10
             )
         }
-        for _ in 0..<200 where !FileManager.default.fileExists(atPath: marker.path) {
-            try? await Task.sleep(nanoseconds: 10_000_000)
-        }
-
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: marker.path),
-            "The controlled child never reached its cancellation handshake."
-        )
+        let reachedHandshake = await waitUntil { FileManager.default.fileExists(atPath: marker.path) }
+        XCTAssertTrue(reachedHandshake, "The controlled child never reached its cancellation handshake.")
 
         task.cancel()
         let result = await task.value
@@ -390,12 +396,16 @@ final class ShellCommandRunnerTests: XCTestCase {
         XCTAssertEqual(errno, ESRCH)
     }
 
+    /// The descendant ignores TERM, then writes `group:descendant` (its parent,
+    /// the shell, leads the group). A SIGTERM before the trap would have killed
+    /// it, so a report proves the stop met a TERM-ignoring descendant and its
+    /// `sleep` child, both holding the command's pipes open. The sleep outlasts
+    /// every poll, even on a loaded machine, so a missed SIGKILL always shows.
     private func descendantHoldingPipesCommand(marker: URL) -> String {
-        """
-        /bin/sh -c 'trap "" TERM; /bin/sleep 5' &
-        descendant=$!
-        /usr/bin/printf '%s:%s' $$ "$descendant" > \(ShellCommandRunner.shellQuoted(marker.path))
-        wait "$descendant"
+        let report = ShellCommandRunner.shellQuoted(marker.path)
+        return """
+        /bin/sh -c 'trap "" TERM; printf "%s:%s" "$PPID" "$$" > "$1"; /bin/sleep 30' sh \(report) &
+        wait $!
         """
     }
 
@@ -417,19 +427,20 @@ final class ShellCommandRunnerTests: XCTestCase {
     private func waitForProcessIdentifiers(
         from marker: URL
     ) async throws -> (group: Int32, descendant: Int32) {
-        for _ in 0..<200 {
-            if let contents = try? String(contentsOf: marker, encoding: .utf8) {
-                let components = contents.split(separator: ":")
-                if components.count == 2,
-                   let group = Int32(components[0]),
-                   let descendant = Int32(components[1]) {
-                    return (group, descendant)
-                }
-            }
+        // printf writes the report in one call, so any content is all of it.
+        _ = await waitUntil { !(FileManager.default.contents(atPath: marker.path)?.isEmpty ?? true) }
+        return try processIdentifiers(from: marker)
+    }
+
+    /// Polls every 10 ms for up to five seconds. Only for handshakes that no
+    /// short timer races: a loaded machine can take seconds to start a shell.
+    private func waitUntil(_ condition: () -> Bool) async -> Bool {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !condition() {
+            guard ContinuousClock.now < deadline else { return false }
             try? await Task.sleep(nanoseconds: 10_000_000)
         }
-
-        return try processIdentifiers(from: marker)
+        return true
     }
 
     /// A pipe stays readable forever once its writer closes, so a read source
