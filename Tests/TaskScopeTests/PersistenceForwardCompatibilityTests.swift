@@ -153,7 +153,7 @@ final class PersistenceForwardCompatibilityTests: XCTestCase {
     }
 
     private var process: AppProcess {
-        AppProcess(pid: 42, parentPID: 1, cpu: 0, memoryMB: 0, command: "Example", executablePath: "/test/Example", elapsedTime: "10:00", startTime: "start-42", netInKB: nil, netOutKB: nil, diskReadBytes: nil, diskWriteBytes: nil)
+        AppProcess(pid: 42, parentPID: 1, uid: getuid(), cpu: 0, memoryMB: 0, command: "Example", executablePath: "/test/Example", elapsedTime: "10:00", startTime: "start-42", netInKB: nil, netOutKB: nil, diskReadBytes: nil, diskWriteBytes: nil)
     }
 
     private func makeRulesStore(eventLimit: Int = 200) -> AutoStopRulesStore {

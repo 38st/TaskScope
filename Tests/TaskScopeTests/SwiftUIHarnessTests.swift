@@ -34,7 +34,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         XCTAssertNil(outcome.error)
         XCTAssertTrue(store.rules[0].isEnabled)
         XCTAssertEqual(store.rules[0].executablePath, "/Applications/Example.app/Contents/MacOS/Example")
-        XCTAssertEqual(outcome.statusMessage, "Updated auto-stop rule for Example.")
+        XCTAssertEqual(outcome.statusMessage, "Enabled auto-stop rule for Example.")
     }
 
     func testQuickRuleReportsWhenUpdatedRuleRemainsDisabled() async {
@@ -202,7 +202,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         process.executablePath = nil
         XCTAssertEqual(
             QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Example"),
-            "/Applications/Forged.app"
+            ""
         )
     }
 
@@ -214,7 +214,7 @@ final class SwiftUIHarnessTests: XCTestCase {
         process.executablePath = "/Users/me/my.apps/Tool"
         XCTAssertEqual(
             QuickWatchedPresetSheet.inferredAppPath(for: process, fallbackName: "Tool"),
-            "/Applications/Tool.app"
+            ""
         )
         process.executablePath = "/Applications/Foo.application/Bar.app/Contents/MacOS/Bar"
         XCTAssertEqual(
@@ -1001,7 +1001,8 @@ final class SwiftUIHarnessTests: XCTestCase {
     }
 
     func testQuickPresetSheetKeepsRejectedDraftAndShowsStoreError() throws {
-        let target = process(pid: 94, parentPID: 1, name: "Rejected")
+        var target = process(pid: 94, parentPID: 1, name: "Rejected")
+        target.uid = getuid()
         var saveAttempts = 0
         let form = QuickWatchedPresetFormState(
             displayName: target.name,

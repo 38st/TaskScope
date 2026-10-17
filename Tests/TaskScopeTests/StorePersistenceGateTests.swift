@@ -185,6 +185,7 @@ final class StorePersistenceGateTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 0,
+            uid: getuid(),
             cpu: 0,
             memoryMB: 0,
             command: command,

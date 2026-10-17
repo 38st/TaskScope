@@ -220,6 +220,7 @@ final class PersistenceRecoveryMutationTests: XCTestCase {
         AppProcess(
             pid: 42,
             parentPID: 1,
+            uid: getuid(),
             cpu: 0,
             memoryMB: 0,
             command: "/Applications/\(name).app/Contents/MacOS/\(name)",
