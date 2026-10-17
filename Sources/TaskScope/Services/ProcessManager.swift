@@ -327,12 +327,20 @@ final class ProcessManager: ObservableObject {
                 // Turning Keep Off off (or Open) must still remove the launchd
                 // overrides when the app is gone, for example mid-reinstall or
                 // before uninstalling, or a reinstalled client cannot start.
-                if isPresetKeptOffProvider?(preset) == true {
+                let wasKeptOff = isPresetKeptOffProvider?(preset) ?? false
+                if wasKeptOff || preset.hasCanonicalGlobalProtectIdentity {
                     let allowed = await clearKeepOffOverrides(preset)
                     diagnosticJobs += allowed.jobs
-                    message = allowed.result.succeeded
-                        ? "\(preset.displayName) is no longer kept off, but its app bundle is missing at \(preset.appPath); nothing was opened."
-                        : allowed.result.message
+                    if allowed.result.succeeded {
+                        let state = wasKeptOff ? "is no longer kept off" : "is allowed to run"
+                        message = "\(preset.displayName) \(state), but its app bundle is missing at \(preset.appPath); nothing was opened."
+                        if !LifecycleBatchResult(jobs: allowed.jobs).didChangeState {
+                            lifecycleReport = nil
+                        }
+                    } else {
+                        let failure = LifecycleBatchResult(jobs: allowed.jobs).failureSummary ?? "service could not be enabled"
+                        message = "Could not allow \(preset.displayName) to run: \(failure). Its app bundle is missing at \(preset.appPath); nothing was opened."
+                    }
                 } else {
                     message = "Could not open \(preset.displayName): app bundle is missing at \(preset.appPath)."
                 }
@@ -439,7 +447,10 @@ final class ProcessManager: ObservableObject {
                 setPresetKeptOffHandler?(preset, false)
             }
             let serviceJobs = daemonResult.jobs + enableResult.jobs + agentResult.jobs
-            lifecycleReport = serviceJobs.isEmpty
+            let restored = daemonResult.didChangeState
+                || enableResult.didChangeState
+                || agentResult.didChangeState
+            lifecycleReport = serviceJobs.isEmpty || (preset.hasCanonicalGlobalProtectIdentity && !restored)
                 ? nil
                 : LifecycleReport(
                     title: "\(preset.displayName) Service Results",
@@ -485,9 +496,6 @@ final class ProcessManager: ObservableObject {
                 commandResult = TaskScopeCommandResult(status: .failed, message: message)
             } else if let finalInventory,
                       snapshot(for: preset, inventory: finalInventory).isMainRunning {
-                let restored = daemonResult.didChangeState
-                    || enableResult.didChangeState
-                    || agentResult.didChangeState
                 message = restored
                     ? "Opened \(preset.displayName) after restoring required services."
                     : "Opened \(preset.displayName)."
@@ -819,10 +827,10 @@ final class ProcessManager: ObservableObject {
                 : LifecycleReport(title: "\(preset.displayName) Relaunch Jobs", jobs: agents.jobs)
             let terminations = await terminateProcesses(for: preset, scope: scope)
             await lifecycle.settleAfterProcessChange()
-            let refreshed = await refreshAfterMutation()
+            let finalInventory = await refreshInventoryAfterMutation()
             result = scope.result(
-                before: before, after: snapshot(for: preset),
-                terminations: terminations, agents: agents, refreshed: refreshed
+                before: before, after: snapshot(for: preset, inventory: finalInventory ?? []),
+                terminations: terminations, agents: agents, refreshed: finalInventory != nil
             )
         }
         return result.commandResult

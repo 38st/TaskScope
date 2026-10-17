@@ -290,6 +290,28 @@ final class GlobalProtectServiceControlTests: XCTestCase {
         }
     }
 
+    func testPrivilegedStopOrdersAndGuardsDisableBeforeBootout() async throws {
+        for preservingLoadedDaemon in [false, true] {
+            let harness = ServiceHarness(loaded: !preservingLoadedDaemon)
+            var runtime = harness.runtime
+            if preservingLoadedDaemon {
+                let fileExists = runtime.fileExists
+                runtime.fileExists = { fileExists($0) || $0 == WatchedAppPreset.globalProtectUserLaunchAgentJobs[1].plistPath }
+            }
+            let result = await ProcessLifecycleController.disableSystemLaunchDaemons(
+                for: .globalProtect, allowAdministratorPrompt: true, runtime: runtime
+            )
+            XCTAssertTrue(result.succeeded)
+            let commands = await harness.commands
+            let command = try XCTUnwrap(commands.first { $0.hasPrefix("/usr/bin/osascript") })
+            let disable = try XCTUnwrap(command.range(of: "/bin/launchctl disable "))
+            let bootout = try XCTUnwrap(command.range(of: "/bin/launchctl bootout "))
+            XCTAssertLessThan(disable.lowerBound, bootout.lowerBound, "Disable must precede bootout")
+            XCTAssertTrue(command.contains(" || exit $?"),
+                          "Disable failure must stop the privileged script")
+        }
+    }
+
     func testPrivilegedDisableScriptParsesAsShell() async {
         for preservesLoadedDaemon in [false, true] {
             let script = ProcessLifecycleController.adminDisableScript(
@@ -338,7 +360,10 @@ private actor ServiceHarness {
                     elapsedTime: "00:10", netInKB: nil, netOutKB: nil, diskReadBytes: nil, diskWriteBytes: nil)])
             },
             executablePathForPID: { _ in "/Applications/GlobalProtect.app/Contents/Resources/PanGPS" },
-            sleep: { _ in }
+            sendSignal: { _, _ in false },
+            isProcessAlive: { _ in false },
+            sleep: { _ in },
+            systemUptime: { 0 }
         )
     }
 

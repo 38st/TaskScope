@@ -165,14 +165,14 @@ enum ProcessLifecycleController {
 
             let command = "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))"
             let result = await runtime.runCommand(command, launchAgentBootoutTimeout)
-            let after = await inspectAfterBootout(target, waitForExit: result.succeeded, runtime: runtime)
+            let after = await inspectAfterBootout(target, runtime: runtime)
             let didUnload = after == .notLoaded
             results.append(LifecycleJobResult(
                 label: job.label,
-                state: result.succeeded && didUnload
+                state: didUnload
                     ? .changed
                     : .failed,
-                detail: result.succeeded && didUnload
+                detail: didUnload
                     ? (
                         plistExists
                             ? "Unloaded and verified."
@@ -248,12 +248,12 @@ enum ProcessLifecycleController {
                     "/bin/launchctl bootout \(ShellCommandRunner.shellQuoted(target))",
                     launchAgentBootoutTimeout
                 )
-                let after = await inspectAfterBootout(target, waitForExit: bootout.succeeded, runtime: runtime)
+                let after = await inspectAfterBootout(target, runtime: runtime)
                 let didUnload = after == .notLoaded
                 results.append(LifecycleJobResult(
                     label: job.label,
-                    state: bootout.succeeded && didUnload ? .changed : .failed,
-                    detail: bootout.succeeded && didUnload
+                    state: didUnload ? .changed : .failed,
+                    detail: didUnload
                         ? "Disabled persistently and unloaded."
                         : lifecycleInspectionFailure(
                             after,
@@ -279,8 +279,22 @@ enum ProcessLifecycleController {
         guard !jobs.isEmpty else { return .notNeeded }
         let uid = runtime.userID
         var results: [LifecycleJobResult] = []
+        let disabledOverrides = await runtime.runCommand(
+            "/bin/launchctl print-disabled \(ShellCommandRunner.shellQuoted("gui/\(uid)"))",
+            15
+        )
 
         for job in jobs {
+            let before = GlobalProtectCompatibilityChecker.disabledState(disabledOverrides, label: job.label)
+            let enabledDetail: String
+            switch before {
+            case .disabled:
+                enabledDetail = "Persistent disable cleared; no process was started."
+            case .enabled, .noOverride:
+                enabledDetail = "No persistent disable override; no process was started."
+            case .unknown:
+                enabledDetail = "Enabled; previous disable state could not be read. No process was started."
+            }
             let target = "gui/\(uid)/\(job.label)"
             let result = await runtime.runCommand(
                 "/bin/launchctl enable \(ShellCommandRunner.shellQuoted(target))",
@@ -288,9 +302,9 @@ enum ProcessLifecycleController {
             )
             results.append(LifecycleJobResult(
                 label: job.label,
-                state: result.succeeded ? .changed : .failed,
+                state: result.succeeded ? (before == .disabled ? .changed : .verified) : .failed,
                 detail: result.succeeded
-                    ? "Persistent disable cleared; no process was started."
+                    ? enabledDetail
                     : commandFailure(result, fallback: "Could not re-enable the user launch agent.")
             ))
         }
@@ -604,14 +618,14 @@ enum ProcessLifecycleController {
         return (launchJobInspection(from: result), launchJobPID(from: result))
     }
 
-    /// bootout can acknowledge removal before a service finishes its graceful
-    /// exit. Confirm disappearance without signalling or restarting that PID.
+    /// bootout can return before removal finishes, including a nonzero answer
+    /// while removal is in progress. Final inspection determines the outcome;
+    /// confirm disappearance without signalling or restarting that PID.
     private static func inspectAfterBootout(
         _ target: String,
-        waitForExit: Bool,
         runtime: ProcessLifecycleRuntime
     ) async -> LaunchJobInspection {
-        let attempts = waitForExit ? Int(launchAgentBootoutTimeout / 0.5) : 0
+        let attempts = Int(launchAgentBootoutTimeout / 0.5)
         for attempt in 0...attempts {
             let state = await inspectLaunchJob(target, runtime: runtime).inspection
             guard state == .loaded, attempt < attempts else { return state }

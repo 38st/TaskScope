@@ -40,6 +40,13 @@ final class AdminBootstrapShellSyntaxTests: XCTestCase {
             "Extraction sanity check failed; recovered: \(rootScript)"
         )
 
+        let enable = try XCTUnwrap(rootScript.range(of: "/bin/launchctl enable "))
+        let bootstrap = try XCTUnwrap(rootScript.range(of: "/bin/launchctl bootstrap "))
+        XCTAssertLessThan(enable.lowerBound, bootstrap.lowerBound, "Enable must precede bootstrap")
+        XCTAssertTrue(rootScript.split(separator: "\n").contains {
+            $0.hasPrefix("/bin/launchctl enable ") && $0.hasSuffix(" || exit $?")
+        }, "Enable failure must stop the privileged script")
+
         // `do shell script` executes its argument with /bin/sh, so the recovered
         // text must parse as a valid /bin/sh program.
         let check = try Self.shellSyntaxCheck(rootScript)
@@ -158,6 +165,7 @@ private final class AdminBootstrapRuntimeHarness: @unchecked Sendable {
             fileExists: { [self] path in
                 existingPaths.contains(path)
             },
+            launchAgentLabel: { _ in nil },
             runCommand: { [self] command, _ in
                 lock.withLock {
                     recordedCommands.append(command)
@@ -177,7 +185,11 @@ private final class AdminBootstrapRuntimeHarness: @unchecked Sendable {
             loadProcessInventory: { [self] in
                 .success(inventory)
             },
-            sleep: { _ in }
+            executablePathForPID: { _ in nil },
+            sendSignal: { _, _ in false },
+            isProcessAlive: { _ in false },
+            sleep: { _ in },
+            systemUptime: { 0 }
         )
     }
 

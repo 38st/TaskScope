@@ -426,6 +426,38 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertTrue(harness.sleepDurations.isEmpty, "liveness polling must end as soon as the target is gone")
     }
 
+    func testEscalationDoesNotKillReusedPIDWithNewStartTime() async {
+        await assertReplacementIsNotForceStopped(pid: 10, startTime: "Sat Jul 26 11:20:20 2026")
+    }
+
+    func testEscalationDoesNotKillRelaunchedProcessWithNewPID() async {
+        await assertReplacementIsNotForceStopped(pid: 11, startTime: "Sat Jul 26 11:20:17 2026")
+    }
+
+    private func assertReplacementIsNotForceStopped(pid: Int32, startTime: String) async {
+        let path = "/Applications/Example.app/Contents/MacOS/Example"
+        let target = process(pid: 10, command: path)
+        let replacement = process(pid: pid, command: path, startTime: startTime)
+        var paths = [target.pid: path]
+        paths[replacement.pid] = path
+        let harness = LifecycleRuntimeHarness(
+            existingPaths: [], commandResults: [],
+            inventoryResults: [.success([target]), .success([replacement])],
+            executablePathsAtSignal: paths
+        )
+
+        let outcome = await ProcessLifecycleController.terminateProcess(
+            named: "Example", forceIfStillRunning: true,
+            expectedExecutableDirectory: "/Applications/Example.app/Contents/MacOS/",
+            currentPID: 99, runtime: harness.runtime
+        )
+
+        XCTAssertEqual(outcome, .signalled)
+        XCTAssertEqual(harness.signals.map(\.0), [SIGTERM], "Replacement identity must not receive SIGKILL")
+        XCTAssertEqual(harness.signals.map(\.1), [target.pid])
+        XCTAssertEqual(harness.inventoryLoads, 2)
+    }
+
     /// PID 1 is launchd and 0 or a negative value addresses a process group.
     /// Even an inventory row that claims such a pid must never be signalled.
     func testTerminationNeverSignalsLaunchdOrProcessGroupPIDs() async {
@@ -923,7 +955,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
     func testAllowToRunClearsDisableWithoutStartingAgent() async {
         let harness = LifecycleRuntimeHarness(
             existingPaths: ["/agents/example.plist"],
-            commandResults: [result(exitCode: 0)]
+            commandResults: [result(stdout: "disabled services = {\n\"example.agent\" => true\n}", exitCode: 0), result(exitCode: 0)]
         )
 
         let batch = await ProcessLifecycleController.enableUserLaunchAgents(
@@ -934,7 +966,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         XCTAssertTrue(batch.succeeded)
         XCTAssertEqual(
             harness.commands,
-            ["/bin/launchctl enable 'gui/501/example.agent'"]
+            ["/bin/launchctl print-disabled 'gui/501'", "/bin/launchctl enable 'gui/501/example.agent'"]
         )
         XCTAssertFalse(harness.commands.contains { $0.contains("kickstart") })
         XCTAssertFalse(harness.commands.contains { $0.contains("bootstrap") })
@@ -1216,7 +1248,10 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
         )
     }
 
-    private func process(pid: Int32, command: String, uid: uid_t? = 501) -> AppProcess {
+    private func process(
+        pid: Int32, command: String, uid: uid_t? = 501,
+        startTime: String = "Sat Jul 26 11:20:17 2026"
+    ) -> AppProcess {
         AppProcess(
             pid: pid,
             parentPID: 1,
@@ -1226,7 +1261,7 @@ final class ProcessLifecycleMatchingTests: XCTestCase {
             command: command,
             executablePath: command.hasPrefix("/") ? command : nil,
             elapsedTime: "00:01",
-            startTime: "Sat Jul 26 11:20:17 2026",
+            startTime: startTime,
             netInKB: nil,
             netOutKB: nil,
             diskReadBytes: nil,
@@ -1373,7 +1408,8 @@ private final class LifecycleRuntimeHarness: @unchecked Sendable {
                 lock.withLock {
                     recordedSleepDurations.append(duration)
                 }
-            }
+            },
+            systemUptime: { 0 }
         )
     }
 

@@ -92,21 +92,19 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
     // MARK: - P7 proof 2: processes really were stopped, stop still reports .failed
 
     func testStopThatActuallyStoppedEveryProcessIsNotReportedAsFailure() async {
+        let running = [process(pid: 501, name: "GlobalProtect"), process(pid: 502, name: "PanGPA")]
         let harness = P7LifecycleRuntimeHarness(
             existingPaths: [],
             respond: { command in
                 P7LifecycleRuntimeHarness.notLoaded(command)
             },
-            inventory: []
+            inventory: running
         )
         let preset = WatchedAppPreset.globalProtect
         let manager = makeManager(
             inventory: P7QueuedInventory(results: [
                 // `currentSnapshot(for:)` — GlobalProtect and its helper are running.
-                .success([
-                    process(pid: 501, name: "GlobalProtect"),
-                    process(pid: 502, name: "PanGPA")
-                ]),
+                .success(running),
                 // `refreshAfterMutation()` — both are gone: the stop fully succeeded.
                 .success([])
             ]),
@@ -116,6 +114,9 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
 
         let result = await manager.quitAllKillable(preset)
 
+        XCTAssertEqual(result.message, "GlobalProtect and helpers quit.")
+        XCTAssertEqual(harness.signals.map(\.signal), [SIGTERM, SIGTERM])
+        XCTAssertEqual(harness.signals.map(\.pid), [501, 502])
         XCTAssertFalse(manager.snapshots.first?.hasAny ?? true, "precondition: everything stopped")
         XCTAssertEqual(
             result.status,
@@ -161,6 +162,7 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
     ) -> ProcessManager {
         let manager = ProcessManager(
             processInventory: inventory,
+            verificationInventory: inventory,
             processSignaler: P7NoopSignaler(),
             lifecycle: lifecycle,
             settleAfterProcessChange: {}
@@ -183,20 +185,26 @@ final class P7MissingPlistReportsFailureTests: XCTestCase {
     }
 
     private func emptyDefaults() -> UserDefaults {
-        let defaults = UserDefaults(suiteName: "P7.\(UUID().uuidString)")!
-        defaults.removePersistentDomain(forName: "P7.seed")
+        let suite = "TaskScope.LifecycleEngine.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        addTeardownBlock {
+            UserDefaults(suiteName: suite)?.removePersistentDomain(forName: suite)
+        }
         return defaults
     }
 
     private func process(pid: Int32, name: String) -> AppProcess {
-        AppProcess(
+        let path = name == "PanGPS"
+            ? "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS"
+            : "/Applications/GlobalProtect.app/Contents/MacOS/\(name)"
+        return AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: getuid(),
             cpu: 0,
             memoryMB: 0,
-            command: name == "PanGPS"
-                ? "/Library/Application Support/PaloAltoNetworks/GlobalProtect/PanGPS"
-                : "/Applications/GlobalProtect.app/Contents/MacOS/\(name)",
+            command: path,
+            executablePath: path,
             elapsedTime: "00:10",
             startTime: "Sat Jul 26 11:20:17 2026",
             netInKB: nil,
@@ -274,9 +282,10 @@ private final class P7LifecycleRuntimeHarness: @unchecked Sendable {
     private let existingPaths: Set<String>
     private let respond: (@Sendable (String) -> ShellCommandResult)?
     private var queuedResults: [ShellCommandResult]
-    private let inventory: [AppProcess]
+    private var inventory: [AppProcess]
     private var recordedCommands: [String] = []
     private var recordedSleepDurations: [UInt64] = []
+    private var recordedSignals: [(signal: Int32, pid: Int32)] = []
 
     init(
         existingPaths: Set<String>,
@@ -292,10 +301,11 @@ private final class P7LifecycleRuntimeHarness: @unchecked Sendable {
 
     var runtime: ProcessLifecycleRuntime {
         ProcessLifecycleRuntime(
-            userID: 501,
+            userID: getuid(),
             fileExists: { [self] path in
                 existingPaths.contains(path)
             },
+            launchAgentLabel: { _ in nil },
             runCommand: { [self] command, _ in
                 lock.withLock {
                     recordedCommands.append(command)
@@ -316,18 +326,34 @@ private final class P7LifecycleRuntimeHarness: @unchecked Sendable {
                 }
             },
             loadProcessInventory: { [self] in
-                .success(inventory)
+                lock.withLock { .success(inventory) }
             },
+            executablePathForPID: { [self] pid in
+                lock.withLock { inventory.first { $0.pid == pid }?.executablePath }
+            },
+            sendSignal: { [self] signal, pid in
+                lock.withLock {
+                    recordedSignals.append((signal, pid))
+                    inventory.removeAll { $0.pid == pid }
+                }
+                return true
+            },
+            isProcessAlive: { _ in false },
             sleep: { [self] duration in
                 lock.withLock {
                     recordedSleepDurations.append(duration)
                 }
-            }
+            },
+            systemUptime: { 0 }
         )
     }
 
     var commands: [String] {
         lock.withLock { recordedCommands }
+    }
+
+    var signals: [(signal: Int32, pid: Int32)] {
+        lock.withLock { recordedSignals }
     }
 
     static func result(

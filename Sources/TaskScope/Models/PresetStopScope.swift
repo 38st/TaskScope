@@ -39,7 +39,10 @@ enum PresetStopScope {
         // Signal/identity failures take precedence over job and final-read
         // failures, even if a later observation happens to show no targets.
         if terminations.contains(.inventoryUnavailable) {
-            return inventoryFailure(for: before.preset)
+            return .failed(
+                "Could not read the process list for every stop target; the stop may be incomplete.",
+                reason: .inventoryUnavailable
+            )
         }
         if terminations.contains(.signalRejected) {
             return .failed(
@@ -61,7 +64,15 @@ enum PresetStopScope {
             let message: String
             switch self {
             case .app:
-                message = "Quit \(name), but relaunch jobs failed: \(agents.failureSummary ?? "unknown failure")."
+                let appState: String
+                if !refreshed || after.isMainRunning {
+                    appState = "\(name) may still run;"
+                } else if before.isMainRunning {
+                    appState = "\(name) quit, but"
+                } else {
+                    appState = "No \(name) app found, but"
+                }
+                message = "\(appState) relaunch jobs failed: \(agents.failureSummary ?? "unknown failure")."
             case .helpers:
                 message = "Helper stop was incomplete: \(agents.failureSummary ?? "relaunch job failure")."
             case .all:
