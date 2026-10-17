@@ -12,6 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Shows the main window. Installed once the runtime is bootstrapped.
     var showMainWindow: (() -> Void)?
     private let previouslyFrontmostApplication: NSRunningApplication?
+    private let launchSession = TaskScopeLaunchSession.shared
+    private let terminationHandler = TaskScopeTerminationHandler.system { NSApp.terminate(nil) }
+    private var hasInteractiveSignal = false
     private var launchPhase = TaskScopeLaunchPhase.starting
     private var interactiveLaunchTask: Task<Void, Never>?
     private var automaticWindowSuppressionTask: Task<Void, Never>?
@@ -21,12 +24,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         windowPresentationAllowed = false
         previouslyFrontmostApplication = NSWorkspace.shared.frontmostApplication
         super.init()
-        AppCommandBus.shared.onIntentExecution = { [weak self] in
-            self?.prepareForIncomingAutomationCommand()
+        if launchSession.allowsRuntime {
+            AppCommandBus.shared.onIntentExecution = { [weak self] in
+                self?.prepareForIncomingAutomationCommand()
+            }
         }
     }
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        terminationHandler.start()
+        guard launchSession.continueLaunching() else { return }
         resolveLaunchContext(finalizeInteractiveLaunch: false)
         URLSchemeHandler.shared.register { [weak self] _ in
             self?.prepareForIncomingAutomationCommand()
@@ -45,13 +52,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard launchSession.continueLaunching() else { return }
         resolveLaunchContext(finalizeInteractiveLaunch: true)
         // Bound every Accessibility request this process makes (GlobalProtect
         // disconnect, Activity Monitor handoff). The default is about six
         // seconds per call, which an unresponsive app multiplies per element.
         AXUIElementSetMessagingTimeout(AXUIElementCreateSystemWide(), 2)
 
-        if launchContext != .startupVerification {
+        if launchSession.allowsRuntime {
             HotkeyManager.shared.register()
         }
         if launchContext.suppressesAutomaticWindowPresentation {
@@ -64,13 +72,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationWillTerminate(_ notification: Notification) {
         willTerminate?()
+        launchSession.cleanUp()
+        terminationHandler.stop()
     }
 
     /// Opening the running app again (Finder, Dock, Spotlight, Launchpad) is
     /// an explicit request for its window, including after a quiet login-item,
     /// automation, or URL launch whose windows were suppressed.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        guard launchContext != .startupVerification else { return false }
+        guard launchSession.allowsRuntime else { return false }
+        hasInteractiveSignal = true
         if let showMainWindow {
             showMainWindow()
             return false
@@ -80,7 +91,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
-        guard launchPhase == .running,
+        if launchContext == .interactive || launchContext == .pending {
+            hasInteractiveSignal = true
+        }
+        guard launchSession.allowsRuntime,
+              launchPhase == .running,
               launchContext == .interactive,
               !windowPresentationAllowed else {
             return
@@ -89,9 +104,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func prepareForIncomingAutomationCommand() {
+        guard launchSession.allowsRuntime,
+              !windowPresentationAllowed else { return }
         let resolved = TaskScopeLaunchContext.receivingAutomation(
             current: launchContext,
-            phase: launchPhase
+            phase: launchPhase,
+            hasInteractiveSignal: hasInteractiveSignal
         )
         guard resolved == .urlAutomation, resolved != launchContext else { return }
 
@@ -202,6 +220,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     private func promoteInteractiveLaunch() {
+        hasInteractiveSignal = true
         automaticWindowSuppressionTask?.cancel()
         automaticWindowSuppressionTask = nil
         launchContext = .interactive
@@ -230,6 +249,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func permitWindowPresentation() {
+        guard launchSession.allowsRuntime else { return }
+        hasInteractiveSignal = true
         interactiveLaunchTask?.cancel()
         interactiveLaunchTask = nil
         automaticWindowSuppressionTask?.cancel()
@@ -248,11 +269,12 @@ struct TaskScopeApp: App {
     @StateObject private var loginItemManager = LoginItemManager()
     @StateObject private var settings: SettingsStore
     @StateObject private var watchedApps: WatchedAppsStore
-    @StateObject private var savedSelections = SavedSelectionsStore()
+    @StateObject private var savedSelections: SavedSelectionsStore
     @StateObject private var autoStopRules: AutoStopRulesStore
     @StateObject private var processHistory: ProcessHistory
 
-    @State private var showOnboarding = !UserDefaults.standard.bool(forKey: "TaskScope.onboarded.v1")
+    private let launchSession: TaskScopeLaunchSession
+    @State private var showOnboarding: Bool
     @State private var didBootstrapRuntime = false
     @State private var didRequestOnboarding = false
     @State private var commandCoordinator: AppCommandCoordinator?
@@ -263,21 +285,24 @@ struct TaskScopeApp: App {
     @State private var activityMonitor: ActivityMonitorCoordinator
 
     init() {
+        let launchSession = TaskScopeLaunchSession.shared
+        self.launchSession = launchSession
         let systemInventory = SystemProcessInventory()
         let sharedInventory = CoalescingProcessInventory(upstream: systemInventory)
-        let settings = SettingsStore()
+        let stores = TaskScopeLaunchStores(session: launchSession, inventory: sharedInventory)
+        let settings = stores.settings
         let processManager = ProcessManager(
             processInventory: sharedInventory,
             verificationInventory: systemInventory
         )
-        let watchedApps = WatchedAppsStore()
-        let autoStopRules = AutoStopRulesStore(inventory: sharedInventory)
+        let watchedApps = stores.watchedApps
+        let autoStopRules = stores.autoStopRules
         let processHistory = ProcessHistory(inventory: sharedInventory)
         let coordinator = AppCommandCoordinator(
             processManager: processManager,
             presets: { watchedApps.presets },
             allowsCommands: {
-                !ProcessInfo.processInfo.arguments.contains("--verify-startup")
+                launchSession.allowsRuntime
             }
         )
 
@@ -294,12 +319,16 @@ struct TaskScopeApp: App {
             guard preset.id == WatchedAppPreset.globalProtectID else { return }
             settings.keepGlobalProtectOff = keptOff
         }
-        AppCommandBus.shared.install { command in
-            await coordinator.perform(command)
+        if launchSession.allowsRuntime {
+            AppCommandBus.shared.install { command in
+                await coordinator.perform(command)
+            }
         }
 
         _processManager = StateObject(wrappedValue: processManager)
         _settings = StateObject(wrappedValue: settings)
+        _savedSelections = StateObject(wrappedValue: stores.savedSelections)
+        _showOnboarding = State(initialValue: stores.showOnboarding)
         _watchedApps = StateObject(wrappedValue: watchedApps)
         _autoStopRules = StateObject(wrappedValue: autoStopRules)
         _processHistory = StateObject(wrappedValue: processHistory)
@@ -435,6 +464,7 @@ struct TaskScopeApp: App {
             processManager.applyCurrentDisplayLimit()
         }
         .onChange(of: settings.enableNotifications) { _, newValue in
+            guard launchSession.allowsRuntime else { return }
             let token = notificationEnablement.beginConfiguration(
                 enabled: newValue,
                 setDeliveryEnabled: { processManager.enableNotifications = $0 }
@@ -454,6 +484,7 @@ struct TaskScopeApp: App {
             }
         }
         .onChange(of: watchedApps.presets) { _, _ in
+            guard launchSession.allowsRuntime else { return }
             TaskScopeShortcuts.refreshParameters(for: appDelegate.launchContext)
             // The refresh re-baselines on its own when the watched-name set changed,
             // so a newly watched app that was already running is not announced as
@@ -463,6 +494,7 @@ struct TaskScopeApp: App {
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
         ) { _ in
+            guard launchSession.allowsRuntime else { return }
             Task {
                 await TaskScopeExternalStateRefresh.perform(
                     refreshLoginItem: { loginItemManager.refresh() },
@@ -476,6 +508,7 @@ struct TaskScopeApp: App {
 
     private func bootstrapRuntimeIfNeeded() async {
         guard !didBootstrapRuntime,
+              launchSession.allowsRuntime,
               appDelegate.launchContext.performsRuntimeBootstrap else { return }
         didBootstrapRuntime = true
 
@@ -515,6 +548,7 @@ struct TaskScopeApp: App {
     }
 
     private func configurePolling() {
+        guard launchSession.allowsRuntime else { return }
         processManager.setPolling(
             interval: settings.refreshIntervalSeconds,
             includeProcessList: settings.autoRefreshProcessList
@@ -538,7 +572,7 @@ struct TaskScopeApp: App {
     }
 
     private func completeOnboarding() {
-        UserDefaults.standard.set(true, forKey: "TaskScope.onboarded.v1")
+        launchSession.userDefaults.set(true, forKey: "TaskScope.onboarded.v1")
         showOnboarding = false
     }
 

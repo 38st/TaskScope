@@ -48,19 +48,23 @@ final class ProcessHistory: ObservableObject {
         samplingTask?.cancel()
     }
 
-    func start(cadence: TimeInterval) {
+    func start(cadence: TimeInterval, sampleImmediately: Bool = true) {
         stop()
         state = .sampling
         let interval = max(2, cadence)
         let generation = samplingGeneration
         samplingTask = Task { [weak self] in
-            while !Task.isCancelled {
+            if sampleImmediately {
                 await self?.sampleNow(for: generation)
+            }
+            while !Task.isCancelled {
                 do {
                     try await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 } catch {
                     break
                 }
+                guard !Task.isCancelled else { break }
+                await self?.sampleNow(for: generation)
             }
         }
     }
@@ -82,7 +86,7 @@ final class ProcessHistory: ObservableObject {
     func updateConsumerCadence(_ cadence: TimeInterval) {
         consumerCadence = max(2, cadence)
         if consumerCount > 0 {
-            start(cadence: consumerCadence)
+            start(cadence: consumerCadence, sampleImmediately: false)
         }
     }
 

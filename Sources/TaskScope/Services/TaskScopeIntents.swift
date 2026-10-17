@@ -60,21 +60,29 @@ struct WatchedPresetCatalog: Sendable {
 @available(macOS 13.0, *)
 struct WatchedPresetEntityQuery: EntityStringQuery {
     private let catalog: WatchedPresetCatalog
+    private let prepareForIntent: @MainActor @Sendable () -> Void
 
     init() {
         catalog = WatchedPresetCatalog()
+        prepareForIntent = { AppCommandBus.shared.prepareForIntentExecution() }
     }
 
-    init(catalog: WatchedPresetCatalog) {
+    init(
+        catalog: WatchedPresetCatalog,
+        prepareForIntent: @escaping @MainActor @Sendable () -> Void = {}
+    ) {
         self.catalog = catalog
+        self.prepareForIntent = prepareForIntent
     }
 
     func entities(for identifiers: [WatchedPresetEntity.ID]) async throws -> [WatchedPresetEntity] {
+        await prepareForIntent()
         let requested = Set(identifiers)
         return catalog.entities().filter { requested.contains($0.id) }
     }
 
     func entities(matching string: String) async throws -> [WatchedPresetEntity] {
+        await prepareForIntent()
         let normalized = string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return catalog.entities() }
         return catalog.entities().filter {
@@ -83,7 +91,8 @@ struct WatchedPresetEntityQuery: EntityStringQuery {
     }
 
     func suggestedEntities() async throws -> [WatchedPresetEntity] {
-        catalog.entities()
+        await prepareForIntent()
+        return catalog.entities()
     }
 }
 

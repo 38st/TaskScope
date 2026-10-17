@@ -7,23 +7,11 @@ struct OnboardingView: View {
 
     var body: some View {
         VStack(spacing: 20) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 0.10, green: 0.15, blue: 0.18),
-                                Color(red: 0.18, green: 0.34, blue: 0.40)
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                Image(systemName: "waveform.path.ecg")
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 80, height: 80)
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 80, height: 80)
+                .accessibilityHidden(true)
 
             Text("Welcome to TaskScope")
                 .font(.title2.bold())

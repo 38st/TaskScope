@@ -1,3 +1,6 @@
+import AppKit
+import Darwin
+
 struct TaskScopeLaunchSignal: Equatable, Sendable {
     var arguments: [String]
     var launchedAsLoginItem: Bool
@@ -46,10 +49,12 @@ enum TaskScopeLaunchContext: Equatable {
 
     static func receivingAutomation(
         current: TaskScopeLaunchContext,
-        phase: TaskScopeLaunchPhase
+        phase: TaskScopeLaunchPhase,
+        hasInteractiveSignal: Bool = true
     ) -> TaskScopeLaunchContext {
         guard current != .startupVerification else { return current }
-        return phase == .starting ? .urlAutomation : current
+        return phase == .starting || (current == .interactive && !hasInteractiveSignal)
+            ? .urlAutomation : current
     }
 
     var suppressesAutomaticWindowPresentation: Bool {
@@ -91,5 +96,207 @@ enum TaskScopeExternalStateRefresh {
     ) async {
         refreshLoginItem()
         await refreshNotificationAuthorization()
+    }
+}
+
+/// Launch admission is resolved before constructing stores or installing commands.
+@MainActor
+final class TaskScopeLaunchSession {
+    static let shared = TaskScopeLaunchSession(
+        context: TaskScopeLaunchContext.detect(TaskScopeLaunchSignal(
+            arguments: ProcessInfo.processInfo.arguments,
+            launchedAsLoginItem: false,
+            receivedOpenURL: false
+        )),
+        runtime: .system,
+        standardDefaults: { .standard }
+    )
+
+    struct Instance: Equatable {
+        var processID: pid_t
+        var userID: uid_t
+        var bundleIdentifier: String
+    }
+
+    @MainActor
+    struct Runtime {
+        var bundleIdentifier: String?
+        var processID: pid_t
+        var userID: uid_t
+        var runningInstances: @MainActor () -> [Instance]
+        var activate: @MainActor (pid_t) -> Void
+        var terminate: @MainActor () -> Void
+
+        static var system: Runtime {
+            Runtime(
+                bundleIdentifier: Bundle.main.bundleIdentifier,
+                processID: ProcessInfo.processInfo.processIdentifier,
+                userID: getuid(),
+                runningInstances: {
+                    guard let identifier = Bundle.main.bundleIdentifier else { return [] }
+                    return NSRunningApplication.runningApplications(withBundleIdentifier: identifier)
+                        .compactMap { application in
+                            guard !application.isTerminated else { return nil }
+                            var info = proc_bsdinfo()
+                            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+                            guard proc_pidinfo(application.processIdentifier, PROC_PIDTBSDINFO, 0, &info, size) == size else {
+                                return nil
+                            }
+                            return Instance(
+                                processID: application.processIdentifier,
+                                userID: info.pbi_uid,
+                                bundleIdentifier: identifier
+                            )
+                        }
+                },
+                activate: { NSRunningApplication(processIdentifier: $0)?.activate() },
+                terminate: { NSApp.terminate(nil) }
+            )
+        }
+    }
+
+    let context: TaskScopeLaunchContext
+    let userDefaults: UserDefaults
+    private let runtime: Runtime
+    private let otherInstance: Instance?
+    private let isolatedSuiteName: String?
+    private var didHandOff = false
+
+    init(
+        context: TaskScopeLaunchContext,
+        runtime: Runtime,
+        standardDefaults: () -> UserDefaults
+    ) {
+        self.context = context
+        self.runtime = runtime
+        otherInstance = context == .startupVerification ? nil : runtime.runningInstances().first {
+            $0.processID != runtime.processID
+                && $0.userID == runtime.userID
+                && $0.bundleIdentifier == runtime.bundleIdentifier
+        }
+        if context == .startupVerification || otherInstance != nil {
+            // A disposable suite also prevents store initializers in a rejected
+            // duplicate from rewriting the running instance's preferences.
+            let suiteName = "TaskScope.Startup.\(UUID().uuidString)"
+            isolatedSuiteName = suiteName
+            userDefaults = TaskScopeVolatileDefaults(suiteName: suiteName)
+        } else {
+            isolatedSuiteName = nil
+            userDefaults = standardDefaults()
+        }
+    }
+
+    var allowsRuntime: Bool { otherInstance == nil && context.performsRuntimeBootstrap }
+
+    @discardableResult
+    func continueLaunching() -> Bool {
+        guard let otherInstance else { return true }
+        if !didHandOff {
+            didHandOff = true
+            runtime.activate(otherInstance.processID)
+            runtime.terminate()
+        }
+        return false
+    }
+
+    func cleanUp() {
+        if let isolatedSuiteName {
+            userDefaults.removeVolatileDomain(forName: isolatedSuiteName)
+        }
+    }
+}
+
+/// The app and startup verification construct exactly the same set of stores.
+@MainActor
+struct TaskScopeLaunchStores {
+    let settings: SettingsStore
+    let watchedApps: WatchedAppsStore
+    let autoStopRules: AutoStopRulesStore
+    let savedSelections: SavedSelectionsStore
+    let showOnboarding: Bool
+
+    init(session: TaskScopeLaunchSession, inventory: any ProcessInventoryProviding) {
+        let defaults = session.userDefaults
+        settings = SettingsStore(userDefaults: defaults)
+        watchedApps = WatchedAppsStore(userDefaults: defaults)
+        autoStopRules = AutoStopRulesStore(userDefaults: defaults, inventory: inventory)
+        savedSelections = SavedSelectionsStore(userDefaults: defaults)
+        showOnboarding = !defaults.bool(forKey: "TaskScope.onboarded.v1")
+    }
+}
+
+@MainActor
+final class TaskScopeTerminationHandler {
+    typealias Install = (@escaping @MainActor @Sendable () -> Void) -> (() -> Void)
+    private let install: Install
+    private let terminate: @MainActor @Sendable () -> Void
+    private var cancel: (() -> Void)?
+
+    init(install: @escaping Install, terminate: @escaping @MainActor @Sendable () -> Void) {
+        self.install = install
+        self.terminate = terminate
+    }
+
+    static func system(terminate: @escaping @MainActor @Sendable () -> Void) -> TaskScopeTerminationHandler {
+        TaskScopeTerminationHandler(install: { callback in
+            // Dispatch observes the signal only after its default exit action
+            // has been disabled. Deliver the ordinary AppKit quit on main.
+            signal(SIGTERM, SIG_IGN)
+            let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+            source.setEventHandler {
+                MainActor.assumeIsolated { callback() }
+            }
+            source.resume()
+            return { source.cancel() }
+        }, terminate: terminate)
+    }
+
+    func start() {
+        guard cancel == nil else { return }
+        cancel = install(terminate)
+    }
+
+    func stop() {
+        cancel?()
+        cancel = nil
+    }
+}
+
+/// Startup stores use only encoded Data and the onboarding Bool. Keep both in
+/// a uniquely named volatile domain, with no fallback to application defaults.
+/// All access is serialized by the launch session and stores on the main actor.
+private final class TaskScopeVolatileDefaults: UserDefaults {
+    private let domainName: String
+
+    init(suiteName: String) {
+        domainName = suiteName
+        super.init(suiteName: suiteName)!
+        setVolatileDomain([:], forName: domainName)
+    }
+
+    override func object(forKey defaultName: String) -> Any? {
+        volatileDomain(forName: domainName)[defaultName]
+    }
+
+    override func data(forKey defaultName: String) -> Data? {
+        object(forKey: defaultName) as? Data
+    }
+
+    override func bool(forKey defaultName: String) -> Bool {
+        object(forKey: defaultName) as? Bool ?? false
+    }
+
+    override func set(_ value: Any?, forKey defaultName: String) {
+        var values = volatileDomain(forName: domainName)
+        values[defaultName] = value
+        setVolatileDomain(values, forName: domainName)
+    }
+
+    override func set(_ value: Bool, forKey defaultName: String) {
+        set(value as Any, forKey: defaultName)
+    }
+
+    override func removeObject(forKey defaultName: String) {
+        set(nil as Any?, forKey: defaultName)
     }
 }
