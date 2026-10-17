@@ -210,6 +210,45 @@ final class SwiftUIHarnessTests: XCTestCase {
         }
     }
 
+    func testProcessToolbarSizesPickersToContentAndWrapsSelectionControls() async throws {
+        let target = process(pid: 84, parentPID: 1, name: "Selected")
+        let fixture = await makeFixture(processes: [target])
+        defer { fixture.stores.cleanup() }
+        fixture.manager.select([target])
+        for style in [TaskScopePresentationStyle.expandedWindow, .menuBarCompact] {
+            let inspected = try makePopover(
+                fixture: fixture,
+                confirmationState: ProcessConfirmationState(),
+                presentationStyle: style
+            ).inspect()
+
+            // A fixed width shared with a visible label cut "CPU" to "C..." on macOS 26.
+            let sort = try inspected.find(ViewType.Picker.self) {
+                try $0.accessibilityLabel().string() == "Sort"
+            }
+            XCTAssertTrue(sort.labelsHidden())
+            XCTAssertTrue(try sort.fixedSize().horizontal)
+            XCTAssertThrowsError(try sort.fixedWidth())
+            XCTAssertEqual(try sort.help().string(), "Sort By")
+            for key in ProcessSortKey.allCases {
+                XCTAssertNoThrow(try sort.find(text: key.label))
+            }
+
+            let filter = try inspected.find(ViewType.Picker.self) {
+                try $0.labelView().text().string() == "Filter"
+            }
+            XCTAssertTrue(try filter.fixedSize().horizontal)
+            XCTAssertThrowsError(try filter.fixedWidth())
+
+            // The fallback row keeps every selection control at full width.
+            let wrapped = try inspected.find(ViewType.ViewThatFits.self).vStack(1).hStack(1)
+            XCTAssertNoThrow(try wrapped.find(ViewType.Menu.self) {
+                try $0.accessibilityLabel().string() == "Actions for 1 selected processes"
+            })
+            XCTAssertNoThrow(try wrapped.find(button: "Clear"))
+        }
+    }
+
     func testUserProtectedProcessBadgeMatchesServicesHeader() throws {
         let snapshot = WatchedAppSnapshot(preset: .globalProtect, runningNames: [],
                                           unprivilegedProtectedNames: ["PanGPS"])

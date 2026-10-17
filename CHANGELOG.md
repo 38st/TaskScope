@@ -95,6 +95,7 @@ All notable changes to TaskScope are documented in this file. The project uses
 - Correct prompt target presentation, saved-selection read errors, stale-list recovery, settings-sheet validation, and accessibility labels.
 - Judge administrator system-daemon stops by a fixed disable-phase marker and bounded final launchd inspection; report cancelled or denied approval and failed disables after one inspection, and accept a nonzero bootout once the daemon is verified gone.
 - Require Prompt, Auto Stop, and Log Only thresholds to be reached on the kernel's monotonic process clock as well as `ps etime`, so a forward wall-clock step cannot make a rule act early.
+- Size the process list's Sort and filter pickers to their content so the sort key no longer truncates on macOS 26, and wrap the saved-selection and stop controls onto a second row when the menu bar popover is too narrow for one.
 
 ## [1.0.0] - 2026-08-08
 

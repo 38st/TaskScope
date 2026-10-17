@@ -529,135 +529,23 @@ struct TaskScopePopoverView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
-            HStack(spacing: 8) {
-                Picker("Sort", selection: Binding(
-                    get: { settings.sortKey },
-                    set: { newValue in
-                        settings.sortKeyRaw = newValue.rawValue
-                        processManager.sortKey = newValue
+            // The compact popover cannot fit every control on one row once a
+            // selection adds its actions, so the selection controls wrap below.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    processListDisplayControls
+                    selectionControls
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        processListDisplayControls
                     }
-                )) {
-                    ForEach(ProcessSortKey.allCases) { key in
-                        Text(key.label).tag(key)
+                    HStack(spacing: 8) {
+                        selectionControls
                     }
                 }
-                .pickerStyle(.menu)
-                .frame(width: 90)
-
-                Picker("Filter", selection: $filterMode) {
-                    ForEach(ProcessFilterMode.allCases) { mode in
-                        Text(mode.label).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 140)
-
-                Toggle(isOn: $treeMode) {
-                    Label("Tree", systemImage: "list.bullet.indent")
-                        .labelStyle(.iconOnly)
-                }
-                .toggleStyle(.button)
-                .help("Tree View")
-                .accessibilityLabel("Tree view")
-                .accessibilityValue(treeMode ? "On" : "Off")
-
-                Menu {
-                    if let recoveryMessage = savedSelections.recoveryMessage {
-                        Text(recoveryMessage)
-                        if savedSelections.isReadOnlyAfterCorruption {
-                            // Saving stays disabled until this is pressed, so without
-                            // it the user could never save a selection again.
-                            Button("Reset Saved Selections After Backup") {
-                                savedSelections.resetAfterCorruption()
-                            }
-                        }
-                        Divider()
-                    }
-                    if savedSelections.selections.isEmpty {
-                        Text("No saved selections")
-                    } else {
-                        ForEach(savedSelections.selections) { sel in
-                            Menu(sel.name) {
-                                Button("Preview & Recall…") {
-                                    // Resolve against a fresh inventory: the list may
-                                    // never have been loaded, or may be a poll old.
-                                    Task {
-                                        guard await processManager.loadProcessList(showMessage: false) else {
-                                            pendingRecallResult = nil
-                                            pendingRecallSelection = nil
-                                            processManager.setMessage("Could not preview saved selection: \(processManager.processLoadError ?? "the process list could not be refreshed").")
-                                            return
-                                        }
-                                        pendingRecallResult = savedSelections.resolve(
-                                            sel,
-                                            in: processManager.inventorySnapshot
-                                        )
-                                        pendingRecallSelection = sel
-                                    }
-                                }
-                                Button("Rename…") {
-                                    savedSelections.clearValidationError()
-                                    renameSelectionName = sel.name
-                                    renameSelection = sel
-                                }
-                                Divider()
-                                Button("Delete", role: .destructive) {
-                                    savedSelections.remove(sel)
-                                }
-                            }
-                        }
-                        Divider()
-                    }
-                    if !processManager.selectedPids.isEmpty {
-                        Button("Save Current Selection…") {
-                            savedSelections.clearValidationError()
-                            saveSelectionName = ""
-                            showSaveSelectionSheet = true
-                        }
-                    }
-                } label: {
-                    Label("Saved", systemImage: "bookmark")
-                        .labelStyle(.iconOnly)
-                }
-                .help("Saved Selections")
-                .accessibilityLabel("Saved selections")
-
-                if !processManager.selectedPids.isEmpty {
-                    Menu {
-                        Button("Stop Selected…", role: .destructive) {
-                            confirmationState.requestBatch(
-                                processManager.selectionSnapshot(),
-                                mode: .normal
-                            )
-                        }
-                        Button("Force Stop Selected…", role: .destructive) {
-                            confirmationState.requestBatch(
-                                processManager.selectionSnapshot(),
-                                mode: .force
-                            )
-                        }
-                    } label: {
-                        Label("\(processManager.selectedPids.count)", systemImage: "stop.fill")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .controlSize(.small)
-                    .accessibilityLabel(
-                        "Actions for \(processManager.selectedPids.count) selected processes"
-                    )
-
-                    Button {
-                        processManager.clearSelection()
-                    } label: {
-                        Text("Clear")
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                }
-
-                Spacer()
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 16)
 
             if processManager.hasLoadedProcessList,
@@ -801,6 +689,143 @@ struct TaskScopePopoverView: View {
                     }
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var processListDisplayControls: some View {
+        Picker("Sort", selection: Binding(
+            get: { settings.sortKey },
+            set: { newValue in
+                settings.sortKeyRaw = newValue.rawValue
+                processManager.sortKey = newValue
+            }
+        )) {
+            ForEach(ProcessSortKey.allCases) { key in
+                Text(key.label).tag(key)
+            }
+        }
+        .pickerStyle(.menu)
+        // A fixed frame shared with the visible label truncated the selected
+        // key on macOS 26, so the popup sizes itself to its widest key.
+        .labelsHidden()
+        .fixedSize()
+        .help("Sort By")
+        .accessibilityLabel("Sort")
+
+        Picker("Filter", selection: $filterMode) {
+            ForEach(ProcessFilterMode.allCases) { mode in
+                Text(mode.label).tag(mode)
+            }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+
+        Toggle(isOn: $treeMode) {
+            Label("Tree", systemImage: "list.bullet.indent")
+                .labelStyle(.iconOnly)
+        }
+        .toggleStyle(.button)
+        .help("Tree View")
+        .accessibilityLabel("Tree view")
+        .accessibilityValue(treeMode ? "On" : "Off")
+    }
+
+    @ViewBuilder
+    private var selectionControls: some View {
+        Menu {
+            if let recoveryMessage = savedSelections.recoveryMessage {
+                Text(recoveryMessage)
+                if savedSelections.isReadOnlyAfterCorruption {
+                    // Saving stays disabled until this is pressed, so without
+                    // it the user could never save a selection again.
+                    Button("Reset Saved Selections After Backup") {
+                        savedSelections.resetAfterCorruption()
+                    }
+                }
+                Divider()
+            }
+            if savedSelections.selections.isEmpty {
+                Text("No saved selections")
+            } else {
+                ForEach(savedSelections.selections) { sel in
+                    Menu(sel.name) {
+                        Button("Preview & Recall…") {
+                            // Resolve against a fresh inventory: the list may
+                            // never have been loaded, or may be a poll old.
+                            Task {
+                                guard await processManager.loadProcessList(showMessage: false) else {
+                                    pendingRecallResult = nil
+                                    pendingRecallSelection = nil
+                                    processManager.setMessage("Could not preview saved selection: \(processManager.processLoadError ?? "the process list could not be refreshed").")
+                                    return
+                                }
+                                pendingRecallResult = savedSelections.resolve(
+                                    sel,
+                                    in: processManager.inventorySnapshot
+                                )
+                                pendingRecallSelection = sel
+                            }
+                        }
+                        Button("Rename…") {
+                            savedSelections.clearValidationError()
+                            renameSelectionName = sel.name
+                            renameSelection = sel
+                        }
+                        Divider()
+                        Button("Delete", role: .destructive) {
+                            savedSelections.remove(sel)
+                        }
+                    }
+                }
+                Divider()
+            }
+            if !processManager.selectedPids.isEmpty {
+                Button("Save Current Selection…") {
+                    savedSelections.clearValidationError()
+                    saveSelectionName = ""
+                    showSaveSelectionSheet = true
+                }
+            }
+        } label: {
+            Label("Saved", systemImage: "bookmark")
+                .labelStyle(.iconOnly)
+        }
+        .help("Saved Selections")
+        .accessibilityLabel("Saved selections")
+
+        if !processManager.selectedPids.isEmpty {
+            Menu {
+                Button("Stop Selected…", role: .destructive) {
+                    confirmationState.requestBatch(
+                        processManager.selectionSnapshot(),
+                        mode: .normal
+                    )
+                }
+                Button("Force Stop Selected…", role: .destructive) {
+                    confirmationState.requestBatch(
+                        processManager.selectionSnapshot(),
+                        mode: .force
+                    )
+                }
+            } label: {
+                Label("\(processManager.selectedPids.count)", systemImage: "stop.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+            .controlSize(.small)
+            .accessibilityLabel(
+                "Actions for \(processManager.selectedPids.count) selected processes"
+            )
+
+            Button {
+                processManager.clearSelection()
+            } label: {
+                Text("Clear")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
         }
     }
 
