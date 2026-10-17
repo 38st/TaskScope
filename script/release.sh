@@ -102,7 +102,17 @@ validate_compatibility_evidence() {
         report_count = 6
         for (i = 1; i <= report_count; i++) required["report_" steps[i]] = 1
       }
-      /^#/ || /^$/ { next }
+      FNR == 1 && substr($0, 1, 3) == "\357\273\277" {
+        problem("line 1: UTF-8 BOM is not supported; save UTF-8 without a BOM.")
+        format_invalid = 1
+        exit
+      }
+      /\r$/ {
+        problem("line " FNR ": CRLF line endings are not supported; save with LF line endings.")
+        format_invalid = 1
+        exit
+      }
+      /^#/ || /^[[:space:]]*$/ { next }
       {
         separator = index($0, "=")
         key = substr($0, 1, separator - 1)
@@ -116,6 +126,7 @@ validate_compatibility_evidence() {
         values[key] = value
       }
       END {
+        if (format_invalid) exit 1
         for (key in required) if (!(key in values)) problem("Missing required field: " key ".")
         expect("schema_version", "1")
         expect("evidence_kind", "authorized-lifecycle")

@@ -102,6 +102,44 @@ taskscope_find_signing_identity() {
         END { exit found ? 0 : 1 }'
 }
 
+taskscope_running_bundle_paths() {
+  # Read Launch Services through AppKit so paths containing spaces need no
+  # parsing of lsappinfo's display format. This lookup never stops an app.
+  /usr/bin/swift - "$1" <<'SWIFT'
+import AppKit
+
+let identifier = CommandLine.arguments[1]
+for application in NSWorkspace.shared.runningApplications
+    where application.bundleIdentifier == identifier && !application.isTerminated {
+    guard let url = application.bundleURL else {
+        fputs("Could not resolve a running application's bundle path.\n", stderr)
+        exit(1)
+    }
+    print(url.resolvingSymlinksInPath().standardizedFileURL.path)
+}
+SWIFT
+}
+
+taskscope_require_no_other_app_instance() {
+  local bundle="$1"
+  local bundle_id="$2"
+  local expected_path
+  local running_paths
+  local path
+
+  expected_path="$(cd "$bundle" && pwd -P)" || return 1
+  running_paths="$(taskscope_running_bundle_paths "$bundle_id")" || {
+    echo "Could not check running TaskScope applications; refusing to launch $bundle." >&2
+    return 1
+  }
+  while IFS= read -r path; do
+    [[ -n "$path" && "$path" != "$expected_path" ]] || continue
+    echo "TaskScope with bundle identifier '$bundle_id' is already running at $path." >&2
+    echo "Quit that copy before launching $bundle." >&2
+    return 1
+  done <<< "$running_paths"
+}
+
 taskscope_process_command() {
   local pid="$1"
   local command

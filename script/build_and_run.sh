@@ -350,21 +350,6 @@ stop_staged_app_instances() {
   taskscope_stop_processes_for_executable "$APP_BINARY"
 }
 
-# --verify checks the bundle that is already staged; it never rebuilds or
-# restages, so the verified artifact is exactly the one on disk. Run --stage
-# first (or again) to produce a fresh bundle.
-if [[ "$MODE" == "--verify" || "$MODE" == "verify" ]]; then
-  if [[ ! -d "$APP_BUNDLE" ]]; then
-    echo "Nothing to verify: $APP_BUNDLE does not exist. Run $0 --stage first." >&2
-    exit 1
-  fi
-  cd "$ROOT_DIR"
-  verify_bundle "$APP_BUNDLE"
-  verify_startup_readiness "$APP_BUNDLE"
-  echo "Verified existing $APP_BUNDLE (not rebuilt)"
-  exit 0
-fi
-
 cd "$ROOT_DIR"
 STAGING_BUNDLE="$DIST_DIR/.$APP_NAME.staging.$$"
 STAGING_CONTENTS="$STAGING_BUNDLE/Contents"
@@ -422,6 +407,20 @@ if ! /usr/bin/shlock -f "$PACKAGING_LOCK" -p "$$"; then
   exit 1
 fi
 PACKAGING_LOCK_ACQUIRED=1
+
+# Hold the packaging lock across both static and startup verification so a
+# concurrent restage cannot replace the bundle or stop the readiness process.
+# --verify never rebuilds or restages; run --stage first for a fresh bundle.
+if [[ "$MODE" == "--verify" || "$MODE" == "verify" ]]; then
+  if [[ ! -d "$APP_BUNDLE" ]]; then
+    echo "Nothing to verify: $APP_BUNDLE does not exist. Run $0 --stage first." >&2
+    exit 1
+  fi
+  verify_bundle "$APP_BUNDLE"
+  verify_startup_readiness "$APP_BUNDLE"
+  echo "Verified existing $APP_BUNDLE (not rebuilt)"
+  exit 0
+fi
 
 rm -rf "$STAGING_BUNDLE"
 rm -rf "$OUTPUT_BACKUP"
@@ -580,7 +579,8 @@ cleanup_packaging_work
 trap - EXIT INT TERM
 
 open_app() {
-  /usr/bin/open -n "$APP_BUNDLE"
+  taskscope_require_no_other_app_instance "$APP_BUNDLE" "$BUNDLE_ID" || return 1
+  /usr/bin/open "$APP_BUNDLE"
 }
 
 case "$MODE" in
@@ -592,6 +592,7 @@ case "$MODE" in
     open_app
     ;;
   --debug|debug)
+    taskscope_require_no_other_app_instance "$APP_BUNDLE" "$BUNDLE_ID"
     lldb -- "$APP_BINARY"
     ;;
   --logs|logs)

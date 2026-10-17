@@ -13,9 +13,34 @@ INSTALL_SCRIPT="$ROOT_DIR/script/install.sh"
 RELEASE_SCRIPT="$ROOT_DIR/script/release.sh"
 COMMON_SCRIPT="$ROOT_DIR/script/packaging_common.sh"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/taskscope-packaging.XXXXXX")"
+TEST_BUNDLE_ID="com.example.TaskScopeTests.Run$(/usr/bin/uuidgen | /usr/bin/tr -d '-')"
+TEST_PREFERENCES_DIR="$HOME/Library/Preferences"
+
+assert_no_test_preferences() {
+  local path
+  for path in "$TEST_PREFERENCES_DIR/$TEST_BUNDLE_ID.plist" \
+    "$TEST_PREFERENCES_DIR/ByHost/$TEST_BUNDLE_ID."*.plist; do
+    if [[ -e "$path" ]]; then
+      echo "Startup verification wrote preferences outside $TEST_DIR: $path" >&2
+      return 1
+    fi
+  done
+}
 
 cleanup_test() {
+  local exit_code="$?"
+
+  if ! assert_no_test_preferences; then
+    [[ "$exit_code" -ne 0 ]] || exit_code=1
+  fi
+  # CFFIXED_USER_HOME does not isolate CFPreferences. Remove only this run's
+  # unique test domain, including empty plists left by defaults deletion.
+  /usr/bin/defaults delete "$TEST_BUNDLE_ID" >/dev/null 2>&1 || true
+  /usr/bin/defaults -currentHost delete "$TEST_BUNDLE_ID" >/dev/null 2>&1 || true
+  rm -f "$TEST_PREFERENCES_DIR/$TEST_BUNDLE_ID.plist" \
+    "$TEST_PREFERENCES_DIR/ByHost/$TEST_BUNDLE_ID."*.plist
   rm -rf "$TEST_DIR"
+  exit "$exit_code"
 }
 trap cleanup_test EXIT
 trap 'exit 130' INT
@@ -246,7 +271,6 @@ if [[ -e "$SWIFT_MARKER" ]]; then
   exit 1
 fi
 
-TEST_BUNDLE_ID='com.example.TaskScopeTests'
 VERIFIED_COPY_DIR="$TEST_DIR/VerifiedCopy"
 VERIFIED_COPY_BUNDLE="$VERIFIED_COPY_DIR/TaskScope.app"
 mkdir -p "$VERIFIED_COPY_DIR"
@@ -277,6 +301,7 @@ for stale_key in NSAppleEventsUsageDescription NSServerUsageDescription; do
 done
 
 TASKSCOPE_BUNDLE_ID="$TEST_BUNDLE_ID" "$BUILD_SCRIPT" --verify >/dev/null
+assert_no_test_preferences
 
 # A startup check launches the staged bundle. It must leave no duplicate
 # launcher registration even though the build folder is excluded from metadata.

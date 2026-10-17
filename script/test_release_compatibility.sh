@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+case "${1:-}" in
+  ""|--packaging-only|--evidence-only) ;;
+  *) echo "usage: $0 [--packaging-only|--evidence-only]" >&2; exit 2 ;;
+esac
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(mktemp -d "${TMPDIR:-/tmp}/taskscope-release-evidence.XXXXXX")"
 trap 'rm -rf "$TEST_DIR"' EXIT
@@ -135,10 +140,334 @@ test_build_number_history() (
   grep -Fq 'Could not list release tags.' "$OUTPUT"
 )
 
-test_staging_stops_before_swap
-test_packaging_environment_isolation
-test_build_number_history
-echo 'Packaging regression tests passed (staging, environment isolation, build history).'
+test_launch_refuses_other_bundle_path() (
+  local launch_script
+  local mode
+  local kind
+  local kind_path
+  local harness="$TEST_DIR/launch-harness.sh"
+  local bundle="$TEST_DIR/Launch Target.app"
+  local other_bundle="$TEST_DIR/Already Running.app"
+  mkdir -p "$bundle" "$other_bundle"
+  cat > "$harness" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ROOT_DIR/script/packaging_common.sh"
+APP_BUNDLE="$TARGET_BUNDLE"
+APP_BINARY="$APP_BUNDLE/Contents/MacOS/TaskScope"
+APP_NAME=TaskScope
+DEST_BUNDLE="$TARGET_BUNDLE"
+OPEN_AFTER_INSTALL=1
+BUNDLE_ID=com.example.TaskScopeTests
+taskscope_running_bundle_paths() {
+  [[ "${INVENTORY_FAILED:-0}" -eq 0 ]] || return 1
+  if [[ "$1" == "$RUNNING_ID" ]]; then
+    printf '%s\n' "$RUNNING_PATH"
+  fi
+}
+taskscope_stop_processes_for_executable() { printf 'unexpected stop\n' >> "$TOOL_LOG"; return 1; }
+taskscope_send_signal() { printf 'unexpected signal\n' >> "$TOOL_LOG"; return 1; }
+function /usr/bin/open() { printf 'open %s\n' "$*" >> "$TOOL_LOG"; }
+function /usr/bin/log() { printf 'log %s\n' "$*" >> "$TOOL_LOG"; }
+lldb() { printf 'lldb %s\n' "$*" >> "$TOOL_LOG"; }
+eval "$LAUNCH_SCRIPT"
+EOF
+  for kind in build install; do
+    if [[ "$kind" == build ]]; then
+      launch_script="$(awk '/^open_app\(\)/ { copying = 1 } copying { print }' "$ROOT_DIR/script/build_and_run.sh")"
+    else
+      launch_script="$(awk '/^if \[\[ "\$OPEN_AFTER_INSTALL"/ { copying = 1 } copying { print }' "$ROOT_DIR/script/install.sh")"
+    fi
+    [[ -n "$launch_script" ]] || exit 1
+    for mode in run --logs logs --telemetry telemetry --debug debug; do
+      : > "$TOOL_LOG"
+      if ROOT_DIR="$ROOT_DIR" TARGET_BUNDLE="$bundle" MODE="$mode" \
+        RUNNING_PATH="$other_bundle" RUNNING_ID=com.example.TaskScopeTests \
+        LAUNCH_SCRIPT="$launch_script" TOOL_LOG="$TOOL_LOG" \
+        bash "$harness" > "$OUTPUT" 2>&1; then
+        echo "$kind $mode launched beside a running same-ID bundle." >&2
+        exit 1
+      fi
+      [[ ! -s "$TOOL_LOG" ]] || { cat "$TOOL_LOG" >&2; exit 1; }
+      grep -Fq "$other_bundle" "$OUTPUT"
+      grep -Fq 'Quit that copy' "$OUTPUT"
+    done
+    # The same canonical path and a different bundle ID remain launchable.
+    for kind_path in "$bundle" "$other_bundle"; do
+      local running_id=com.example.TaskScopeTests
+      [[ "$kind_path" == "$bundle" ]] || running_id=com.example.Other
+      : > "$TOOL_LOG"
+      ROOT_DIR="$ROOT_DIR" TARGET_BUNDLE="$bundle" MODE=run \
+        RUNNING_PATH="$kind_path" RUNNING_ID="$running_id" \
+        LAUNCH_SCRIPT="$launch_script" TOOL_LOG="$TOOL_LOG" \
+        bash "$harness" > "$OUTPUT" 2>&1
+      grep -Fxq "open $bundle" "$TOOL_LOG" || {
+        echo "$kind did not open the target without forcing a new instance." >&2
+        exit 1
+      }
+    done
+    : > "$TOOL_LOG"
+    if ROOT_DIR="$ROOT_DIR" TARGET_BUNDLE="$bundle" MODE=run \
+      RUNNING_PATH="$other_bundle" RUNNING_ID=com.example.TaskScopeTests INVENTORY_FAILED=1 \
+      LAUNCH_SCRIPT="$launch_script" TOOL_LOG="$TOOL_LOG" \
+      bash "$harness" > "$OUTPUT" 2>&1; then
+      echo "$kind launched after running-app lookup failed." >&2
+      exit 1
+    fi
+    [[ ! -s "$TOOL_LOG" ]] || exit 1
+    grep -Fq 'Could not check running TaskScope applications' "$OUTPUT"
+  done
+)
+
+test_verify_holds_packaging_lock() (
+  local flow
+  local mode
+  local fixture="$TEST_DIR/verify fixture"
+  local harness="$TEST_DIR/verify-harness.sh"
+  mkdir -p "$fixture/dist/build.noindex/TaskScope.app"
+  # Execute the production --verify dispatch and lock/cleanup setup, stopping
+  # before any build work. Both verification operations and shlock are fakes.
+  flow="$(awk '
+    /^stop_staged_app_instances\(\)/ { in_function = 1 }
+    in_function && /^}$/ { copying = 1; in_function = 0; next }
+    /^METADATA_WORK_DIR="\$\(mktemp/ { exit }
+    copying { print }
+  ' "$ROOT_DIR/script/build_and_run.sh")"
+  cat > "$harness" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+DIST_DIR="$ROOT_DIR/dist/build.noindex"
+APP_NAME=TaskScope
+APP_BUNDLE="$DIST_DIR/TaskScope.app"
+function /usr/bin/shlock() {
+  [[ ! -e "$2" ]] || return 1
+  printf '%s\n' "$4" > "$2"
+}
+verify_bundle() {
+  [[ -f "$DIST_DIR/.TaskScope.package.lock" ]] || {
+    echo 'Static verification read the staged bundle without the packaging lock.' >&2
+    return 1
+  }
+  printf 'static\n' >> "$TOOL_LOG"
+}
+verify_startup_readiness() {
+  if /usr/bin/shlock -f "$DIST_DIR/.TaskScope.package.lock" -p competing-stager; then
+    echo 'Concurrent restaging acquired the lock during startup verification.' >&2
+    return 1
+  fi
+  printf 'startup\n' >> "$TOOL_LOG"
+  [[ "${FAIL_STARTUP:-0}" -eq 0 ]]
+}
+eval "$VERIFY_FLOW"
+EOF
+  for mode in --verify verify; do
+    : > "$TOOL_LOG"
+    if ! ROOT_DIR="$fixture" MODE="$mode" VERIFY_FLOW="$flow" TOOL_LOG="$TOOL_LOG" \
+      bash "$harness" > "$OUTPUT" 2>&1; then
+      cat "$OUTPUT" >&2
+      exit 1
+    fi
+    [[ "$(cat "$TOOL_LOG")" == $'static\nstartup' ]] || exit 1
+    [[ ! -e "$fixture/dist/build.noindex/.TaskScope.package.lock" ]] || exit 1
+    printf 'other-owner\n' > "$fixture/dist/build.noindex/.TaskScope.package.lock"
+    : > "$TOOL_LOG"
+    if ROOT_DIR="$fixture" MODE="$mode" VERIFY_FLOW="$flow" TOOL_LOG="$TOOL_LOG" \
+      bash "$harness" > "$OUTPUT" 2>&1; then
+      echo 'Verification ignored an existing packaging lock.' >&2
+      exit 1
+    fi
+    [[ ! -s "$TOOL_LOG" ]] || exit 1
+    grep -Fq 'Another TaskScope packaging process owns' "$OUTPUT"
+    grep -Fxq 'other-owner' "$fixture/dist/build.noindex/.TaskScope.package.lock"
+    rm "$fixture/dist/build.noindex/.TaskScope.package.lock"
+    if ROOT_DIR="$fixture" MODE="$mode" VERIFY_FLOW="$flow" TOOL_LOG="$TOOL_LOG" FAIL_STARTUP=1 \
+      bash "$harness" > "$OUTPUT" 2>&1; then
+      echo 'Verification ignored a startup failure.' >&2
+      exit 1
+    fi
+    [[ ! -e "$fixture/dist/build.noindex/.TaskScope.package.lock" ]] || exit 1
+  done
+)
+
+test_install_locks_and_rechecks_copy() (
+  local definitions
+  local flow
+  local skip_build
+  local key
+  local fixture="$TEST_DIR/install fixture"
+  local harness="$TEST_DIR/install-harness.sh"
+  local common="$ROOT_DIR/script/packaging_common.sh"
+  definitions="$(awk '/^cleanup_install\(\)/ { copying = 1 } /^if \[\[ ! -d "\$DEST_DIR"/ { exit } copying { print }' "$ROOT_DIR/script/install.sh")"
+  flow="$(awk '/^if \[\[ ! -d "\$DEST_DIR"/ { copying = 1 } copying { print }' "$ROOT_DIR/script/install.sh")"
+  mkdir -p "$fixture/script"
+  # The installer's optional stage child is only this inert mock.
+  printf '#!/usr/bin/env bash\nprintf "stage\\n" >> "$TOOL_LOG"\n' > "$fixture/script/build_and_run.sh"
+  chmod +x "$fixture/script/build_and_run.sh"
+  printf '1.2.3\n' > "$fixture/VERSION"
+  printf '7\n' > "$fixture/BUILD_NUMBER"
+  cat > "$harness" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$COMMON_SCRIPT"
+APP_NAME=TaskScope
+BUNDLE_ID=com.example.TaskScopeTests
+OPEN_AFTER_INSTALL=0
+DEST_DIR="$ROOT_DIR/Applications"
+DEST_BUNDLE="$DEST_DIR/TaskScope.app"
+STAGED_BUNDLE="$ROOT_DIR/dist/build.noindex/TaskScope.app"
+INSTALLING_BUNDLE="$DEST_DIR/.TaskScope.installing.$$"
+BACKUP_BUNDLE="$DEST_DIR/.TaskScope.backup.$$"
+INSTALL_LOCK="$DEST_DIR/.TaskScope.install.lock"
+PACKAGING_LOCK="$ROOT_DIR/dist/build.noindex/.TaskScope.package.lock"
+INSTALL_LOCK_ACQUIRED=0
+PACKAGING_LOCK_ACQUIRED=0
+INSTALL_STATE=preparing
+mkdir -p "$DEST_DIR" "$STAGED_BUNDLE/Contents"
+printf 'CFBundleIdentifier=%s\nCFBundleShortVersionString=1.2.3\nCFBundleVersion=7\n' \
+  "$BUNDLE_ID" > "$STAGED_BUNDLE/Contents/Info.plist"
+function /usr/bin/shlock() {
+  [[ ! -e "$2" ]] || return 1
+  printf '%s\n' "$4" > "$2"
+}
+function /usr/libexec/PlistBuddy() {
+  local key="${2#Print :}"
+  awk -F= -v key="$key" '$1 == key { print $2 }' "$3"
+}
+function /usr/bin/codesign() {
+  local bundle="${@: -1}"
+  if [[ "$bundle" == "$STAGED_BUNDLE" || "$bundle" == "$INSTALLING_BUNDLE" ]]; then
+    [[ -e "$PACKAGING_LOCK" ]] || {
+      echo 'Installer validated the staged bundle or copy without the packaging lock.' >&2
+      return 1
+    }
+  fi
+  printf 'verify %s\n' "$bundle" >> "$TOOL_LOG"
+}
+function /usr/bin/ditto() {
+  [[ -e "$PACKAGING_LOCK" ]] || {
+    echo 'Installer copied without the packaging lock.' >&2
+    return 1
+  }
+  if /usr/bin/shlock -f "$PACKAGING_LOCK" -p competing-stager; then
+    echo 'Concurrent restaging acquired the lock during install copying.' >&2
+    return 1
+  fi
+  cp -R "$1" "$2"
+  if [[ -n "${CORRUPT_KEY:-}" ]]; then
+    awk -F= -v key="$CORRUPT_KEY" '$1 == key { $0 = key "=substituted" } { print }' \
+      "$2/Contents/Info.plist" > "$2/Contents/changed"
+    mv "$2/Contents/changed" "$2/Contents/Info.plist"
+  fi
+}
+eval "$INSTALL_DEFINITIONS"
+stop_destination_app() { printf 'stop-destination\n' >> "$TOOL_LOG"; }
+eval "$INSTALL_FLOW"
+EOF
+  for skip_build in 1 0; do
+    : > "$TOOL_LOG"
+    if ! ROOT_DIR="$fixture" COMMON_SCRIPT="$common" \
+      INSTALL_DEFINITIONS="$definitions" INSTALL_FLOW="$flow" TOOL_LOG="$TOOL_LOG" \
+      TASKSCOPE_SKIP_BUILD="$skip_build" bash "$harness" > "$OUTPUT" 2>&1; then
+      cat "$OUTPUT" >&2
+      exit 1
+    fi
+    [[ -f "$fixture/Applications/TaskScope.app/Contents/Info.plist" ]] || exit 1
+    [[ ! -e "$fixture/dist/build.noindex/.TaskScope.package.lock" ]] || exit 1
+    for key in CFBundleIdentifier CFBundleShortVersionString CFBundleVersion; do
+      : > "$TOOL_LOG"
+      if ROOT_DIR="$fixture" COMMON_SCRIPT="$common" \
+        INSTALL_DEFINITIONS="$definitions" INSTALL_FLOW="$flow" TOOL_LOG="$TOOL_LOG" \
+        TASKSCOPE_SKIP_BUILD="$skip_build" CORRUPT_KEY="$key" \
+        bash "$harness" > "$OUTPUT" 2>&1; then
+        echo "Installer accepted a copied bundle with substituted $key." >&2
+        exit 1
+      fi
+      grep -Fq "$key" "$OUTPUT"
+      if grep -Fq stop-destination "$TOOL_LOG"; then
+        echo 'Invalid install copy stopped the existing destination app.' >&2
+        exit 1
+      fi
+      grep -Fxq 'CFBundleVersion=7' "$fixture/Applications/TaskScope.app/Contents/Info.plist"
+      [[ ! -e "$fixture/dist/build.noindex/.TaskScope.package.lock" ]] || exit 1
+      [[ ! -e "$fixture/Applications/.TaskScope.install.lock" ]] || exit 1
+    done
+    printf 'other-owner\n' > "$fixture/dist/build.noindex/.TaskScope.package.lock"
+    : > "$TOOL_LOG"
+    if ROOT_DIR="$fixture" COMMON_SCRIPT="$common" \
+      INSTALL_DEFINITIONS="$definitions" INSTALL_FLOW="$flow" TOOL_LOG="$TOOL_LOG" \
+      TASKSCOPE_SKIP_BUILD="$skip_build" bash "$harness" > "$OUTPUT" 2>&1; then
+      echo 'Installer ignored an existing packaging lock.' >&2
+      exit 1
+    fi
+    grep -Fq 'Another TaskScope packaging process owns' "$OUTPUT"
+    grep -Fxq 'other-owner' "$fixture/dist/build.noindex/.TaskScope.package.lock"
+    [[ ! -e "$fixture/Applications/.TaskScope.install.lock" ]] || exit 1
+    rm "$fixture/dist/build.noindex/.TaskScope.package.lock"
+  done
+)
+
+test_packaging_preferences_cleanup() (
+  local definitions
+  local leak
+  local status
+  local fixture="$TEST_DIR/preferences fixture"
+  local harness="$TEST_DIR/preferences-harness.sh"
+  definitions="$(awk '
+    /^assert_no_test_preferences\(\)/ || /^cleanup_test\(\)/ { copying = 1 }
+    /^trap cleanup_test EXIT/ { exit }
+    copying { print }
+  ' "$ROOT_DIR/script/test_packaging.sh")"
+  cat > "$harness" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+TEST_DIR="$FIXTURE/work"
+TEST_PREFERENCES_DIR="$FIXTURE/preferences"
+TEST_BUNDLE_ID=com.example.TaskScopeTests.MockCleanup
+mkdir -p "$TEST_DIR" "$TEST_PREFERENCES_DIR/ByHost"
+function /usr/bin/defaults() { printf 'defaults %s\n' "$*" >> "$TOOL_LOG"; }
+eval "$CLEANUP_DEFINITIONS"
+trap cleanup_test EXIT
+case "$LEAK" in
+  main) printf 'synthetic preferences\n' > "$TEST_PREFERENCES_DIR/$TEST_BUNDLE_ID.plist" ;;
+  byhost) printf 'synthetic preferences\n' > "$TEST_PREFERENCES_DIR/ByHost/$TEST_BUNDLE_ID.fake-host.plist" ;;
+esac
+exit "${TEST_EXIT:-0}"
+EOF
+  for leak in main byhost none; do
+    : > "$TOOL_LOG"
+    status=0
+    FIXTURE="$fixture" CLEANUP_DEFINITIONS="$definitions" TOOL_LOG="$TOOL_LOG" LEAK="$leak" \
+      bash "$harness" > "$OUTPUT" 2>&1 || status="$?"
+    if find "$fixture/preferences" -name '*.plist' -print -quit | grep -q .; then
+      echo 'Packaging cleanup left test preferences outside its temporary directory.' >&2
+      exit 1
+    fi
+    [[ ! -d "$fixture/work" ]] || exit 1
+    grep -Fxq 'defaults delete com.example.TaskScopeTests.MockCleanup' "$TOOL_LOG"
+    if [[ "$leak" == none ]]; then
+      [[ "$status" -eq 0 ]] || { cat "$OUTPUT" >&2; exit 1; }
+    else
+      [[ "$status" -ne 0 ]] || { echo 'Packaging accepted escaped preferences.' >&2; exit 1; }
+      grep -Fq 'Startup verification wrote preferences outside' "$OUTPUT"
+    fi
+  done
+  status=0
+  FIXTURE="$fixture" CLEANUP_DEFINITIONS="$definitions" TOOL_LOG="$TOOL_LOG" LEAK=none TEST_EXIT=31 \
+    bash "$harness" > "$OUTPUT" 2>&1 || status="$?"
+  [[ "$status" -eq 31 ]] || { echo 'Packaging cleanup hid an earlier test failure.' >&2; exit 1; }
+)
+
+if [[ "${1:-}" != --evidence-only ]]; then
+  test_packaging_preferences_cleanup
+  test_install_locks_and_rechecks_copy
+  test_verify_holds_packaging_lock
+  test_launch_refuses_other_bundle_path
+  test_staging_stops_before_swap
+  test_packaging_environment_isolation
+  test_build_number_history
+  echo 'Packaging regression tests passed (7 groups: preferences, install, verification, launch, staging, environment, build history).'
+fi
+[[ "${1:-}" != --packaging-only ]] || exit 0
 
 mkdir -p "$FIXTURE_DIR/script" "$FIXTURE_DIR/Sources" "$EVIDENCE_DIR" "$FAKE_BIN"
 cp "$ROOT_DIR/script/release.sh" "$ROOT_DIR/script/packaging_common.sh" "$FIXTURE_DIR/script/"
@@ -266,6 +595,31 @@ done
 cp "$MANIFEST" "$TEST_DIR/valid.evidence"
 git -C "$FIXTURE_DIR" add Evidence
 assert_success
+
+printf '\n' >> "$MANIFEST"
+assert_success
+reset_manifest
+printf '# A column-zero comment is allowed.\n' >> "$MANIFEST"
+assert_success
+reset_manifest
+printf ' \t \n\t\n' >> "$MANIFEST"
+assert_success
+reset_manifest
+awk '{ printf "%s\r\n", $0 }' "$TEST_DIR/valid.evidence" > "$MANIFEST"
+assert_failure 'CRLF line endings are not supported; save with LF line endings.'
+reset_manifest
+printf '# A comment with CRLF\r\n' >> "$MANIFEST"
+assert_failure 'CRLF line endings are not supported; save with LF line endings.'
+reset_manifest
+printf '\r\n' >> "$MANIFEST"
+assert_failure 'CRLF line endings are not supported; save with LF line endings.'
+reset_manifest
+{ printf '\357\273\277'; cat "$TEST_DIR/valid.evidence"; } > "$MANIFEST"
+assert_failure 'UTF-8 BOM is not supported; save UTF-8 without a BOM.'
+reset_manifest
+printf '  # An indented comment is not a blank line.\n' >> "$MANIFEST"
+assert_failure 'unknown field or malformed'
+reset_manifest
 
 set_field agent_layout pangpa-only
 set_field persistence_event reboot
