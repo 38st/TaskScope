@@ -896,10 +896,10 @@ struct TaskScopePopoverView: View {
         }
     }
 
-    private func openInActivityMonitor(pid: Int32) {
+    private func openInActivityMonitor(identity: ProcessIdentity) {
         Task {
-            let outcome = await activityMonitor.openAndSelect(pid: pid)
-            processManager.setMessage(outcome.message(for: pid))
+            let outcome = await activityMonitor.openAndSelect(identity: identity)
+            processManager.setMessage(outcome.message(for: identity.pid))
         }
     }
 
@@ -1122,7 +1122,7 @@ struct TaskScopePopoverView: View {
         }
         Divider()
         Button("Open in Activity Monitor") {
-            openInActivityMonitor(pid: process.pid)
+            openInActivityMonitor(identity: process.identity)
         }
     }
 

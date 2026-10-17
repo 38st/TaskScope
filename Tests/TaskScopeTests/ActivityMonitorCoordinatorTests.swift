@@ -47,7 +47,7 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
         let opener = FakeActivityMonitorOpener()
         let checker = FakeActivityMonitorProcessChecker(results: [true, true])
         let selector = FakeActivityMonitorProcessSelector(
-            results: [.accessibilityDenied("Accessibility access was denied.")]
+            results: [.accessibilityDenied("Accessibility access is not granted.")]
         )
         let coordinator = makeCoordinator(opener: opener, checker: checker, selector: selector)
 
@@ -55,7 +55,7 @@ final class ActivityMonitorCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(
             outcome,
-            .accessibilityDenied("Accessibility access was denied.")
+            .accessibilityDenied("Accessibility access is not granted.")
         )
         XCTAssertEqual(selector.requestedPIDs, [99])
         XCTAssertTrue(outcome.message(for: 99).contains("Privacy & Security > Accessibility"))

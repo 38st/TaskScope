@@ -105,6 +105,12 @@ struct PresetsSectionView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                if loginItemManager.state == .requiresApproval || loginItemManager.state == .notFound {
+                    Button("Turn Off Launch at Login") {
+                        loginItemManager.setEnabled(false)
+                    }
+                    .buttonStyle(.bordered)
+                }
                 if loginItemManager.state == .requiresApproval {
                     Button("Open Login Item Settings") {
                         loginItemManager.openSystemSettings()

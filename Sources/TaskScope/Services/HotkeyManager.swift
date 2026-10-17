@@ -79,6 +79,9 @@ final class HotkeyManager: ObservableObject {
     @Published private(set) var modifiers: UInt32
     @Published private(set) var registrationStatus: RegistrationStatus = .disabled
     @Published private(set) var migrationNotice: String?
+    @Published private(set) var lastRecordingError: String?
+    @Published private(set) var recoveryMessage: String?
+    @Published private(set) var isReadOnlyAfterCorruption = false
 
     var onShow: (() -> Void)?
 
@@ -99,17 +102,30 @@ final class HotkeyManager: ObservableObject {
         self.defaults = defaults
         self.defaultsKey = defaultsKey
         self.backend = backend
-        let saved = defaults.dictionary(forKey: defaultsKey)
+        let stored = defaults.object(forKey: defaultsKey)
+        let saved = stored as? [String: Any]
         hotkeyEnabled = saved?["enabled"] as? Bool ?? true
         keyCode = (saved?["keyCode"] as? UInt32) ?? UInt32(kVK_ANSI_T)
         modifiers = (saved?["modifiers"] as? UInt32) ?? UInt32(controlKey | optionKey | cmdKey)
-        if let reserved = Self.reservedShortcutDescription(
-            keyCode: keyCode,
-            modifiers: modifiers & UInt32(cmdKey | shiftKey | optionKey | controlKey)
-        ) {
+        migrationNotice = saved?["migrationNotice"] as? String
+        if let stored, saved == nil {
+            isReadOnlyAfterCorruption = true
+            hotkeyEnabled = false
+            let baseKey = "\(defaultsKey).corruptBackup"
+            if let data = try? PropertyListSerialization.data(fromPropertyList: stored, format: .binary, options: 0) {
+                let backupKey = PersistenceRecovery.preserveBackup(data, in: defaults, baseKey: baseKey)
+                recoveryMessage = PersistenceRecovery.unreadableDataMessage(
+                    backupKey: backupKey ?? baseKey,
+                    isPreserved: backupKey != nil
+                )
+            } else {
+                recoveryMessage = "Unreadable hotkey settings remain at \(defaultsKey); a backup could not be created."
+            }
+        } else if let reason = Self.validationFailure(keyCode: keyCode, modifiers: modifiers) {
+            let previousShortcut = displayString
             keyCode = UInt32(kVK_ANSI_T)
             modifiers = UInt32(controlKey | optionKey | cmdKey)
-            migrationNotice = "Your saved shortcut \(reserved) is now reserved by macOS. TaskScope changed it to ⌃⌥⌘T."
+            migrationNotice = "Your saved shortcut \(previousShortcut) is no longer supported. \(reason) TaskScope changed it to ⌃⌥⌘T."
             save()
         }
     }
@@ -124,7 +140,8 @@ final class HotkeyManager: ObservableObject {
     }
 
     func register() {
-        guard hotkeyEnabled else {
+        lastRecordingError = nil
+        guard hotkeyEnabled, !isReadOnlyAfterCorruption else {
             unregister()
             registrationStatus = .disabled
             return
@@ -138,8 +155,10 @@ final class HotkeyManager: ObservableObject {
 
     @discardableResult
     func updateShortcut(keyCode: UInt32, modifiers: UInt32) -> Bool {
+        lastRecordingError = nil
+        guard !isReadOnlyAfterCorruption else { return false }
         if let reason = Self.validationFailure(keyCode: keyCode, modifiers: modifiers) {
-            registrationStatus = .unsupported(reason)
+            lastRecordingError = reason
             return false
         }
 
@@ -152,6 +171,25 @@ final class HotkeyManager: ObservableObject {
         migrationNotice = nil
         save()
         return true
+    }
+
+    func clearRecordingError() {
+        lastRecordingError = nil
+    }
+
+    func dismissMigrationNotice() {
+        migrationNotice = nil
+        save()
+    }
+
+    /// Replacing an unreadable primary value requires this explicit user action.
+    func resetAfterCorruption() {
+        guard isReadOnlyAfterCorruption else { return }
+        isReadOnlyAfterCorruption = false
+        recoveryMessage = nil
+        keyCode = UInt32(kVK_ANSI_T)
+        modifiers = UInt32(controlKey | optionKey | cmdKey)
+        hotkeyEnabled = true
     }
 
     func unregister() {
@@ -394,11 +432,13 @@ final class HotkeyManager: ObservableObject {
     }
 
     private func save() {
-        defaults.set([
-            "enabled": hotkeyEnabled,
-            "keyCode": keyCode,
-            "modifiers": modifiers
-        ], forKey: defaultsKey)
+        guard !isReadOnlyAfterCorruption else { return }
+        var saved = defaults.dictionary(forKey: defaultsKey) ?? [:]
+        saved["enabled"] = hotkeyEnabled
+        saved["keyCode"] = keyCode
+        saved["modifiers"] = modifiers
+        saved["migrationNotice"] = migrationNotice
+        defaults.set(saved, forKey: defaultsKey)
     }
 
     func installCarbonEventHandlerIfNeeded() -> OSStatus {

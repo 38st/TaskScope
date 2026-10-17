@@ -2,8 +2,13 @@ import Carbon.HIToolbox
 import SwiftUI
 
 struct HotkeySettingsView: View {
-    @ObservedObject private var hotkey = HotkeyManager.shared
+    @ObservedObject private var hotkey: HotkeyManager
     @State private var recording = false
+
+    @MainActor
+    init(hotkey: HotkeyManager? = nil) {
+        self.hotkey = hotkey ?? .shared
+    }
 
     var body: some View {
         Form {
@@ -20,6 +25,7 @@ struct HotkeySettingsView: View {
                 }
 
                 Button(recording ? "Press a key combination…" : "Record New Hotkey") {
+                    hotkey.clearRecordingError()
                     recording = true
                 }
                 .disabled(!hotkey.hotkeyEnabled)
@@ -35,6 +41,15 @@ struct HotkeySettingsView: View {
                     Text(notice)
                         .font(.caption)
                         .foregroundStyle(.orange)
+                    Button("Dismiss Shortcut Notice") {
+                        hotkey.dismissMigrationNotice()
+                    }
+                }
+
+                if let error = hotkey.lastRecordingError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
                 }
 
                 Text(hotkey.registrationStatus.message)
@@ -48,6 +63,21 @@ struct HotkeySettingsView: View {
                 Text("Default: ⌃⌥⌘T shows the TaskScope window. A hotkey needs Command or Control. Standard ⌘-letter app shortcuts, ⌘Tab, and ⌘Space are reserved.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            .disabled(hotkey.isReadOnlyAfterCorruption)
+
+            if let recoveryMessage = hotkey.recoveryMessage {
+                Section("Recovered Hotkey Settings") {
+                    Text(recoveryMessage)
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Text("The hotkey is disabled until you reset its settings. Reset enables the default ⌃⌥⌘T shortcut.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Reset Hotkey Settings After Backup", role: .destructive) {
+                        hotkey.resetAfterCorruption()
+                    }
+                }
             }
         }
         .formStyle(.grouped)

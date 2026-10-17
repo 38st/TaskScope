@@ -58,6 +58,7 @@ final class HotkeyManagerTests: XCTestCase {
             let reloaded = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: FakeHotkeyBackend())
             XCTAssertEqual(reloaded.displayString, "⌃⌥⌘T")
             XCTAssertEqual(reloaded.hotkeyEnabled, enabled)
+            XCTAssertEqual(reloaded.migrationNotice, manager.migrationNotice)
             XCTAssertTrue(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(cmdKey | shiftKey)))
             XCTAssertNil(manager.migrationNotice)
         }
@@ -183,17 +184,19 @@ final class HotkeyManagerTests: XCTestCase {
         )
     }
 
-    func testRejectedShortcutExplainsItselfInTheRegistrationStatus() {
-        let suite = "TaskScope.HotkeyManagerTests.reasons"
+    func testRejectedShortcutExplainsItselfWithoutChangingRegistrationStatus() {
+        let suite = "TaskScope.HotkeyManagerTests.reasons.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
-        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey")
+        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: FakeHotkeyBackend())
 
         XCTAssertFalse(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_T), modifiers: UInt32(shiftKey)))
-        XCTAssertTrue(manager.registrationStatus.message.contains("Command or Control"))
+        XCTAssertTrue(manager.lastRecordingError?.contains("Command or Control") == true)
+        XCTAssertEqual(manager.registrationStatus, .disabled)
         XCTAssertFalse(manager.updateShortcut(keyCode: UInt32(kVK_ANSI_Q), modifiers: UInt32(cmdKey)))
-        XCTAssertTrue(manager.registrationStatus.message.contains("reserved by macOS"))
+        XCTAssertTrue(manager.lastRecordingError?.contains("reserved by macOS") == true)
+        XCTAssertEqual(manager.registrationStatus, .disabled)
         XCTAssertEqual(manager.modifiers, UInt32(controlKey | optionKey | cmdKey), "a rejected update leaves the configuration alone")
     }
 
@@ -205,6 +208,7 @@ final class HotkeyManagerTests: XCTestCase {
         let backend = FakeHotkeyBackend()
         let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: backend)
 
+        defer { manager.unregister() }
         manager.register()
         manager.register()
         XCTAssertEqual(manager.registrationStatus, .registered)
@@ -226,6 +230,7 @@ final class HotkeyManagerTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suite) }
         let backend = FakeHotkeyBackend()
         let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: backend)
+        defer { manager.unregister() }
         manager.register()
         backend.refusedKeyCodes = [UInt32(kVK_ANSI_K)]
 
@@ -244,21 +249,19 @@ final class HotkeyManagerTests: XCTestCase {
     }
 
     func testUnsupportedAtomicUpdateLeavesPreviousConfiguration() {
-        let suite = "TaskScope.HotkeyManagerTests"
+        let suite = "TaskScope.HotkeyManagerTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         defer { defaults.removePersistentDomain(forName: suite) }
-        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey")
+        let manager = HotkeyManager(defaults: defaults, defaultsKey: "hotkey", backend: FakeHotkeyBackend())
         let originalKey = manager.keyCode
         let originalModifiers = manager.modifiers
 
         XCTAssertFalse(manager.updateShortcut(keyCode: UInt32.max, modifiers: UInt32(cmdKey)))
         XCTAssertEqual(manager.keyCode, originalKey)
         XCTAssertEqual(manager.modifiers, originalModifiers)
-        guard case .unsupported(let reason) = manager.registrationStatus else {
-            return XCTFail("Expected an unsupported status, got \(manager.registrationStatus)")
-        }
-        XCTAssertTrue(reason.contains("supported key"), reason)
+        XCTAssertEqual(manager.registrationStatus, .disabled)
+        XCTAssertTrue(manager.lastRecordingError?.contains("supported key") == true)
     }
 
     func testHotkeyIsNotAvailableWhileDisabled() {
