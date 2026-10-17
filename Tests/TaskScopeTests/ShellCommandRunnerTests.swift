@@ -475,7 +475,11 @@ final class ShellCommandRunnerTests: XCTestCase {
             + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
     }
 
-    /// A negative `pid` names a process group, as it does for `kill`.
+    /// A negative `pid` names a process group, as it does for `kill`. Runs on
+    /// the main actor: XCTest sometimes drops a failure recorded off the main
+    /// thread right before an async test returns, which hid a surviving
+    /// descendant in about one run in five.
+    @MainActor
     private func assertProcessDisappears(
         _ pid: Int32,
         file: StaticString = #filePath,
