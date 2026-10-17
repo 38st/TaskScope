@@ -249,7 +249,8 @@ final class SwiftUIHarnessTests: XCTestCase {
             onOpen: {}, onQuitApp: {}, onQuitHelpers: {}, onQuitAll: {},
             isKeptOff: true, isKeepOffControlEnabled: true, onKeepOffChanged: { _ in }
         )
-        XCTAssertNoThrow(try card.inspect().find(text: "Enforcing"))
+        XCTAssertNoThrow(try card.inspect().find(text: "Service running"))
+        XCTAssertThrowsError(try card.inspect().find(text: "Enforcing"))
         XCTAssertThrowsError(try card.inspect().find(text: "Kept Off"))
     }
 

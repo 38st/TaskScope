@@ -824,14 +824,19 @@ final class ProcessManager: ObservableObject {
         let userEnable = systemEnable.succeeded
             ? await lifecycle.enableUserLaunchAgents(for: preset) : .notNeeded
         let enableResult = LifecycleBatchResult(jobs: systemEnable.jobs + userEnable.jobs)
-        lifecycleReport = enableResult.jobs.isEmpty
-            ? nil
-            : LifecycleReport(
+        // Show the report only when something changed or failed; verified,
+        // already-enabled jobs are not a restoration.
+        lifecycleReport = enableResult.didChangeState || !enableResult.succeeded
+            ? LifecycleReport(
                 title: "\(preset.displayName) Keep Off",
                 jobs: enableResult.jobs
             )
+            : nil
         guard enableResult.succeeded else {
-            message = "Keep Off remains requested: \(enableResult.failureSummary ?? "service could not be enabled")."
+            let failure = enableResult.failureSummary ?? "service could not be enabled"
+            message = isPresetKeptOffProvider?(preset) == true
+                ? "Keep Off remains requested: \(failure)."
+                : "Could not allow \(preset.displayName) to run: \(failure)."
             return (
                 TaskScopeCommandResult(status: .failed, message: message),
                 systemEnable.succeeded ? .userLaunchAgentFailed : .systemServiceFailed,

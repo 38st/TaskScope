@@ -2,6 +2,7 @@ import SwiftUI
 
 struct PresetCard: View {
     var snapshot: WatchedAppSnapshot
+    @Environment(\.watchedStatusAvailability) private var watchedStatusAvailability
     var onOpen: () -> Void
     var onQuitApp: () -> Void
     var onQuitHelpers: () -> Void
@@ -22,7 +23,7 @@ struct PresetCard: View {
                 statusBadge
             }
 
-            Text(snapshot.detail)
+            Text(watchedStatusAvailability.detail ?? snapshot.detail)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -100,7 +101,9 @@ struct PresetCard: View {
     }
 
     private var color: Color {
-        if isKeptOff && snapshot.hasAny { .orange }
+        if watchedStatusAvailability == .unknown { .secondary }
+        else if watchedStatusAvailability == .stale { .orange }
+        else if isKeptOff && snapshot.hasAny { .orange }
         else if isKeptOff { .green }
         else if snapshot.isMainRunning { .red }
         else if snapshot.hasHelpers { .yellow }
@@ -109,7 +112,8 @@ struct PresetCard: View {
     }
 
     private var label: String {
-        if isKeptOff && (!snapshot.protectedRunning.isEmpty || snapshot.hasCurrentUserLaunchAgent) { "Service running" }
+        if let title = watchedStatusAvailability.title { title }
+        else if isKeptOff && (!snapshot.protectedRunning.isEmpty || snapshot.hasCurrentUserLaunchAgent) { "Service running" }
         else if isKeptOff && snapshot.hasKeepOffTargets { "Enforcing" }
         else if isKeptOff && snapshot.hasAny { "Still running" }
         else if isKeptOff { "Off requested" }

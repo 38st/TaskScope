@@ -363,6 +363,7 @@ final class SystemIntegrationRegressionTests: XCTestCase {
         PresetsSectionView(
             processManager: processManager(), loginItemManager: manager,
             settings: SettingsStore(userDefaults: defaults, key: "settings"),
+            watchedApps: WatchedAppsStore(userDefaults: defaults, key: "presets"),
             confirmationState: ProcessConfirmationState()
         )
     }

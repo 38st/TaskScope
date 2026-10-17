@@ -218,6 +218,14 @@ struct TaskScopePopoverView: View {
         } message: { pending in
             Text(presetConfirmationMessage(for: pending))
         }
+        // A preset removed while its confirmation is pending must not stay
+        // confirmable.
+        .onChange(of: watchedApps.presets) { _, presets in
+            if let pending = confirmationState.pendingPresetAction,
+               !presets.contains(where: { $0.id == pending.preset.id }) {
+                confirmationState.clearPresetAction()
+            }
+        }
         // The menu-bar window asks outside itself; see `MenuBarConfirming`.
         .onChange(of: confirmationState.pendingTermination) { _, pending in
             guard let pending else { return }
@@ -1071,7 +1079,7 @@ struct TaskScopePopoverView: View {
     private func staleProcessListDetail(error: String) -> String {
         let lastUpdated: String
         if let date = processManager.lastSuccessfulInventoryAt {
-            lastUpdated = "Last updated \(date.formatted(date: .omitted, time: .standard))."
+            lastUpdated = "Last updated \(date.formatted(date: Calendar.current.isDateInToday(date) ? .omitted : .abbreviated, time: .standard))."
         } else {
             lastUpdated = "The last successful update time is unavailable."
         }

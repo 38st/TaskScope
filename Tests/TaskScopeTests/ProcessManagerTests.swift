@@ -1675,13 +1675,16 @@ final class ProcessManagerTests: XCTestCase {
         manager.watchedAppsProvider = { [.globalProtect] }
         manager.keptOffPresetsProvider = { [.globalProtect] }
         manager.isPresetKeptOffProvider = { _ in true }
+        await manager.refreshWatchedStatus(showMessage: false)
         await manager.enforceKeptOffPresets()
         await manager.enforceKeptOffPresets()
 
-        XCTAssertEqual(lifecycle.calls.filter { $0 == "agents.disable" }.count, 2)
+        // A preserved current-user VPN service alone does not re-run background
+        // enforcement on every tick.
+        XCTAssertEqual(lifecycle.calls.filter { $0 == "agents.disable" }.count, 0)
         XCTAssertFalse(lifecycle.calls.contains("terminate:PanGPS"))
         XCTAssertFalse(lifecycle.calls.contains("terminate.helper:PanGPS"))
-        XCTAssertEqual(lifecycle.preservedVPNServices, [true, true])
+        XCTAssertEqual(lifecycle.preservedVPNServices, [])
         XCTAssertTrue(manager.snapshots[0].hasKeepOffTargets)
         XCTAssertNil(manager.lifecycleReport)
     }
