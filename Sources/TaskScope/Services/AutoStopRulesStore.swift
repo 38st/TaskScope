@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Why the engine is asking for a process to be stopped. The authority check
@@ -52,16 +53,23 @@ final class AutoStopRulesStore: ObservableObject {
     private struct PendingExit {
         var prompt: AutoStopPrompt
         var canRetry: Bool
+        var firstAcceptedAt: ContinuousClock.Instant
     }
 
     private let rulesPersistence: RecoveringCodableStorage<[AutoStopRule]>
     private let eventsPersistence: RecoveringCodableStorage<[AutoStopEvent]>
     private let now: () -> Date
+    private let monotonicNow: () -> ContinuousClock.Instant
+    private let currentUID: uid_t
+    private let currentPID: Int32
     private let inventory: any ProcessInventoryProviding
     private let pollingController: ProcessPollingController
     private let eventLimit: Int
     private var handledOccurrences: Set<AutoStopOccurrence> = []
     private var reportedFailures: Set<AutoStopOccurrence> = []
+    /// Last matching targets retain their signal budget across still-matching
+    /// Auto Stop edits, including edits made while a signal is in flight.
+    private var automaticProcesses: [AutoStopOccurrence: AppProcess] = [:]
     /// Occurrences the user dismissed. Deliberately survives rule edits and
     /// enable toggles: a dismissed process must not prompt again just because
     /// the rule was switched off and on.
@@ -83,7 +91,10 @@ final class AutoStopRulesStore: ObservableObject {
         inventory: any ProcessInventoryProviding = SystemProcessInventory(),
         eventLimit: Int = 200,
         now: @escaping () -> Date = Date.init,
-        pollingController: ProcessPollingController? = nil
+        pollingController: ProcessPollingController? = nil,
+        currentUID: uid_t = getuid(),
+        currentPID: Int32 = ProcessInfo.processInfo.processIdentifier,
+        monotonicNow: @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }
     ) {
         let boundedEventLimit = max(1, eventLimit)
         let rulesPersistence = RecoveringCodableStorage<[AutoStopRule]>(
@@ -100,8 +111,11 @@ final class AutoStopRulesStore: ObservableObject {
         self.pollingController = pollingController ?? ProcessPollingController()
         self.eventLimit = boundedEventLimit
         self.now = now
+        self.monotonicNow = monotonicNow
+        self.currentUID = currentUID
+        self.currentPID = currentPID
         let rulesLoad = rulesPersistence.loadRecoveringElements()
-        let eventsLoad = eventsPersistence.load()
+        let eventsLoad = eventsPersistence.loadRecoveringElements()
         let loadedRules = (
             value: rulesLoad.value,
             message: rulesLoad.backupKey.map {
@@ -131,15 +145,23 @@ final class AutoStopRulesStore: ObservableObject {
             permitsRulesPersistence = false
             rulesMessage = "Rejected \(rejectedCount) invalid or duplicate stored auto-stop rule\(rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); reset after review to commit only the recovered safe rules."
         }
+        var eventsMessage = loadedEvents.message
+        var permitsEventsPersistence = loadedEvents.message == nil
+        if loadedEvents.message == nil, eventsLoad.rejectedCount > 0 {
+            permitsEventsPersistence = false
+            if let backup = eventsPersistence.preserveCurrentPayload(suffix: "rejectedMigrationBackup") {
+                eventsMessage = "Rejected \(eventsLoad.rejectedCount) invalid stored auto-stop event\(eventsLoad.rejectedCount == 1 ? "" : "s"). \(PersistenceRecovery.preservedPayloadDescription(backupKey: backup.key, isPreserved: backup.isPreserved)); reset after review to commit the recovered events."
+            }
+        }
         // A decode failure must never lead to the unreadable payload being replaced
         // by the empty array we fell back to, so persistence stays disabled for that
         // key until the user explicitly resets it.
         allowsRulesPersistence = permitsRulesPersistence
-        allowsEventsPersistence = loadedEvents.message == nil
+        allowsEventsPersistence = permitsEventsPersistence
         rules = validatedRules.rules
         events = Array((loadedEvents.value ?? []).prefix(boundedEventLimit))
         rulesRecoveryMessage = rulesMessage
-        eventsRecoveryMessage = loadedEvents.message
+        eventsRecoveryMessage = eventsMessage
 
         if allowsEventsPersistence,
            let loadedEventCount = loadedEvents.value?.count,
@@ -174,7 +196,7 @@ final class AutoStopRulesStore: ObservableObject {
         saveRules()
     }
 
-    /// Discards an unreadable event payload and resumes durable event logging.
+    /// Commits the recovered events and resumes durable event logging.
     func resetEventsAfterCorruption() {
         guard !allowsEventsPersistence else { return }
         allowsEventsPersistence = true
@@ -223,10 +245,15 @@ final class AutoStopRulesStore: ObservableObject {
             return false
         }
         validationError = nil
+        let retained = Set(automaticProcesses.compactMap { occurrence, process in
+            occurrence.ruleID == rule.id && qualifiesForAutomaticStop(normalized, process: process)
+                ? occurrence : nil
+        })
         rules[index] = normalized
-        handledOccurrences = handledOccurrences.filter { $0.ruleID != rule.id }
-        reportedFailures = reportedFailures.filter { $0.ruleID != rule.id }
-        pendingExits = pendingExits.filter { $0.key.ruleID != rule.id }
+        handledOccurrences = handledOccurrences.filter { $0.ruleID != rule.id || retained.contains($0) }
+        reportedFailures = reportedFailures.filter { $0.ruleID != rule.id || retained.contains($0) }
+        pendingExits = pendingExits.filter { $0.key.ruleID != rule.id || retained.contains($0.key) }
+        automaticProcesses = automaticProcesses.filter { $0.key.ruleID != rule.id || retained.contains($0.key) }
         // Editing or disabling a rule must retire its live prompts too, exactly as
         // `remove(_:)` does; otherwise a disabled rule's alert stays actionable.
         // Dismissed occurrences are kept on purpose (see `dismissedOccurrences`).
@@ -280,6 +307,7 @@ final class AutoStopRulesStore: ObservableObject {
         reportedFailures = reportedFailures.filter { !removedIDs.contains($0.ruleID) }
         dismissedOccurrences = dismissedOccurrences.filter { !removedIDs.contains($0.ruleID) }
         pendingExits = pendingExits.filter { !removedIDs.contains($0.key.ruleID) }
+        automaticProcesses = automaticProcesses.filter { !removedIDs.contains($0.key.ruleID) }
         pendingPrompts.removeAll { removedIDs.contains($0.rule.id) }
     }
 
@@ -389,7 +417,7 @@ final class AutoStopRulesStore: ObservableObject {
             // The signal was accepted; the exit is observed on a later tick. A
             // confirmed prompt is never re-signalled automatically.
             handledOccurrences.insert(prompt.id)
-            pendingExits[prompt.id] = PendingExit(prompt: prompt, canRetry: false)
+            pendingExits[prompt.id] = PendingExit(prompt: prompt, canRetry: false, firstAcceptedAt: monotonicNow())
             record(
                 prompt,
                 outcome: .stopRequested,
@@ -398,7 +426,7 @@ final class AutoStopRulesStore: ObservableObject {
         } else if result == .stale {
             record(prompt, outcome: .processEnded, detail: "Process ended before the stop request.")
         } else if result == .refused {
-            record(prompt, outcome: .failed, detail: "The system refused the stop request.")
+            record(prompt, outcome: .failed, detail: refusalDetail(for: prompt.process))
         } else {
             // Nothing was signalled for a reason that may clear (an unreadable
             // process list, a stopped engine). Un-handle so a still-running
@@ -452,6 +480,7 @@ final class AutoStopRulesStore: ObservableObject {
                     continue
                 }
                 handledOccurrences.insert(occurrence)
+                if rule.action == .kill { automaticProcesses[occurrence] = process }
                 onAction(rule, process)
             }
         }
@@ -478,15 +507,17 @@ final class AutoStopRulesStore: ObservableObject {
                 }
                 let prompt = AutoStopPrompt(id: occurrence, rule: rule, process: process)
 
+                if rule.action == .kill { automaticProcesses[occurrence] = process }
                 if handledOccurrences.contains(occurrence) {
                     // Already acted on. The only follow-up is a single re-signal of
                     // an automatic stop whose target has not exited yet.
                     guard rule.action == .kill,
                           let pending = pendingExits[occurrence],
-                          pending.canRetry else {
+                          pending.canRetry,
+                          pending.firstAcceptedAt.duration(to: monotonicNow()) >= .seconds(engineCadence) else {
                         continue
                     }
-                    pendingExits[occurrence] = PendingExit(prompt: pending.prompt, canRetry: false)
+                    pendingExits[occurrence] = PendingExit(prompt: pending.prompt, canRetry: false, firstAcceptedAt: pending.firstAcceptedAt)
                     await performAutomaticStop(
                         rule: rule,
                         process: process,
@@ -533,6 +564,7 @@ final class AutoStopRulesStore: ObservableObject {
         prompt: AutoStopPrompt,
         isRetry: Bool
     ) async {
+        let firstAcceptedAt = pendingExits[occurrence]?.firstAcceptedAt
         let action = Task { [actionHandler] in
             guard !Task.isCancelled else { return ProcessActionResult.rejected }
             return await actionHandler?(rule, process, .automatic) ?? .rejected
@@ -543,7 +575,9 @@ final class AutoStopRulesStore: ObservableObject {
 
         // A retired rule cannot authorize more work, but a signal already
         // delivered must remain in the event history.
-        let isActive = isStillActive(rule)
+        let isActive = isStillActive(rule) || (automaticProcesses[occurrence] != nil && rules.contains {
+            $0.id == rule.id && qualifiesForAutomaticStop($0, process: process)
+        })
         if !isActive {
             handledOccurrences.remove(occurrence)
             pendingExits[occurrence] = nil
@@ -570,7 +604,7 @@ final class AutoStopRulesStore: ObservableObject {
             }
         case .requestedStillRunning where !isRetry || !isActive:
             if isActive {
-                pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true)
+                pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true, firstAcceptedAt: firstAcceptedAt ?? monotonicNow())
             }
             record(prompt, outcome: .stopRequested, detail: isActive
                 ? "Stop requested; waiting for the process to exit."
@@ -580,7 +614,7 @@ final class AutoStopRulesStore: ObservableObject {
             // Stop retrying so a process that ignores SIGTERM is not signalled on
             // every tick; the user can force stop it. A later exit is still
             // recorded when the identity disappears.
-            pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: false)
+            pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: false, firstAcceptedAt: firstAcceptedAt ?? monotonicNow())
             record(
                 prompt,
                 outcome: .failed,
@@ -590,11 +624,11 @@ final class AutoStopRulesStore: ObservableObject {
             // The kernel or a safety guard refused the signal. Retrying every tick
             // cannot succeed, so the occurrence stays handled until it exits.
             pendingExits[occurrence] = nil
-            record(prompt, outcome: .failed, detail: "The system refused the stop request; automatic stopping will not retry.")
+            record(prompt, outcome: .failed, detail: refusalDetail(for: process) + " Automatic stopping will not retry.")
         case .rejected where isRetry:
             // The re-signal never ran (most often an unreadable process list).
             // Keep the single retry available for the next tick.
-            pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true)
+            pendingExits[occurrence] = PendingExit(prompt: prompt, canRetry: true, firstAcceptedAt: firstAcceptedAt ?? monotonicNow())
         case .rejected:
             // Nothing was signalled — most often because the process list could
             // not be read. Un-handle so the next tick retries instead of
@@ -610,6 +644,7 @@ final class AutoStopRulesStore: ObservableObject {
 
     private func pruneEndedOccurrences(_ processes: [AppProcess]) {
         let runningIdentities = Set(processes.map(\.identity))
+        automaticProcesses = automaticProcesses.filter { runningIdentities.contains($0.key.processIdentity) }
         let ended = handledOccurrences.filter { !runningIdentities.contains($0.processIdentity) }
         reportedFailures = reportedFailures.filter { runningIdentities.contains($0.processIdentity) }
         dismissedOccurrences = dismissedOccurrences.filter { runningIdentities.contains($0.processIdentity) }
@@ -658,12 +693,27 @@ final class AutoStopRulesStore: ObservableObject {
     }
 
     private func matches(_ rule: AutoStopRule, process: AppProcess) -> Bool {
-        guard rule.processName.caseInsensitiveCompare(process.name) == .orderedSame else {
+        guard process.pid != currentPID,
+              ProcessSignalGuard.isSignalablePID(process.pid),
+              process.uid == currentUID,
+              rule.processName.caseInsensitiveCompare(process.name) == .orderedSame else {
             return false
         }
         guard let rulePath = rule.executablePath else { return true }
         guard let processPath = process.executablePath else { return false }
         return AutoStopRuleValidation.pathsMatch(rulePath, processPath)
+    }
+
+    private func qualifiesForAutomaticStop(_ rule: AutoStopRule, process: AppProcess) -> Bool {
+        rule.isEnabled && rule.action == .kill && matches(rule, process: process)
+            && (process.runtimeSeconds ?? 0) >= TimeInterval(rule.runtimeMinutes) * 60
+    }
+
+    private func refusalDetail(for process: AppProcess) -> String {
+        if process.pid == currentPID { return "TaskScope cannot stop itself; use Quit to close TaskScope." }
+        if !ProcessSignalGuard.isSignalablePID(process.pid) { return "This PID cannot be signalled." }
+        if process.uid != currentUID { return "The process is not owned by the current user." }
+        return "The system refused the stop request."
     }
 
     /// Cancels every in-flight automatic stop whose captured rule is no longer

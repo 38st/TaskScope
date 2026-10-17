@@ -8,7 +8,7 @@ import XCTest
 @MainActor
 final class AutoStopActionAuthorizationTests: XCTestCase {
     private let examplePath = "/Applications/Example.app/Contents/MacOS/Example"
-    private let suiteName = "TaskScope.AutoStopActionAuthorizationTests"
+    private let suiteName = "TaskScope.AutoStopActionAuthorizationTests.\(UUID().uuidString)"
     nonisolated(unsafe) private var defaults: UserDefaults!
 
     override func setUp() {
@@ -108,6 +108,7 @@ final class AutoStopActionAuthorizationTests: XCTestCase {
             processInventory: StubInventory(processes: [target]),
             verificationInventory: verification,
             processSignaler: signaler,
+            lifecycle: AuthorizationLifecycle(),
             settleAfterProcessChange: {}
         )
         manager.enableNotifications = false
@@ -148,7 +149,9 @@ final class AutoStopActionAuthorizationTests: XCTestCase {
     ) -> ProcessManager {
         let manager = ProcessManager(
             processInventory: inventory,
+            verificationInventory: inventory,
             processSignaler: signaler,
+            lifecycle: AuthorizationLifecycle(),
             settleAfterProcessChange: {}
         )
         manager.enableNotifications = false
@@ -169,6 +172,7 @@ final class AutoStopActionAuthorizationTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: getuid(),
             cpu: 1,
             memoryMB: 1,
             command: examplePath,
@@ -267,4 +271,17 @@ private final class RecordingSignaler: ProcessSignaling {
     func isAlive(_ pid: Int32) -> Bool {
         alivePids.contains(pid)
     }
+}
+
+private struct AuthorizationLifecycle: ProcessLifecycleServicing {
+    func appBundleExists(at path: String) -> Bool { false }
+    func settleAfterProcessChange() async {}
+    func terminateMainProcess(for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .signalled }
+    func terminateHelperProcess(named name: String, for preset: WatchedAppPreset) async -> ProcessTerminationOutcome { .signalled }
+    func isProcessNamedRunning(_ name: String) async -> Bool { false }
+    func unloadUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
+    func bootstrapUserLaunchAgents(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
+    func ensureSystemLaunchDaemons(for preset: WatchedAppPreset) async -> LifecycleBatchResult { .notNeeded }
+    func waitForProcessNamed(_ name: String, timeoutSeconds: TimeInterval) async -> Bool { false }
+    func openAppBundle(at path: String) async -> Bool { false }
 }

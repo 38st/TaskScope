@@ -7,8 +7,9 @@ import XCTest
 /// permanently handled.
 @MainActor
 final class AutoStopRuleLifecycleTests: XCTestCase {
+    private var monotonicInstant = ContinuousClock.now
     private let examplePath = "/Applications/Example.app/Contents/MacOS/Example"
-    private let suiteName = "TaskScope.AutoStopRuleLifecycleTests"
+    private let suiteName = "TaskScope.AutoStopRuleLifecycleTests.\(UUID().uuidString)"
     private let key = "auto-stop-rules-lifecycle-tests"
     private let eventsKey = "auto-stop-events-lifecycle-tests"
     nonisolated(unsafe) private var defaults: UserDefaults!
@@ -101,7 +102,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
             XCTAssertTrue(store.update(rule))
             var callbacks = 0
             store.evaluate(runningProcesses: [appProcess(pid: 41, elapsed: "10:00")]) { _, _ in callbacks += 1 }
-            XCTAssertEqual(callbacks, 1)
+            XCTAssertEqual(callbacks, action == .kill ? 0 : 1, "An unchanged Auto Stop rule retains its handled occurrence")
         }
     }
 
@@ -151,6 +152,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         await waitUntil { attempts == 1 && !store.events.isEmpty }
         XCTAssertEqual(store.events.map(\.outcome), [.stopRequested])
 
+        monotonicInstant = monotonicInstant.advanced(by: .seconds(3_600))
         await store.evaluateNow()
         XCTAssertEqual(attempts, 2, "one re-signal is allowed")
         XCTAssertEqual(store.events.map(\.outcome), [.failed, .stopRequested])
@@ -315,6 +317,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         }
         await waitUntil { attempts == 1 && !store.events.isEmpty }
 
+        monotonicInstant = monotonicInstant.advanced(by: .seconds(3_600))
         await store.evaluateNow()
         inventory.processes = []
         await store.evaluateNow()
@@ -462,6 +465,7 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
         for _ in 0..<100 where attempts == 0 || store.events.isEmpty {
             await Task.yield()
         }
+        monotonicInstant = monotonicInstant.advanced(by: .seconds(3_600))
         await store.evaluateNow()
         XCTAssertEqual(attempts, 2, "precondition: one automatic re-signal")
         await inventory.set([])
@@ -511,7 +515,8 @@ final class AutoStopRuleLifecycleTests: XCTestCase {
             key: key,
             eventsKey: eventsKey,
             inventory: inventory,
-            now: { Date(timeIntervalSince1970: 1_000) }
+            now: { Date(timeIntervalSince1970: 1_000) },
+            monotonicNow: { self.monotonicInstant }
         )
     }
 
@@ -532,6 +537,7 @@ private func appProcess(pid: Int32, elapsed: String) -> AppProcess {
     AppProcess(
         pid: pid,
         parentPID: 1,
+        uid: getuid(),
         cpu: 1,
         memoryMB: 1,
         command: "Example",

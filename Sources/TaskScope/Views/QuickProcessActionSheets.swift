@@ -1,8 +1,34 @@
+import Darwin
 import SwiftUI
 
 struct QuickWatchedPresetDraft: Identifiable, Equatable {
     let id = UUID()
     var processes: [AppProcess]
+
+    func validationError(
+        for preset: WatchedAppPreset,
+        currentUID: uid_t = getuid(),
+        currentPID: Int32 = ProcessInfo.processInfo.processIdentifier
+    ) -> String? {
+        guard !processes.isEmpty else { return "Select at least one process to watch." }
+        let builder = WatchedSnapshotBuilder(excludedPID: currentPID, currentUID: currentUID)
+        var hasMainProcess = false
+        for process in processes {
+            guard process.pid != currentPID else { return "TaskScope cannot watch itself." }
+            guard process.uid == currentUID else {
+                return "\(process.name) is not owned by the current user. Choose processes owned by your account."
+            }
+            guard process.executablePath != nil else {
+                return "\(process.name) has no trusted executable path, so this preset cannot watch it."
+            }
+            let snapshot = builder.snapshot(for: preset, in: [process])
+            guard !snapshot.runningNames.isEmpty else {
+                return "\(process.name) cannot match this preset. The main process must be inside the app's Contents/MacOS folder, and each helper inside the same app's Contents folder, with matching process names."
+            }
+            hasMainProcess = hasMainProcess || snapshot.isMainRunning
+        }
+        return hasMainProcess ? nil : "Choose a main process from the app's Contents/MacOS folder. App extensions and XPC services can only be included as helpers of their containing app."
+    }
 }
 
 @MainActor
@@ -58,7 +84,7 @@ final class QuickWatchedPresetFormState: ObservableObject {
             mainProcessName: trimmedMain,
             helperProcessNames: helpers,
             protectedProcessNames: [],
-            appPath: trimmedPath.isEmpty ? "/Applications/\(trimmedMain).app" : trimmedPath
+            appPath: trimmedPath
         )
     }
 }
@@ -97,6 +123,16 @@ enum QuickAutoStopRuleSaver {
             : observedPath ?? existing.executablePath
     }
 
+    static func enablesDisabledRule(
+        existingRule: AutoStopRule?,
+        action: AutoStopRule.Action,
+        executablePath: String?
+    ) -> Bool {
+        guard let existing = existingRule else { return false }
+        return !existing.isEnabled && existing.action == .kill && existing.executablePath == nil
+            && action == .kill && executablePath != nil
+    }
+
     static func save(
         into rules: AutoStopRulesStore,
         processName: String,
@@ -119,10 +155,8 @@ enum QuickAutoStopRuleSaver {
         )
 
         if let existing = existingRule {
-            let isEnabled = existing.isEnabled || (
-                existing.action == .kill && existing.executablePath == nil &&
-                    action == .kill && executablePath != nil
-            )
+            let enablesRule = enablesDisabledRule(existingRule: existing, action: action, executablePath: executablePath)
+            let isEnabled = existing.isEnabled || enablesRule
             guard rules.update(AutoStopRule(
                 id: existing.id,
                 processName: trimmedName,
@@ -133,7 +167,9 @@ enum QuickAutoStopRuleSaver {
             )) else {
                 return Outcome(error: rules.validationError ?? "The auto-stop rule could not be updated.")
             }
-            return Outcome(statusMessage: "Updated \(isEnabled ? "" : "disabled ")auto-stop rule for \(trimmedName).")
+            return Outcome(statusMessage: enablesRule
+                ? "Enabled auto-stop rule for \(trimmedName)."
+                : "Updated \(isEnabled ? "" : "disabled ")auto-stop rule for \(trimmedName).")
         }
 
         if let collision = rules.rules.first(where: {
@@ -222,6 +258,13 @@ struct QuickAutoStopRuleSheet: View {
                     Text(executablePath ?? "Any process named \(form.processName.trimmingCharacters(in: .whitespacesAndNewlines))")
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
+                    if QuickAutoStopRuleSaver.enablesDisabledRule(
+                        existingRule: existingRule, action: form.action, executablePath: executablePath
+                    ) {
+                        Text("Saving enables this Auto Stop rule.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if form.action == .kill, executablePath == nil {
                         Text("Auto Stop requires a trusted executable path. Use Prompt or Log Only for name-only rules.")
                             .font(.caption)
@@ -336,7 +379,15 @@ struct QuickWatchedPresetSheet: View {
                     .lineLimit(1)
                 Spacer()
                 Button("Add Preset") {
-                    form.validationError = onSave(form.buildPreset())
+                    guard let preset = WatchedAppsStore.validatedPresets([form.buildPreset()]).presets.first else {
+                        form.validationError = "Enter a valid app preset with an absolute .app bundle path. Non-bundled tools cannot be watched as apps."
+                        return
+                    }
+                    if let error = draft.validationError(for: preset) {
+                        form.validationError = error
+                        return
+                    }
+                    form.validationError = onSave(preset)
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
@@ -372,7 +423,7 @@ struct QuickWatchedPresetSheet: View {
     /// separator or the end of the string. A substring match would stop at
     /// `/Users/me/my.apps/Tool` or at `Foo.application`.
     static func inferredAppPath(for process: AppProcess?, fallbackName: String) -> String {
-        guard let process else { return "/Applications/\(fallbackName).app" }
+        guard let process else { return "" }
 
         let executablePath = process.executablePath?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -383,6 +434,6 @@ struct QuickWatchedPresetSheet: View {
             return components[...bundleIndex].joined(separator: "/")
         }
 
-        return "/Applications/\(process.name).app"
+        return ""
     }
 }

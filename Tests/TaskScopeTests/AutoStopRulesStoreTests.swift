@@ -4,7 +4,7 @@ import XCTest
 @MainActor
 final class AutoStopRulesStoreTests: XCTestCase {
     nonisolated(unsafe) private var userDefaults: UserDefaults!
-    private let suiteName = "TaskScope.AutoStopRulesStoreTests"
+    private let suiteName = "TaskScope.AutoStopRulesStoreTests.\(UUID().uuidString)"
     private let key = "auto-stop-rules-tests"
     private let eventsKey = "auto-stop-events-tests"
     nonisolated(unsafe) private var currentDate: Date!
@@ -492,6 +492,7 @@ final class AutoStopRulesStoreTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 0,
+            uid: getuid(),
             cpu: 0,
             memoryMB: 0,
             command: command,

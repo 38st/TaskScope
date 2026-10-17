@@ -173,6 +173,7 @@ final class AutoStopPromptAlertTests: XCTestCase {
         AppProcess(
             pid: pid,
             parentPID: 1,
+            uid: getuid(),
             cpu: 1,
             memoryMB: 128,
             command: "/Applications/\(name).app/Contents/MacOS/\(name)",
@@ -190,8 +191,10 @@ final class AutoStopPromptAlertTests: XCTestCase {
         let signaler = PromptSignaler()
         let manager = ProcessManager(
             processInventory: inventory,
+            verificationInventory: inventory,
             processSignaler: signaler,
-            lifecycle: PromptLifecycle()
+            lifecycle: PromptLifecycle(),
+            settleAfterProcessChange: {}
         )
         manager.enableNotifications = false
 
