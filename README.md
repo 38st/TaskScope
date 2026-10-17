@@ -110,8 +110,9 @@ deletion. See [stored-data recovery](SUPPORT.md#stored-data-is-unreadable).
 Use the regular window or menu-bar popover for process review and presets. The
 default global shortcut is **Control-Option-Command-T (⌃⌥⌘T)**; change it in
 **Settings > Hotkey**. **Launch at Login** is in the **Presets** section of the
-window and popover; login launches start quietly in the menu bar. Requires Approval and Unavailable states offer **Turn Off
-Launch at Login** to remove the registration and report any error.
+window and popover; login launches start quietly in the menu bar. The Requires
+Approval and Unavailable states offer **Turn Off Launch at Login** to remove the
+registration and report any error.
 
 ### Process list
 
